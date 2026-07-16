@@ -1,0 +1,345 @@
+{
+  "A": {
+    "items": [
+      {
+        "segment": "169.40.44.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:29:25.981Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "88.209.226.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:29:25.981Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "45.132.80.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:29:25.981Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "104.234.102.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:29:25.981Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "136.0.59.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-达拉斯",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:29:25.981Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "86.38.235.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-达拉斯",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:29:25.981Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "191.217.175.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:30:03.998Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "200.181.87.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:30:03.998Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "201.24.195.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:30:03.998Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "195.162.246.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-达拉斯",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:30:03.998Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "87.83.1.0/24",
+        "addedAt": "2026-06-17T12:26:49.823Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "首都在线-达拉斯",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:30:03.998Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "37.202.203.0/24",
+        "addedAt": "2026-06-17T12:30:10.903Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:31:17.597Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "46.203.5.0/24",
+        "addedAt": "2026-06-17T12:30:10.903Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:31:17.597Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "154.16.62.0/24",
+        "addedAt": "2026-06-17T12:30:10.903Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:31:17.597Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "191.222.242.0/24",
+        "addedAt": "2026-06-17T12:32:03.129Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:32:42.507Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "200.102.183.0/24",
+        "addedAt": "2026-06-17T12:32:03.129Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-法兰克福",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:32:42.507Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "151.246.165.0/24",
+        "addedAt": "2026-06-17T12:32:03.129Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-达拉斯",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:32:42.507Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "191.222.244.0/24",
+        "addedAt": "2026-06-17T12:32:03.129Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-达拉斯",
+        "availableStandby": true,
+        "availableAddedAt": "2026-06-17T12:32:42.507Z",
+        "usageStatus": "available"
+      },
+      {
+        "segment": "83.245.2.0/24",
+        "addedAt": "2026-06-17T12:32:50.515Z"
+      },
+      {
+        "segment": "83.245.3.0/24",
+        "addedAt": "2026-06-17T12:32:50.515Z"
+      },
+      {
+        "segment": "170.62.140.0/24",
+        "addedAt": "2026-06-17T12:32:50.515Z"
+      },
+      {
+        "segment": "170.62.143.0/24",
+        "addedAt": "2026-06-17T12:32:50.515Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-达拉斯"
+      },
+      {
+        "segment": "189.31.223.0/24",
+        "addedAt": "2026-06-17T12:32:50.515Z",
+        "blockedInfo": {
+          "countries": [],
+          "availableCountries": [
+            "russia"
+          ]
+        },
+        "remark": "ZEN-达拉斯"
+      },
+      {
+        "segment": "46.18.91.0/24",
+        "addedAt": "2026-06-17T12:33:22.784Z"
+      },
+      {
+        "segment": "16.217.21.0/24",
+        "addedAt": "2026-06-17T12:33:22.784Z"
+      },
+      {
+        "segment": "68.166.220.0/24",
+        "addedAt": "2026-06-17T12:33:22.784Z"
+      },
+      {
+        "segment": "194.77.62.0/24",
+        "addedAt": "2026-06-17T12:33:22.784Z"
+      },
+      {
+        "segment": "185.116.90.0/24",
+        "addedAt": "2026-06-17T12:33:22.784Z"
+      },
+      {
+        "segment": "68.166.219.0/24",
+        "addedAt": "2026-06-17T12:33:22.784Z"
+      }
+    ],
+    "groupMeta": {
+      "132479": {
+        "remark": "首都在线流量备用AS"
+      },
+      "134488": {
+        "remark": "ZEN流量备用AS"
+      },
+      "141429": {
+        "remark": "ZEN广告备用AS"
+      },
+      "141445": {
+        "remark": "首都在线流量备用AS"
+      },
+      "142222": {
+        "remark": "ZEN流量备用AS"
+      },
+      "152575": {
+        "remark": "ZEN广告备用AS"
+      },
+      "154642": {
+        "remark": "ZEN会员备用AS"
+      },
+      "(未设置 ASN)": {
+        "remark": "流量备用"
+      }
+    }
+  },
+  "B": {
+    "items": []
+  }
+}

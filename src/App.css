@@ -1,0 +1,70 @@
+/* 与主内容区一致，避免首屏/鉴权加载时整页纯白像「白色蒙版」 */
+html,
+body,
+#root {
+  min-height: 100vh;
+  background: #f0f2f5;
+}
+
+.app {
+  min-height: 100vh;
+  background: #f0f2f5;
+}
+
+.app-header {
+  background: #001529;
+  color: white;
+  padding: 16px 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.app-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.app-content {
+  padding: 12px clamp(16px, 2vw, 28px);
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+/* 表格默认行间距 */
+.ant-table-tbody > tr > td {
+  padding: 8px 12px !important;
+}
+
+.ant-table-thead > tr > th {
+  padding: 10px 12px !important;
+}
+
+/* IP段管理：略增单元格间距，日期等列可读性更好 */
+.ip-management-card .ant-table-tbody > tr > td,
+.ip-management-card .ant-table-thead > tr > th {
+  padding: 10px 14px !important;
+}
+
+.ip-management-card {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* 列表勾选列：收窄宽度，减少空白占位 */
+.ip-management-card .ant-table-selection-column,
+.ip-management-card .ant-table-cell.ant-table-selection-column {
+  width: 46px !important;
+  min-width: 46px !important;
+  padding-inline: 8px !important;
+}
+
+.ip-management-card .ant-form-item {
+  margin-bottom: 18px;
+}
+
+.ip-management-card .ant-form-item:last-child {
+  margin-bottom: 0;
+}
+

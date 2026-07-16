@@ -1,0 +1,32 @@
+{
+  "users": [
+    {
+      "id": "admin-1774333167057",
+      "username": "admin",
+      "passwordHash": "06ea42711a4cfd79f455f3788e52ee8329e97be89b98f49c47e94faae6959309",
+      "displayName": "管理员",
+      "role": "admin",
+      "createdAt": "2026-03-24T06:19:27.057Z",
+      "updatedAt": "2026-03-24T07:46:50.981Z"
+    },
+    {
+      "id": "user-1774333456739",
+      "username": "yunwei",
+      "passwordHash": "2fc4f91fe2daf638e1073250273aab3705f21460db1ff8f3af5462567dfc2678",
+      "displayName": "运维",
+      "role": "viewer",
+      "createdAt": "2026-03-24T06:24:16.739Z",
+      "updatedAt": "2026-03-24T06:26:16.085Z"
+    },
+    {
+      "id": "user-1774333491973",
+      "username": "ziyuan",
+      "passwordHash": "2fc4f91fe2daf638e1073250273aab3705f21460db1ff8f3af5462567dfc2678",
+      "displayName": "资源",
+      "role": "editor",
+      "createdAt": "2026-03-24T06:24:51.973Z",
+      "updatedAt": "2026-03-24T06:26:23.198Z"
+    }
+  ],
+  "updatedAt": "2026-03-24T07:46:50.981Z"
+}

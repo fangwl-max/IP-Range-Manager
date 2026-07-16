@@ -1,0 +1,15 @@
+{
+  "gmailUser": "",
+  "gmailAppPassword": "",
+  "recipients": [],
+  "notifyDaysAhead": 10,
+  "enabled": true,
+  "scheduledEnabled": false,
+  "notifyTime": "00:00",
+  "notifyIntervalHours": 4,
+  "lastSentDate": "2026-06-09",
+  "lastSentAt": 1781579374740,
+  "googleChatWebhook": "https://chat.googleapis.com/v1/spaces/AAQAbOJ7OrU/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=l-0XPEoX1fO1v-CB3yKCXwgxdljymj9WSfarNxnfLTA",
+  "lastBackupAt": "2026-06-30T19:00:01.134Z",
+  "lastBackupDate": "2026-07-01"
+}

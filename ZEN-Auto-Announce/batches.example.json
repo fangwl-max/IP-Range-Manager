@@ -1,0 +1,17 @@
+[
+  {
+    "cidrBlock": "192.0.2.0/24",
+    "networkType": "PremiumBGP",
+    "regionId": "europe-central-1",
+    "asn": 62610,
+    "bandwidthClusterId": "可选：直接指定控制台合并带宽组 ID"
+  },
+  {
+    "cidrBlock": "198.51.100.0/24",
+    "networkType": "StandardBGP",
+    "regionId": "asia-southeast-1",
+    "asn": 62610,
+    "cityName": "Hong Kong",
+    "bandwidthClusterName": "Replace-With-Console-Exact-Name"
+  }
+]
