@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-# IP-Range-Manager 首次部署脚本
+# IP-Range-Manager 首次部署脚本（完整重装版）
 # 适用于 Ubuntu / Debian / CentOS
-# 用法：chmod +x deploy.sh && sudo bash deploy.sh
+# 用法：bash deploy.sh
 # ============================================================
 
 set -e
@@ -16,38 +16,49 @@ echo "=============================="
 echo " IP-Range-Manager 首次部署"
 echo "=============================="
 
-# ── 1. 安装 Node.js（如果未安装）──────────────────────────
+# ── 1. 停止并删除旧进程 ────────────────────────────────────
+echo "[1/7] 清理旧进程..."
+pm2 delete all 2>/dev/null || true
+
+# ── 2. 删除旧目录 ──────────────────────────────────────────
+if [ -d "$APP_DIR" ]; then
+  echo "[2/7] 删除旧目录 $APP_DIR..."
+  rm -rf "$APP_DIR"
+else
+  echo "[2/7] 无旧目录，跳过"
+fi
+
+# ── 3. 安装 Node.js（如果未安装）──────────────────────────
 if ! command -v node &> /dev/null; then
-  echo "[1/6] 安装 Node.js 20..."
+  echo "[3/7] 安装 Node.js 20..."
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs 2>/dev/null || yum install -y nodejs 2>/dev/null
 else
-  echo "[1/6] Node.js 已安装: $(node --version)"
+  echo "[3/7] Node.js 已安装: $(node --version)"
 fi
 
-# ── 2. 安装 PM2（如果未安装）──────────────────────────────
+# ── 4. 安装 PM2（如果未安装）──────────────────────────────
 if ! command -v pm2 &> /dev/null; then
-  echo "[2/6] 安装 PM2..."
+  echo "[4/7] 安装 PM2..."
   npm install -g pm2
 else
-  echo "[2/6] PM2 已安装: $(pm2 --version)"
+  echo "[4/7] PM2 已安装: $(pm2 --version)"
 fi
 
-# ── 3. 克隆代码 ────────────────────────────────────────────
-echo "[3/6] 克隆代码到 $APP_DIR..."
-if [ -d "$APP_DIR" ]; then
-  echo "  目录已存在，跳过克隆（如需重新部署请先删除 $APP_DIR）"
-else
-  git clone "$REPO_URL" "$APP_DIR"
-fi
+# ── 5. 克隆代码 ────────────────────────────────────────────
+echo "[5/7] 克隆代码到 $APP_DIR..."
+git clone "$REPO_URL" "$APP_DIR"
 cd "$APP_DIR"
 
-# ── 4. 安装依赖 ────────────────────────────────────────────
-echo "[4/6] 安装 npm 依赖..."
-npm install --production=false
+# 修复目录权限（确保当前用户可读写）
+chown -R $(whoami):$(whoami) "$APP_DIR"
 
-# ── 5. 初始化配置文件 ──────────────────────────────────────
-echo "[5/6] 初始化配置文件..."
+# ── 6. 安装依赖 ────────────────────────────────────────────
+echo "[6/7] 安装 npm 依赖..."
+npm install
+
+# ── 7. 初始化配置文件 ──────────────────────────────────────
+echo "[7/7] 初始化配置文件..."
 
 if [ ! -f "zen-config.json" ]; then
   cat > zen-config.json << 'EOF'
@@ -58,12 +69,9 @@ if [ ! -f "zen-config.json" ]; then
 }
 EOF
   echo "  ⚠ 已创建 zen-config.json，请编辑填写真实的 API Key"
-else
-  echo "  zen-config.json 已存在，跳过"
 fi
 
 if [ ! -f "users.json" ]; then
-  # 生成随机密码 hash（sha256）
   DEFAULT_PASS=$(echo -n "admin123" | sha256sum | cut -d' ' -f1)
   cat > users.json << EOF
 {
@@ -77,30 +85,25 @@ if [ ! -f "users.json" ]; then
   ]
 }
 EOF
-  echo "  ⚠ 已创建 users.json，默认账号 admin / admin123，请及时修改密码"
-else
-  echo "  users.json 已存在，跳过"
+  echo "  ✓ 已创建 users.json，默认账号 admin / admin123"
 fi
 
-# ── 6. 启动服务 ────────────────────────────────────────────
-echo "[6/6] 启动服务..."
-pm2 delete "$APP_NAME" 2>/dev/null || true
+# ── 启动服务 ───────────────────────────────────────────────
+echo "启动服务..."
 pm2 start npm --name "$APP_NAME" -- run dev
 pm2 save
-
-# 设置开机自启（输出的命令需要手动执行一次）
 pm2 startup 2>/dev/null || true
 
 # ── 完成 ───────────────────────────────────────────────────
+SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 echo ""
 echo "=============================="
 echo " 部署完成！"
 echo "=============================="
-echo " 访问地址: http://$(hostname -I | awk '{print $1}'):$APP_PORT"
-echo " 查看日志: pm2 logs $APP_NAME"
-echo " 查看状态: pm2 status"
+echo " 访问地址: http://$SERVER_IP:$APP_PORT"
+echo " 默认账号: admin / admin123"
 echo ""
-echo " ⚠ 请记得编辑以下配置文件："
-echo "   $APP_DIR/zen-config.json  (Zenlayer API Key)"
-echo "   $APP_DIR/users.json       (登录账号密码)"
+echo " 配置 Zenlayer API Key："
+echo "   nano $APP_DIR/zen-config.json"
+echo "   pm2 restart $APP_NAME"
 echo "=============================="

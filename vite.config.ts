@@ -6025,9 +6025,9 @@ export default defineConfig({
   server: {
     port: 8081,
     host: '0.0.0.0', // 允许外部访问，监听所有网络接口
-    open: true,
-    // 固定 8081：被占用时不自动换端口，避免歧义（需关掉占用进程后再启动）
+    open: false,      // 服务器上禁止自动打开浏览器
     strictPort: true,
+    hmr: false,       // 禁用 HMR，避免外网访问时 WebSocket 连接失败导致页面空白
   },
   preview: {
     port: 8081,
