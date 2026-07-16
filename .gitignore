@@ -29,6 +29,12 @@ users.json
 .env
 .env.*
 
-# 本地日志
-vite-out.log
-C:/tmp/
+# 数据文件（线上为准，不用 git 管理）
+ip-data.json
+ip-data*.json
+ipxo-cache.json
+ipxo-upcoming-status.json
+ipxo-upcoming-status*.json
+asn-standby-groups.json
+notify-config.json
+backups/
