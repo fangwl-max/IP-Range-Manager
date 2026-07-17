@@ -1,15 +1,14 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Alert, Spin, Typography, Tabs } from 'antd';
-import {
-  SoundOutlined, StopOutlined, UnorderedListOutlined,
-} from '@ant-design/icons';
+import { Alert, Spin, Typography, Tabs, Result } from 'antd';
+import { LockOutlined, SoundOutlined, StopOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { useAuth } from '../contexts/AuthContext';
 
 const { Text } = Typography;
 
 const CDS_PAGES = [
-  { key: 'announce',  label: '批量宣告',     icon: <SoundOutlined />,         path: '/cds-proxy/' },
-  { key: 'withdraw',  label: '批量撤播',     icon: <StopOutlined />,          path: '/cds-proxy/withdraw' },
-  { key: 'announced', label: '已宣告 IP 段', icon: <UnorderedListOutlined />, path: '/cds-proxy/announced' },
+  { key: 'announce',  label: '批量宣告',     icon: <SoundOutlined />,         path: '/cds-proxy/',        adminOnly: false },
+  { key: 'withdraw',  label: '批量撤播',     icon: <StopOutlined />,          path: '/cds-proxy/withdraw', adminOnly: true  },
+  { key: 'announced', label: '已宣告 IP 段', icon: <UnorderedListOutlined />, path: '/cds-proxy/announced', adminOnly: false },
 ];
 
 /**
@@ -19,6 +18,8 @@ const CDS_PAGES = [
  * 顶部导航由本组件提供，Flask 自身导航栏会被隐藏。
  */
 const CapitalOnlineAnnounce: React.FC = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [errMsg, setErrMsg] = useState('');
@@ -114,14 +115,24 @@ const CapitalOnlineAnnounce: React.FC = () => {
       )}
 
       {status === 'ok' && (
-        <iframe
-          key={currentPage.path}   // key 变化时强制刷新 iframe
-          ref={iframeRef}
-          src={currentPage.path}
-          style={{ flex: 1, border: 'none', width: '100%' }}
-          title={currentPage.label}
-          onLoad={handleLoad}
-        />
+        currentPage.adminOnly && !isAdmin ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Result
+              icon={<LockOutlined style={{ color: '#faad14' }} />}
+              title="权限不足"
+              subTitle="批量撤播仅限管理员账号操作"
+            />
+          </div>
+        ) : (
+          <iframe
+            key={currentPage.path}
+            ref={iframeRef}
+            src={currentPage.path}
+            style={{ flex: 1, border: 'none', width: '100%' }}
+            title={currentPage.label}
+            onLoad={handleLoad}
+          />
+        )
       )}
     </div>
   );
