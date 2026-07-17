@@ -1716,6 +1716,54 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       console.error('[uncaughtException]', err);
     });
   }
+  // ─── /cds-proxy → CDS-Auto-Announce Flask 服务（端口 9010）────────────
+  server.middlewares.use('/cds-proxy', (req: any, res: any, _next: any) => {
+    const proxyPath = req.url || '/';
+    const options = {
+      hostname: '127.0.0.1',
+      port: 9010,
+      path: proxyPath,
+      method: req.method,
+      headers: { ...req.headers, host: '127.0.0.1:9010' },
+    };
+    const proxyReq = http.request(options, (proxyRes: any) => {
+      const isHtml = (proxyRes.headers['content-type'] || '').includes('text/html');
+      res.statusCode = proxyRes.statusCode;
+      Object.entries(proxyRes.headers as Record<string, any>).forEach(([k, v]) => {
+        if (k.toLowerCase() === 'transfer-encoding') return;
+        if (k.toLowerCase() === 'content-length' && isHtml) return; // 重写 HTML 后长度变化
+        // 修正 Flask 重定向路径，加上 /cds-proxy 前缀
+        if (k.toLowerCase() === 'location' && typeof v === 'string' && v.startsWith('/') && !v.startsWith('/cds-proxy')) {
+          res.setHeader(k, '/cds-proxy' + v);
+        } else {
+          res.setHeader(k, v);
+        }
+      });
+      if (isHtml) {
+        // 收集完整 HTML 响应，注入 <base> 标签使内部链接走 /cds-proxy 前缀
+        const chunks: Buffer[] = [];
+        proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
+        proxyRes.on('end', () => {
+          let html = Buffer.concat(chunks).toString('utf-8');
+          // 注入 <base href="/cds-proxy/"> 到 <head> 之后，使相对路径走代理
+          html = html.replace(/(<head[^>]*>)/i, '$1\n  <base href="/cds-proxy/">');
+          // 替换 Flask 页面内绝对路径的 href/action/src（以 / 开头的）
+          html = html.replace(/(href|action|src)="\/(?!cds-proxy|http|\/)/g, '$1="/cds-proxy/');
+          res.end(html);
+        });
+      } else {
+        proxyRes.pipe(res, { end: true });
+      }
+    });
+    proxyReq.on('error', () => {
+      if (!res.headersSent) {
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end('<h2>首都在线宣告服务未启动</h2><p>请确保 CDS-Auto-Announce 服务运行在端口 9010</p>');
+      }
+    });
+    req.pipe(proxyReq, { end: true });
+  });
   // 保存数据接口
   server.middlewares.use('/api/save-data', (req, res, next) => {
       // 设置CORS头
@@ -6064,14 +6112,6 @@ export default defineConfig({
     open: false,      // 服务器上禁止自动打开浏览器
     strictPort: true,
     hmr: false,       // 禁用 HMR，避免外网访问时 WebSocket 连接失败导致页面空白
-    proxy: {
-      // 将 /cds-proxy 代理到 CDS-Auto-Announce Flask 服务（端口 9010）
-      '/cds-proxy': {
-        target: 'http://127.0.0.1:9010',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/cds-proxy/, ''),
-      },
-    },
   },
   preview: {
     port: 8081,
