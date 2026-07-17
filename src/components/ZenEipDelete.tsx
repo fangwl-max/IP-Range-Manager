@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { getAuthHeaders } from '../contexts/AuthContext';
 import {
   Button, Input, Select, Switch, Space,
   Typography, Divider, Progress, Tag, message, Card, Tooltip,
@@ -118,7 +119,7 @@ const ZenEipDelete: React.FC<{ regionOptions: RegionOption[] }> = ({ regionOptio
     try {
       const resp = await fetch('/api/zen/eip-delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           tasks: taskList,
           scanRegionIds: regionOptions.map(r => r.regionId),

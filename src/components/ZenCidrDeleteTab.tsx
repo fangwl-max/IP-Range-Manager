@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { getAuthHeaders } from '../contexts/AuthContext';
 import {
   Button, Input, Select, Switch, Space, Alert,
   Typography, Divider, Tag, message, Card,
@@ -100,7 +101,7 @@ const ZenCidrDeleteTab: React.FC<{ regionOptions: RegionOption[] }> = ({ regionO
     try {
       const resp = await fetch('/api/zen/byoip-withdraw', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           tasks: taskList,
           scanRegionIds: regionOptions.map(r => r.regionId),

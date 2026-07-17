@@ -5827,9 +5827,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   server.middlewares.use('/api/zen/eip-delete', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
+    // 仅 admin 可操作
+    const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
+    const session = token ? tokenStore.get(token) : null;
+    if (!session || session.role !== 'admin') {
+      res.setHeader('Content-Type', 'application/json');
+      res.statusCode = 403;
+      res.end(JSON.stringify({ type: 'error', message: '需要管理员权限才能执行 EIP 删除操作' }));
+      return;
+    }
     try {
       const body = await readBody(req);
       const { ak, sk } = getZenCreds();
@@ -5884,9 +5893,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   server.middlewares.use('/api/zen/byoip-withdraw', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
+    // 仅 admin 可操作
+    const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
+    const session = token ? tokenStore.get(token) : null;
+    if (!session || session.role !== 'admin') {
+      res.setHeader('Content-Type', 'application/json');
+      res.statusCode = 403;
+      res.end(JSON.stringify({ type: 'error', message: '需要管理员权限才能执行取消宣告操作' }));
+      return;
+    }
     try {
       const body = await readBody(req);
       const { ak, sk } = getZenCreds();
@@ -5915,9 +5933,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   server.middlewares.use('/api/zen/byoip-withdraw-by-id', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
+    // 仅 admin 可操作
+    const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
+    const session = token ? tokenStore.get(token) : null;
+    if (!session || session.role !== 'admin') {
+      res.setHeader('Content-Type', 'application/json');
+      res.statusCode = 403;
+      res.end(JSON.stringify({ type: 'error', message: '需要管理员权限才能执行取消宣告操作' }));
+      return;
+    }
     try {
       const body = await readBody(req);
       const { ak, sk } = getZenCreds();
