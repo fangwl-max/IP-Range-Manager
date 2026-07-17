@@ -75,7 +75,7 @@ function startCdsFlask() {
 
   cdsProcess = spawn(
     pythonExe,
-    ['web_app.py', '--config', configPath, '--port', String(port), '--host', '127.0.0.1'],
+    ['web_app.py', '--config', configPath, '--port', String(port), '--host', '127.0.0.1', '--no-reload'],
     {
       cwd: cdsDir,
       env: {
@@ -84,8 +84,10 @@ function startCdsFlask() {
         IP_ANNOUNCE_CONFIG: configPath,
         IP_ANNOUNCE_PORT: String(port),
         IP_ANNOUNCE_HOST: '127.0.0.1',
+        IP_ANNOUNCE_NO_RELOAD: '1',  // 禁用 Flask debug reloader，防止 fork 继承 Vite socket
       },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
     }
   );
 
