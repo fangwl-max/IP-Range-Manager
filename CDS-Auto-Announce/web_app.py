@@ -35,6 +35,26 @@ from rule_builder import build_rule_from_form_row, normalize_cidr_input
 SESSION_USER_KEY = "withdraw_username"
 SESSION_ROLE_KEY = "withdraw_role"
 
+# 内部信任 token（由主系统 IP-Range-Manager 设置，跳过 Flask 自身认证）
+INTERNAL_TOKEN_HEADER = "X-Internal-Token"
+_INTERNAL_TOKEN: str = os.environ.get("CDS_INTERNAL_TOKEN", "")
+
+
+def _set_internal_token(token: str) -> None:
+    """由 create_app 调用，将主系统生成的内部 token 注入全局。"""
+    global _INTERNAL_TOKEN
+    _INTERNAL_TOKEN = token
+
+
+def _check_internal_auth() -> Optional[str]:
+    """检查请求是否携带有效的内部 token，返回虚拟用户名或 None。"""
+    if not _INTERNAL_TOKEN:
+        return None
+    token = request.headers.get(INTERNAL_TOKEN_HEADER, "")
+    if token and token == _INTERNAL_TOKEN:
+        return "admin"  # 主系统已认证，作为 admin 身份信任
+    return None
+
 
 class CapitalOnlineProvider:
     name = "capitalonline"
@@ -155,11 +175,18 @@ def bootstrap_withdraw_auth(cfg: Dict[str, Any]) -> AuthStore:
 
 
 def get_logged_in_user() -> Optional[str]:
+    # 优先信任主系统内部 token
+    internal_user = _check_internal_auth()
+    if internal_user:
+        return internal_user
     user = session.get(SESSION_USER_KEY)
     return str(user) if user else None
 
 
 def get_logged_in_role() -> Optional[str]:
+    # 内部 token 认证时，角色为 admin
+    if _check_internal_auth():
+        return ROLE_ADMIN
     role = session.get(SESSION_ROLE_KEY)
     return str(role) if role else None
 
@@ -232,6 +259,11 @@ def create_app(config_path: str) -> Flask:
     )
     app.config["CONFIG_PATH"] = resolved_config
     app.config["MAX_CONTENT_LENGTH"] = int(web_cfg.get("loa_max_upload_mb", 10)) * 1024 * 1024
+
+    # 注入主系统内部 token（由环境变量传入）
+    internal_token = os.environ.get("CDS_INTERNAL_TOKEN", "")
+    if internal_token:
+        _set_internal_token(internal_token)
     meta_service = MetaService(resolved_config)
     byoip_service = ByoipService(resolved_config)
     loa_service = LoaService(cfg)

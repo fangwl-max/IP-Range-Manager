@@ -29,8 +29,78 @@ const usersFilePath = path.resolve(__dirname, 'users.json');
 const asnStandbyFilePath = path.resolve(__dirname, 'asn-standby-groups.json');
 // ZEN 宣告配置文件路径
 const zenConfigFilePath = path.resolve(__dirname, 'zen-config.json');
+// CDS-Auto-Announce 配置文件路径
+const cdsConfigFilePath = path.resolve(__dirname, 'cds-config.json');
 // 内存中的 token 存储 (token -> { userId, username })
 const tokenStore = new Map<string, { userId: string; username: string; role: string }>();
+
+// CDS 内部 token（主系统与 Flask 子进程共享，用于跳过 Flask 自身认证）
+const CDS_INTERNAL_TOKEN = crypto.randomBytes(32).toString('hex');
+
+/** 读取 cds-config.json */
+function loadCdsConfig(): any {
+  try {
+    if (fs.existsSync(cdsConfigFilePath)) {
+      return JSON.parse(fs.readFileSync(cdsConfigFilePath, 'utf-8'));
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/** CDS Flask 子进程管理 */
+let cdsProcess: ReturnType<typeof import('child_process').spawn> | null = null;
+
+function startCdsFlask() {
+  const cfg = loadCdsConfig();
+  if (!cfg?.enabled) return; // 未配置或未启用则跳过
+
+  const cdsDir = path.resolve(__dirname, 'CDS-Auto-Announce');
+  const configPath = cfg.configPath || path.join(cdsDir, 'config.yaml');
+
+  // 优先用虚拟环境的 python
+  const pythonCandidates = [
+    path.join(cdsDir, '.venv', 'Scripts', 'python.exe'), // Windows
+    path.join(cdsDir, '.venv', 'bin', 'python3'),         // Linux
+    path.join(cdsDir, '.venv', 'bin', 'python'),
+    'python3',
+    'python',
+  ];
+  const pythonExe = pythonCandidates.find(p => {
+    try { return p.includes(path.sep) ? fs.existsSync(p) : true; } catch { return false; }
+  }) || 'python';
+
+  const port = cfg.port || 9010;
+  const { spawn } = require('child_process');
+
+  console.log(`[CDS] 启动首都在线宣告服务 python=${pythonExe} port=${port}`);
+
+  cdsProcess = spawn(
+    pythonExe,
+    ['web_app.py', '--config', configPath, '--port', String(port), '--host', '127.0.0.1'],
+    {
+      cwd: cdsDir,
+      env: {
+        ...process.env,
+        CDS_INTERNAL_TOKEN,
+        IP_ANNOUNCE_CONFIG: configPath,
+        IP_ANNOUNCE_PORT: String(port),
+        IP_ANNOUNCE_HOST: '127.0.0.1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
+
+  cdsProcess.stdout?.on('data', (d: Buffer) => console.log('[CDS]', d.toString().trimEnd()));
+  cdsProcess.stderr?.on('data', (d: Buffer) => console.error('[CDS ERR]', d.toString().trimEnd()));
+  cdsProcess.on('exit', (code: number) => {
+    console.log(`[CDS] Flask 进程退出 code=${code}`);
+    cdsProcess = null;
+  });
+
+  process.on('exit', () => { try { cdsProcess?.kill(); } catch {} });
+  process.on('SIGINT', () => { try { cdsProcess?.kill(); } catch {} process.exit(); });
+  process.on('SIGTERM', () => { try { cdsProcess?.kill(); } catch {} process.exit(); });
+}
 
 function hashPassword(password: string): string {
   return crypto.createHash('sha256').update(password).digest('hex');
@@ -1719,19 +1789,30 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   // ─── /cds-proxy → CDS-Auto-Announce Flask 服务（端口 9010）────────────
   server.middlewares.use('/cds-proxy', (req: any, res: any, _next: any) => {
     const proxyPath = req.url || '/';
+    const cdsPort = loadCdsConfig()?.port || 9010;
+
+    // 将主系统的 Bearer token 转换为内部 token，使 Flask 信任已登录用户
+    const mainToken = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
+    const mainSession = mainToken ? tokenStore.get(mainToken) : null;
+
+    const headers: Record<string, any> = { ...req.headers, host: `127.0.0.1:${cdsPort}` };
+    if (mainSession && CDS_INTERNAL_TOKEN) {
+      headers['X-Internal-Token'] = CDS_INTERNAL_TOKEN;
+    }
+
     const options = {
       hostname: '127.0.0.1',
-      port: 9010,
+      port: cdsPort,
       path: proxyPath,
       method: req.method,
-      headers: { ...req.headers, host: '127.0.0.1:9010' },
+      headers,
     };
     const proxyReq = http.request(options, (proxyRes: any) => {
       const isHtml = (proxyRes.headers['content-type'] || '').includes('text/html');
       res.statusCode = proxyRes.statusCode;
       Object.entries(proxyRes.headers as Record<string, any>).forEach(([k, v]) => {
         if (k.toLowerCase() === 'transfer-encoding') return;
-        if (k.toLowerCase() === 'content-length' && isHtml) return; // 重写 HTML 后长度变化
+        if (k.toLowerCase() === 'content-length' && isHtml) return;
         // 修正 Flask 重定向路径，加上 /cds-proxy 前缀
         if (k.toLowerCase() === 'location' && typeof v === 'string' && v.startsWith('/') && !v.startsWith('/cds-proxy')) {
           res.setHeader(k, '/cds-proxy' + v);
@@ -1740,14 +1821,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         }
       });
       if (isHtml) {
-        // 收集完整 HTML 响应，注入 <base> 标签使内部链接走 /cds-proxy 前缀
         const chunks: Buffer[] = [];
         proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
         proxyRes.on('end', () => {
           let html = Buffer.concat(chunks).toString('utf-8');
-          // 注入 <base href="/cds-proxy/"> 到 <head> 之后，使相对路径走代理
           html = html.replace(/(<head[^>]*>)/i, '$1\n  <base href="/cds-proxy/">');
-          // 替换 Flask 页面内绝对路径的 href/action/src（以 / 开头的）
           html = html.replace(/(href|action|src)="\/(?!cds-proxy|http|\/)/g, '$1="/cds-proxy/');
           res.end(html);
         });
@@ -1759,7 +1837,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (!res.headersSent) {
         res.statusCode = 502;
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.end('<h2>首都在线宣告服务未启动</h2><p>请确保 CDS-Auto-Announce 服务运行在端口 9010</p>');
+        res.end('<h2>首都在线宣告服务未启动</h2><p>请确保 CDS-Auto-Announce 服务运行在端口 ' + cdsPort + '</p>');
       }
     });
     req.pipe(proxyReq, { end: true });
@@ -6089,6 +6167,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
   // 启动时一次性从 ZEN-Auto-Announce .env 导入凭据到 zen-config.json
   importZenEnvOnce();
+  // 启动 CDS-Auto-Announce Flask 子进程（如已配置）
+  startCdsFlask();
 }
 
 const dataPersistencePlugin = () => ({
