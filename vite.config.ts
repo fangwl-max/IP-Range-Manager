@@ -6055,6 +6055,14 @@ export default defineConfig({
     open: false,      // 服务器上禁止自动打开浏览器
     strictPort: true,
     hmr: false,       // 禁用 HMR，避免外网访问时 WebSocket 连接失败导致页面空白
+    proxy: {
+      // 将 /cds-proxy 代理到 CDS-Auto-Announce Flask 服务（端口 9010）
+      '/cds-proxy': {
+        target: 'http://127.0.0.1:9010',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/cds-proxy/, ''),
+      },
+    },
   },
   preview: {
     port: 8081,
