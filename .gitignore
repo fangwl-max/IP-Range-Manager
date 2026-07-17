@@ -38,4 +38,9 @@ ipxo-upcoming-status.json
 ipxo-upcoming-status*.json
 asn-standby-groups.json
 notify-config.json
+ipxo-config.json
+ipxo-upcoming-status - *.json
 backups/
+exports/
+CDS-Auto-Announce/data/withdraw_users.json
+CDS-Auto-Announce/data/*.json
