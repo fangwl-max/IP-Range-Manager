@@ -220,7 +220,7 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <Text type="secondary" style={{ fontSize: 14 }}>
+        <Text type="secondary" style={{ fontSize: 15 }}>
           VOB 宣告（BMC CreateByoip）：支持同时宣告多个 IP 段到同一可用区
         </Text>
         <Space>
@@ -238,8 +238,8 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
             {FIXED_ZONES.map(z => (
               <span key={z.zoneId}>
                 <Tag color="blue">{z.zoneId}</Tag>
-                <Text style={{ fontSize: 12 }}>{z.label.split(" ")[1]}</Text>
-                <Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>VLAN: {z.publicVirtualInterfaceId}</Text>
+                <Text style={{ fontSize: 13 }}>{z.label.split(" ")[1]}</Text>
+                <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>VLAN: {z.publicVirtualInterfaceId}</Text>
               </span>
             ))}
           </Space>
@@ -254,12 +254,12 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
           display: "grid",
           gridTemplateColumns: "36px 1fr 120px 190px 1fr 72px",
           gap: 8,
-          padding: "6px 8px",
+          padding: "8px 10px",
           background: "#fafafa",
           borderRadius: "6px 6px 0 0",
           border: "1px solid #f0f0f0",
           fontWeight: 500,
-          fontSize: 13,
+          fontSize: 14,
           color: "rgba(0,0,0,0.55)",
         }}>
           <span style={{ textAlign: "center" }}>#</span>
@@ -277,7 +277,7 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
               display: "grid",
               gridTemplateColumns: "36px 1fr 120px 190px 1fr 72px",
               gap: 8,
-              padding: "6px 8px",
+              padding: "8px 10px",
               borderLeft: "1px solid #f0f0f0",
               borderRight: "1px solid #f0f0f0",
               borderBottom: "1px solid #f0f0f0",
@@ -285,12 +285,12 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
               alignItems: "center",
             }}
           >
-            <Text type="secondary" style={{ textAlign: "center", fontSize: 13 }}>{idx + 1}</Text>
+            <Text type="secondary" style={{ textAlign: "center", fontSize: 14 }}>{idx + 1}</Text>
             <Input
               placeholder="203.0.113.0/24"
               value={row.cidrBlock}
               onChange={e => updateRow(row.key, { cidrBlock: e.target.value })}
-              size="small"
+              size="middle"
             />
             <Input
               placeholder="如 138789"
@@ -299,13 +299,13 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
                 const raw = e.target.value.replace(/^[Aa][Ss]\s*/, "").replace(/[^\d]/g, "");
                 updateRow(row.key, { asn: raw === "" ? "" : Number(raw) });
               }}
-              size="small"
+              size="middle"
             />
             <Select
               value={row.zoneId || undefined}
               placeholder="选择可用区"
               onChange={v => updateRow(row.key, { zoneId: v as ZoneId })}
-              size="small"
+              size="middle"
               style={{ width: "100%" }}
             >
               {/* 启用的可用区 */}
@@ -324,20 +324,22 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
               onChange={e => updateRow(row.key, { publicVirtualInterfaceId: e.target.value })}
               placeholder="自动填充"
               size="small"
-              style={{ fontFamily: "monospace", fontSize: 11 }}
+              style={{ fontFamily: "monospace", fontSize: 13 }}
             />
-            <Space size={4}>
+            <Space size={6}>
               <Tooltip title="复制此行">
                 <Button
-                  size="small" type="text" icon={<CopyOutlined />}
+                  size="large" type="text" icon={<CopyOutlined style={{ fontSize: 17 }} />}
                   onClick={() => copyRow(row.key)}
+                  style={{ width: 40, height: 40 }}
                 />
               </Tooltip>
               <Tooltip title="删除此行">
                 <Button
-                  size="small" type="text" danger icon={<DeleteOutlined />}
+                  size="large" type="text" danger icon={<DeleteOutlined style={{ fontSize: 17 }} />}
                   onClick={() => removeRow(row.key)}
                   disabled={rows.length === 1}
+                  style={{ width: 40, height: 40 }}
                 />
               </Tooltip>
             </Space>
@@ -353,13 +355,13 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
         <div style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
           <Space>
             <Switch checked={dryRun} onChange={setDryRun} size="small" />
-            <Text style={{ fontSize: 14 }}>
+            <Text style={{ fontSize: 15 }}>
               演练模式（不实际宣告）
-              {dryRun && <Tag color="orange" style={{ marginLeft: 6, fontSize: 12 }}>已开启</Tag>}
+              {dryRun && <Tag color="orange" style={{ marginLeft: 6, fontSize: 13 }}>已开启</Tag>}
             </Text>
           </Space>
           {validCount > 0 && (
-            <Text type="secondary" style={{ fontSize: 13 }}>
+            <Text type="secondary" style={{ fontSize: 14 }}>
               已填写 <Text strong>{validCount}</Text> 条任务
             </Text>
           )}
@@ -419,19 +421,19 @@ const JobCard: React.FC<{ job: JobState }> = ({ job }) => {
         onClick={() => hasLogs && setCollapsed(c => !c)}
       >
         {statusIcon}
-        <Text strong style={{ fontSize: 14 }}>{job.cidr}</Text>
+        <Text strong style={{ fontSize: 15 }}>{job.cidr}</Text>
         {zone && <Tag color="blue" style={{ margin: 0 }}>{zone.label}</Tag>}
         <Tag color={statusColor} style={{ margin: 0 }}>
           {job.status === "pending" ? "等待中" : job.status === "running" ? (job.step || "执行中") : job.status === "done" ? "完成" : "失败"}
         </Tag>
         {hasLogs && (
-          <span style={{ marginLeft: "auto", fontSize: 12, color: "rgba(0,0,0,0.45)" }}>
+          <span style={{ marginLeft: "auto", fontSize: 13, color: "rgba(0,0,0,0.45)" }}>
             {collapsed ? <><RightOutlined /> 展开日志</> : <><DownOutlined /> 收起日志</>}
           </span>
         )}
       </div>
       {hasLogs && !collapsed && (
-        <div style={{ padding: "6px 12px", maxHeight: 240, overflowY: "auto", background: "#1a1a2e", fontFamily: "monospace", fontSize: 12 }}>
+        <div style={{ padding: "6px 12px", maxHeight: 240, overflowY: "auto", background: "#1a1a2e", fontFamily: "monospace", fontSize: 13 }}>
           {job.logs.map((l, i) => {
             const color = l.startsWith("[error]") ? "#ff6b6b" : l.startsWith("[warn]") ? "#ffd93d" : "#a8d8ea";
             return <div key={i} style={{ color, lineHeight: "1.6" }}>{l}</div>;

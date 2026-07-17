@@ -334,12 +334,12 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
                       />
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'center' }}>
-                      <Space size={4}>
+                      <Space size={6}>
                         <Tooltip title="复制此行">
-                          <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => duplicateRow(row.key)} />
+                          <Button size="large" type="text" icon={<CopyOutlined style={{ fontSize: 17 }} />} onClick={() => duplicateRow(row.key)} style={{ width: 40, height: 40 }} />
                         </Tooltip>
                         <Tooltip title="删除此行">
-                          <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => removeRow(row.key)} disabled={rows.length === 1} />
+                          <Button size="large" type="text" danger icon={<DeleteOutlined style={{ fontSize: 17 }} />} onClick={() => removeRow(row.key)} disabled={rows.length === 1} style={{ width: 40, height: 40 }} />
                         </Tooltip>
                       </Space>
                     </td>
