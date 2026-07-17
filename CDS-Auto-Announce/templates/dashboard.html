@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IP段宣告/撤播控制台</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #f7f8fa; color: #222; }
+    h1 { margin-bottom: 8px; }
+    .hint { color: #666; margin-bottom: 16px; }
+    .card { background: white; border-radius: 10px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px; text-align: left; vertical-align: middle; }
+    th { background: #fafafa; }
+    .ok { color: #118a00; }
+    .warn { color: #cc7a00; }
+    .err { color: #d10000; }
+    .btn { border: 1px solid #ddd; background: #fff; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+    .btn:hover { background: #f2f2f2; }
+    .bar { margin-bottom: 12px; }
+    .flash { padding: 10px; border-radius: 8px; margin-bottom: 10px; }
+    .flash.success { background: #ecfff0; border: 1px solid #9ed8a9; }
+    .flash.error { background: #fff0f0; border: 1px solid #e6a8a8; }
+  </style>
+</head>
+<body>
+  <h1>IP段宣告/撤播控制台</h1>
+  <div class="hint">当前模式：{% if dry_run %}<span class="warn">dry-run（只演练，不会真实调用）</span>{% else %}<span class="ok">真实执行</span>{% endif %}</div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>供应商</th>
+          <th>CIDR</th>
+          <th>目标状态</th>
+          <th>BYOIP状态</th>
+          <th>是否挂载公网</th>
+          <th>SegmentId</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.index }}</td>
+          <td>{{ row.provider }}</td>
+          <td>{{ row.cidr }}</td>
+          <td>{{ row.desired_state }}</td>
+          <td>{{ row.byoip_status }}</td>
+          <td>{{ row.attached }}</td>
+          <td>{{ row.segment_id }}</td>
+          <td>
+            <form method="post" action="/action" style="display:inline-block;">
+              <input type="hidden" name="index" value="{{ row.index }}">
+              <input type="hidden" name="target_action" value="announce">
+              <button class="btn" type="submit">宣告</button>
+            </form>
+            <form method="post" action="/action" style="display:inline-block;">
+              <input type="hidden" name="index" value="{{ row.index }}">
+              <input type="hidden" name="target_action" value="withdraw">
+              <button class="btn" type="submit">撤播</button>
+            </form>
+            {% if row.error %}
+              <div class="err">{{ row.error }}</div>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

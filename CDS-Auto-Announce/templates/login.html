@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}登录 - IP段控制台{% endblock %}
+{% block page_title %}登录{% endblock %}
+
+{% block content %}
+<div class="card login-card">
+  <div class="card-title">登录控制台</div>
+  <p class="note" style="margin-top:0">登录后可使用批量宣告、撤播、已宣告列表等功能。默认账号来自配置文件，登录后可在「账号管理 / 修改密码」中维护。</p>
+  <form id="loginForm" class="login-form">
+    <div>
+      <label for="loginUser">账号</label>
+      <input type="text" id="loginUser" name="username" placeholder="请输入管理员账号" autocomplete="username" required>
+    </div>
+    <div>
+      <label for="loginPass">密码</label>
+      <div class="pwd-field">
+        <input type="password" id="loginPass" name="password" placeholder="请输入密码" autocomplete="current-password" required>
+        <button type="button" class="pwd-toggle" tabindex="-1">显示</button>
+      </div>
+    </div>
+    <div id="loginError" class="status err" style="display:none"></div>
+    <div class="footer-bar" style="border-top:none;padding-top:0;margin-top:4px">
+      <button type="submit" class="btn btn-primary" id="loginBtn">登录</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const params = new URLSearchParams(location.search);
+  const nextUrl = params.get('next') || '/';
+
+  document.getElementById('loginForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('loginBtn');
+    const errEl = document.getElementById('loginError');
+    errEl.style.display = 'none';
+    btn.disabled = true;
+    try {
+      const resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: document.getElementById('loginUser').value.trim(),
+          password: document.getElementById('loginPass').value,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        errEl.textContent = data.error || '登录失败';
+        errEl.style.display = 'block';
+        return;
+      }
+      location.href = nextUrl;
+    } catch (err) {
+      errEl.textContent = '请求失败: ' + err;
+      errEl.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+    }
+  };
+</script>
+{% endblock %}

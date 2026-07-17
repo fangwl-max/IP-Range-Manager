@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}IP段宣告/撤播控制台{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #eef2f7;
+      --card: #fff;
+      --border: #dbe3ee;
+      --text: #1f2937;
+      --muted: #64748b;
+      --primary: #0f9d58;
+      --primary-hover: #0b8048;
+      --secondary: #2563eb;
+      --secondary-hover: #1d4ed8;
+      --danger: #dc2626;
+      --danger-hover: #b91c1c;
+      --warn: #d97706;
+      --warn-bg: #fff7e6;
+      --ok-bg: #e8f7ee;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; background: var(--bg); color: var(--text); }
+    .wrap { max-width: 1520px; margin: 0 auto; padding: 20px 28px 32px; }
+    .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+    h1 { font-size: 24px; margin: 0 0 6px; }
+    .sub { color: var(--muted); font-size: 13px; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge.ok { background: var(--ok-bg); color: var(--primary); }
+    .badge.warn { background: var(--warn-bg); color: var(--warn); }
+    .nav { display: flex; gap: 8px; flex-wrap: wrap; }
+    .nav a {
+      text-decoration: none; padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 600;
+      border: 1px solid var(--border); background: #fff; color: var(--text);
+    }
+    .nav a.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+    .nav a.withdraw-link.active { background: var(--danger); border-color: var(--danger); }
+    .nav a.announced-link.active { background: var(--secondary); border-color: var(--secondary); color: #fff; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+    .card-title { font-size: 16px; font-weight: 700; margin-bottom: 14px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+    .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+    input, select, textarea {
+      width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
+      font-size: 14px; background: #fff;
+    }
+    input:focus, select:focus, textarea:focus { outline: 2px solid rgba(37,99,235,.15); border-color: #93c5fd; }
+    input[readonly], select:disabled { background: #f8fafc; color: #94a3b8; cursor: not-allowed; }
+    .btn {
+      border: none; border-radius: 8px; padding: 9px 16px; font-size: 14px; font-weight: 600;
+      cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+    .btn-secondary { background: var(--secondary); color: #fff; }
+    .btn-secondary:hover:not(:disabled) { background: var(--secondary-hover); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover:not(:disabled) { background: var(--danger-hover); }
+    .btn-ghost { background: #fff; color: var(--secondary); border: 1px solid #bfdbfe; }
+    .btn-ghost:hover:not(:disabled) { background: #eff6ff; }
+    .btn-icon {
+      width: 36px; height: 36px; padding: 0; border-radius: 8px; border: 1px solid var(--border);
+      background: #fff; color: var(--text);
+    }
+    .btn-icon.copy { color: var(--secondary); border-color: #bfdbfe; background: #eff6ff; }
+    .btn-icon.del { color: var(--danger); border-color: #fecaca; background: #fef2f2; }
+    .grid-table { width: 100%; overflow-x: auto; }
+    .grid-head, .grid-row {
+      display: grid;
+      grid-template-columns: minmax(220px, 2fr) minmax(110px, 1fr) minmax(160px, 1.2fr) minmax(140px, 1fr) 96px;
+      gap: 12px; align-items: end;
+    }
+    .grid-head {
+      color: var(--muted); font-size: 12px; font-weight: 700;
+      padding: 0 4px 10px; border-bottom: 2px solid var(--border); margin-bottom: 4px;
+    }
+    .grid-row { padding: 12px 4px; border-bottom: 1px solid #edf2f7; }
+    .grid-row:last-child { border-bottom: none; }
+    .row-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding-bottom: 2px; }
+    .status { font-size: 12px; margin-top: 6px; min-height: 16px; line-height: 1.4; }
+    .status.ok { color: var(--primary); }
+    .status.err { color: var(--danger); }
+    .footer-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+    .hint { color: var(--muted); font-size: 13px; }
+    .note { font-size: 12px; color: var(--muted); line-height: 1.7; margin-top: 12px; }
+    .form-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .nav a.nav-auth { color: var(--secondary); border-color: #bfdbfe; }
+    .nav a.nav-auth.active { background: var(--secondary); border-color: var(--secondary); color: #fff; }
+    .nav-user { font-size: 13px; color: var(--muted); padding: 8px 4px; align-self: center; }
+    .auth-banner { border-color: #fecaca; background: linear-gradient(180deg, #fff 0%, #fffbfb 100%); }
+    .auth-banner.ok { border-color: #bbf7d0; background: linear-gradient(180deg, #fff 0%, #f0fdf4 100%); }
+    .auth-banner-inner { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .locked-section.is-locked textarea,
+    .locked-section.is-locked .btn-danger { pointer-events: none; }
+    .login-card { max-width: 420px; margin: 24px auto 0; }
+    .login-form { display: flex; flex-direction: column; gap: 14px; }
+    .result-box { margin: 0; white-space: pre-wrap; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid var(--border); max-height: 280px; overflow: auto; }
+    .user-table-wrap { overflow-x: auto; }
+    .user-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .user-table th, .user-table td { padding: 10px 8px; border-bottom: 1px solid #edf2f7; text-align: left; }
+    .user-table th { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .pwd-field { position: relative; }
+    .pwd-field input { width: 100%; padding-right: 72px; }
+    .pwd-toggle {
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      border: 1px solid var(--border); background: #f8fafc; color: var(--secondary);
+      border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .pwd-toggle:hover { background: #eff6ff; border-color: #bfdbfe; }
+    .role-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .role-badge.admin { background: #dbeafe; color: #1d4ed8; }
+    .role-badge.operator { background: #f1f5f9; color: #475569; }
+    .perm-note { padding: 12px 14px; border-radius: 8px; background: #fff7e6; border: 1px solid #fde68a; color: #92400e; font-size: 13px; margin-bottom: 14px; }
+    @media (max-width: 1280px) {
+      .wrap { max-width: 100%; padding: 16px 16px 24px; }
+      .card { padding: 14px; }
+    }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>{% block page_title %}IP段宣告/撤播控制台{% endblock %}</h1>
+        <div class="sub">
+          当前模式：
+          {% if dry_run %}<span class="badge warn">dry-run（演练）</span>{% else %}<span class="badge ok">真实执行</span>{% endif %}
+          · IPv4
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/" class="{% if active_page == 'announce' %}active{% endif %}">批量宣告</a>
+        <a href="/withdraw" class="withdraw-link {% if active_page == 'withdraw' %}active{% endif %}">批量撤播</a>
+        <a href="/announced" class="announced-link {% if active_page == 'announced' %}active{% endif %}">已宣告IP段</a>
+        {% if current_user %}
+        {% if can_manage_accounts %}
+        <a href="/admin/accounts" class="nav-auth {% if active_page == 'accounts' %}active{% endif %}">账号管理</a>
+        {% else %}
+        <a href="/admin/accounts" class="nav-auth {% if active_page == 'accounts' %}active{% endif %}">修改密码</a>
+        {% endif %}
+        <span class="nav-user">{{ current_user }}{% if current_role == 'admin' %} · 超管{% endif %}{% if current_permissions %} · {{ current_permissions|length }} 项权限{% endif %}</span>
+        <a href="#" class="nav-auth" id="navLogout">退出</a>
+        {% else %}
+        <a href="/login" class="nav-auth {% if active_page == 'login' %}active{% endif %}">登录</a>
+        {% endif %}
+      </nav>
+    </div>
+    {% block content %}{% endblock %}
+  </div>
+  {% block scripts %}{% endblock %}
+  <script>
+    function initPasswordToggles(root) {
+      (root || document).querySelectorAll('.pwd-field').forEach(wrap => {
+        const input = wrap.querySelector('input');
+        const btn = wrap.querySelector('.pwd-toggle');
+        if (!input || !btn || btn.dataset.bound) return;
+        btn.dataset.bound = '1';
+        btn.onclick = () => {
+          const show = input.type === 'password';
+          input.type = show ? 'text' : 'password';
+          btn.textContent = show ? '隐藏' : '显示';
+        };
+      });
+    }
+    initPasswordToggles(document);
+
+    const navLogout = document.getElementById('navLogout');
+    if (navLogout) {
+      navLogout.onclick = async (e) => {
+        e.preventDefault();
+        await fetch('/api/auth/logout', { method: 'POST' });
+        location.href = '/login';
+      };
+    }
+  </script>
+</body>
+</html>

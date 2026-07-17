@@ -1,0 +1,92 @@
+api:
+  access_key_id: "你的AK"
+  access_key_secret: "你的SK"
+  version: "2019-08-08"
+  network_base_url: "https://cdsapi.capitalonline.net/network"
+  wan_service_base_url: "https://api.capitalonline.net/wan_service"
+  ccs_base_url: "https://cdsapi.capitalonline.net/ccs"
+  timeout_seconds: 20
+  # 连接/读超时（秒）；未单独配置时读超时至少 60，AddPublicIp 等较慢接口建议 read_timeout_seconds: 90
+  connect_timeout_seconds: 30
+  read_timeout_seconds: 90
+  # 连接失败或超时时自动重试次数（不含首次，默认 2 即最多共 3 次）
+  max_retries: 2
+
+# Web 控制台（Windows 本机建议 host: 127.0.0.1；Ubuntu 虚拟机建议 0.0.0.0）
+web:
+  host: "0.0.0.0"
+  port: 9010
+  secret_key: "请修改为随机字符串"
+  withdraw_admin_user: "admin"
+  withdraw_admin_password: "请修改为强密码"
+  # 首次启动时从上面账号初始化（超级管理员）；之后账号保存在此 JSON（密码为哈希）
+  withdraw_users_file: "./data/withdraw_users.json"
+  # 角色：admin=账号管理+撤播，operator=仅撤播+改自己密码
+  loa_dir: "./loa"
+  # LOA 上传临时目录（可通过页面上传）
+  loa_temp_dir: "./data/loa_temp"
+  loa_temp_ttl_hours: 72
+  loa_max_upload_mb: 10
+  default_ip_number: 4
+  # 已宣告页「新购经典公网 IPv4」默认数量（128 对应 /25，与首云 AddPublicIp Number 一致）
+  default_purchase_ip_number: 128
+  # 双 /25 新购：两次 AddPublicIp 之间等待首云异步任务完成（秒）
+  purchase_task_wait_seconds: 300
+  purchase_task_poll_seconds: 5
+  purchase_vdc_wait_seconds: 120
+  # 已宣告页列表缓存秒数（磁盘+内存，多 worker 共享）；点击「刷新」强制拉首云
+  byoip_list_cache_seconds: 300
+  # 批量宣告页区域/ASN 缓存秒数；点击「刷新区域与 ASN」强制拉首云
+  meta_options_cache_seconds: 300
+  # bgp.tools 上游接收查询缓存（秒）；未接受结果过期后重查；已接受结果长期固定展示直至撤播/再宣告/手动刷新
+  bgp_upstream_cache_seconds: 3600
+  # bgp.tools 上游查询代理（服务器机房 IP 被限流时配置）
+  # 支持 http://host:port 或 socks5://user:pass@host:port
+  # bgp_tools_proxy: "http://127.0.0.1:7890"
+  # 撤播 DeletePublicIp 后轮询任务/VDC 的最长等待秒数
+  withdraw_delete_wait_seconds: 300
+  withdraw_delete_poll_seconds: 5
+  auto_create_on_announce: true
+  auto_delete_when_withdrawn: false
+  # 批量撤播完成后，若已无 /25 且 BYOIP 已撤播，则调用 DeleteBYOIP 删除地址
+  auto_delete_byoip_on_withdraw: false
+  project_id: "0-0"
+
+# IPXO：批量宣告时若本地无 LOA，自动从 IPXO 下载 PDF（需 billing scope）
+ipxo:
+  enabled: false
+  client_id: "你的 Client ID"
+  client_secret: "你的 APP API Key"
+  tenant_uuid: "你的 Company UUID"
+  auto_fetch_on_announce: true
+  token_url: "https://hydra.ipxo.com/oauth2/token"
+  api_base: "https://apigw.ipxo.com/billing/v1"
+  scope: "billing"
+  timeout_seconds: 30
+  services_cache_seconds: 120
+
+automation:
+  interval_seconds: 300
+  dry_run: true
+
+  # desired_state:
+  # - announced: 自动完成创建(可选) -> 宣告 -> 挂载到公网
+  # - withdrawn: 自动完成公网解绑 -> 撤播 -> 删除BYOIP(可选)
+  desired_prefixes:
+    - cidr: "164.52.66.0/24"
+      provider: "capitalonline"
+      desired_state: "announced"
+      pipe_id: "305c0ebc-10b2-4711-ae97-5e033aeb73fb"
+      public_id: "773f14c2-c8bc-4f66-acd7-ec34d3bfde7d"
+      site_id: "aae6922c-25e5-11ee-8783-be2af23df048"
+      asn: "63199"
+      loa_file: "./loa/164.52.66.0_24.pdf"
+      ip_number: 4
+      project_id: "0-0"
+      subject_id: ""
+      region_id: "CN_Beijing_A"
+
+      # BYOIP 不存在时，是否自动创建（CreateBYOIPOneStep）
+      auto_create: true
+      # 目标为 withdrawn 且撤播完成后，是否删除BYOIP（DeleteBYOIP）
+      auto_delete_when_withdrawn: false

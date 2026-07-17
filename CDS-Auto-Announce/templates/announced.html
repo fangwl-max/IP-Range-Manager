@@ -1,0 +1,1522 @@
+{% extends "base.html" %}
+{% block title %}已宣告IP段 - IP段控制台{% endblock %}
+{% block page_title %}已宣告 IP 段{% endblock %}
+
+{% block extra_head %}
+<style>
+  .filter-grid {
+    display: grid;
+    grid-template-columns: minmax(220px, 2fr) minmax(180px, 1fr) minmax(160px, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+  }
+  .filter-check-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    cursor: pointer;
+    user-select: none;
+  }
+  .filter-check-wrap input { width: auto; cursor: pointer; margin: 0; }
+  .filter-check-wrap span { font-size: 14px; font-weight: 600; color: var(--secondary); }
+  .table-wrap { overflow-x: auto; }
+  .byoip-table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 1220px; }
+  .byoip-table th, .byoip-table td { padding: 10px 8px; border-bottom: 1px solid #edf2f7; text-align: left; vertical-align: middle; }
+  .byoip-table th { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .status-pill {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.6;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .status-pill.ok { background: #e8f7ee; color: var(--primary); border-color: #bbf7d0; }
+  .status-pill.warn { background: #fff7e6; color: #b45309; border-color: #fde68a; }
+  .status-pill.err { background: #fef2f2; color: var(--danger); border-color: #fecaca; }
+  .status-pill.info { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+  .status-pill.muted { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+  .status-pill.loa-ok { background: #e8f7ee; color: #047857; border-color: #6ee7b7; }
+  .status-pill.loa-warn { background: #fff7e6; color: #b45309; border-color: #fde68a; }
+  .status-pill.loa-err { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+  .error-box {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #fecaca;
+    background: #fef2f2;
+    color: var(--danger);
+    font-size: 13px;
+    display: none;
+  }
+  .btn-reset {
+    background: #fff7e6;
+    color: var(--warn);
+    border: 1px solid #fde68a;
+  }
+  .btn-reset:hover:not(:disabled) { background: #ffedd5; }
+  .btn-loa {
+    text-decoration: none;
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+  .ipv4-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .ipv4-cell { min-width: 160px; }
+  .ipv4-segments {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted);
+    font-weight: 400;
+    white-space: nowrap;
+  }
+  .upstream-cell { min-width: 140px; }
+  .upstream-actions-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .btn-upstream-row-refresh {
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.3;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .upstream-link {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--secondary);
+    text-decoration: none;
+  }
+  .upstream-link:hover { text-decoration: underline; }
+  .status-pill.upstream-ok { background: #e8f7ee; color: var(--primary); border-color: #bbf7d0; }
+  .status-pill.upstream-err { background: #fef2f2; color: var(--danger); border-color: #fecaca; }
+  .status-pill.upstream-pending { background: #f1f5f9; color: #64748b; border-color: #e2e8f0; }
+  .status-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .status-legend-label { font-size: 12px; color: var(--muted); font-weight: 700; margin-right: 4px; }
+  .purchase-cell { min-width: 200px; }
+  .purchase-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .purchase-row select {
+    width: auto;
+    min-width: 88px;
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+  .btn-purchase {
+    padding: 6px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .dry-run-banner {
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: #fff7e6;
+    border: 1px solid #fde68a;
+    color: #92400e;
+    font-size: 13px;
+  }
+  .batch-purchase-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .purchase-progress-list { display: flex; flex-direction: column; gap: 14px; }
+  .purchase-cidr-block {
+    border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+    background: #fafbfc;
+  }
+  .purchase-cidr-title { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
+  .purchase-step {
+    display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start;
+    padding: 8px 0; border-top: 1px solid #edf2f7;
+  }
+  .purchase-step:first-of-type { border-top: none; padding-top: 0; }
+  .purchase-step .step-icon {
+    width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .purchase-step .step-icon.pending { background: #e2e8f0; color: #64748b; }
+  .purchase-step .step-icon.running { background: #dbeafe; color: #1d4ed8; }
+  .purchase-step .step-icon.done { background: #dcfce7; color: #15803d; }
+  .purchase-step .step-icon.failed { background: #fee2e2; color: #b91c1c; }
+  .purchase-step .step-icon.skipped { background: #f1f5f9; color: #64748b; }
+  .purchase-step .step-label { font-weight: 600; font-size: 14px; }
+  .purchase-step .step-msg { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+  .purchase-progress-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fafbfc;
+    overflow: hidden;
+  }
+  .purchase-progress-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 12px 14px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: var(--text);
+  }
+  .purchase-progress-toggle:hover { background: #f1f5f9; }
+  .purchase-progress-toggle-label { font-weight: 700; font-size: 14px; flex-shrink: 0; }
+  .purchase-progress-current {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--secondary);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .purchase-progress-chevron {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--muted);
+    width: 18px;
+    text-align: center;
+  }
+  .purchase-progress-body {
+    padding: 0 14px 14px;
+    border-top: 1px solid var(--border);
+  }
+  .purchase-progress-body[hidden] { display: none; }
+  .col-check { width: 40px; text-align: center; }
+  .col-check input { width: auto; cursor: pointer; }
+  .col-upstream { min-width: 118px; }
+  .th-upstream-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .btn-upstream-refresh {
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  @media (max-width: 860px) {
+    .filter-grid { grid-template-columns: 1fr; }
+    .filter-grid .toolbar-actions { justify-content: flex-start; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="toolbar">
+    <div class="card-title" style="margin:0">筛选条件</div>
+    <div class="toolbar-actions">
+      <button type="button" class="btn btn-secondary" id="refreshBtn">刷新</button>
+      <span class="hint" id="rowCount">共 0 条</span>
+    </div>
+  </div>
+
+  <div class="filter-grid">
+    <div>
+      <label for="keywordInput">关键词</label>
+      <input id="keywordInput" type="text" placeholder="按 CIDR / 区域 / ASN / Pipe / VDC 搜索">
+    </div>
+    <div>
+      <label for="statusSelect">状态</label>
+      <select id="statusSelect">
+        <option value="">全部状态</option>
+      </select>
+    </div>
+    <div>
+      <label>新购筛选</label>
+      <label class="filter-check-wrap" for="purchasableOnlyFilter">
+        <input type="checkbox" id="purchasableOnlyFilter">
+        <span>仅显示可新购</span>
+      </label>
+    </div>
+    <div class="toolbar-actions">
+      <button type="button" class="btn btn-primary" id="searchBtn">查询</button>
+      <button type="button" class="btn btn-reset" id="resetBtn">重置</button>
+    </div>
+  </div>
+  <div class="error-box" id="errorBox"></div>
+</div>
+
+{% if dry_run %}
+<div class="dry-run-banner">当前为 <strong>dry-run</strong> 模式：点击「新购」仅演练，不会真实调用首云 AddPublicIp。</div>
+{% endif %}
+
+<!-- announced-ui: upstream-row-refresh 20260529 -->
+<div class="card">
+  <div class="toolbar" style="margin-bottom:10px">
+    <div class="card-title" style="margin:0">首云自有公网IP上云明细（BYOIP + 经典公网 IPv4）</div>
+    <div class="hint" id="lastUpdateHint">尚未加载</div>
+  </div>
+
+  <div class="status-legend" aria-label="BYOIP 状态颜色说明">
+    <span class="status-legend-label">状态颜色</span>
+    <span class="status-pill ok">已广播</span>
+    <span class="status-pill warn">广播中</span>
+    <span class="status-pill info">创建中 / 处理中</span>
+    <span class="status-pill err">失败</span>
+    <span class="status-pill muted">未广播 / 已撤销</span>
+  </div>
+
+  <div class="batch-purchase-bar">
+    <span class="hint" id="purchasableCountHint">可新购 0 条</span>
+    <span class="hint" id="selectedPurchaseHint">已选 0 条</span>
+    <button type="button" class="btn btn-secondary" id="selectAllPurchasableBtn">仅选可新购</button>
+    <button type="button" class="btn btn-ghost" id="clearPurchaseSelectBtn">取消全选</button>
+    <button type="button" class="btn btn-primary" id="batchPurchaseBtn" disabled>批量新购 IPv4（/25）</button>
+  </div>
+
+  <div id="purchaseProgressCard" class="purchase-progress-card" style="display:none;margin-bottom:14px">
+    <button type="button" class="purchase-progress-toggle" id="purchaseProgressToggle" aria-expanded="false">
+      <span class="purchase-progress-toggle-label">新购进度</span>
+      <span class="purchase-progress-current" id="purchaseProgressCurrent">准备中…</span>
+      <button type="button" class="btn btn-secondary" id="cancelTaskBtn" style="margin-left:auto;padding:4px 12px;font-size:12px;display:none" title="取消当前正在执行的任务">取消任务</button>
+      <span class="purchase-progress-chevron" id="purchaseProgressChevron" aria-hidden="true">▸</span>
+    </button>
+    <div id="purchaseProgressBody" class="purchase-progress-body" hidden>
+      <p class="hint" id="purchaseProgressSummary" style="margin:12px 0">准备中…</p>
+      <div id="purchaseQueueHint" style="font-size:12px;color:#b45309;margin-bottom:8px;display:none"></div>
+      <div id="purchaseProgressList" class="purchase-progress-list"></div>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="byoip-table">
+      <thead>
+        <tr>
+          <th class="col-check"><input type="checkbox" id="selectAllPurchase" title="全选当前页"></th>
+          <th>CIDR</th>
+          <th>状态</th>
+          <th>区域</th>
+          <th>ASN</th>
+          <th>Pipe / VDC</th>
+          <th>LOA本地状态</th>
+          <th>操作</th>
+          <th>IPv4 数量</th>
+          <th class="col-upstream">
+            <div class="th-upstream-wrap">
+              <span>上游接收</span>
+              <button type="button" class="btn btn-ghost btn-upstream-refresh" id="refreshUpstreamBtn" title="从 bgp.tools 重新查询当前列表的上游接收（不刷新首云 BYOIP 列表）">刷新上游</button>
+            </div>
+          </th>
+          <th>新购 IPv4（/25）</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody">
+        <tr><td colspan="11" class="hint">加载中...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const keywordInput = document.getElementById('keywordInput');
+  const statusSelect = document.getElementById('statusSelect');
+  const searchBtn = document.getElementById('searchBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const refreshBtn = document.getElementById('refreshBtn');
+  const refreshUpstreamBtn = document.getElementById('refreshUpstreamBtn');
+  const rowCount = document.getElementById('rowCount');
+  const tableBody = document.getElementById('tableBody');
+  const errorBox = document.getElementById('errorBox');
+  const lastUpdateHint = document.getElementById('lastUpdateHint');
+  const DEFAULT_PURCHASE_NUMBER = {{ default_purchase_ip_number | default(128) }};
+  const CAN_PURCHASE = {{ 'true' if can_purchase_slash25 else 'false' }};
+  let currentItems = [];
+  let statusOptionsLoaded = false;
+
+  const selectAllPurchase = document.getElementById('selectAllPurchase');
+  const selectAllPurchasableBtn = document.getElementById('selectAllPurchasableBtn');
+  const clearPurchaseSelectBtn = document.getElementById('clearPurchaseSelectBtn');
+  const batchPurchaseBtn = document.getElementById('batchPurchaseBtn');
+  const selectedPurchaseHint = document.getElementById('selectedPurchaseHint');
+  const purchasableCountHint = document.getElementById('purchasableCountHint');
+  const purchasableOnlyFilter = document.getElementById('purchasableOnlyFilter');
+  const purchaseProgressCard = document.getElementById('purchaseProgressCard');
+  const purchaseProgressList = document.getElementById('purchaseProgressList');
+  const purchaseProgressSummary = document.getElementById('purchaseProgressSummary');
+  const purchaseProgressCurrent = document.getElementById('purchaseProgressCurrent');
+  const purchaseProgressBody = document.getElementById('purchaseProgressBody');
+  const purchaseProgressToggle = document.getElementById('purchaseProgressToggle');
+  const purchaseProgressChevron = document.getElementById('purchaseProgressChevron');
+  const purchaseQueueHint = document.getElementById('purchaseQueueHint');
+  const cancelTaskBtn = document.getElementById('cancelTaskBtn');
+  const purchaseProgressByCidr = {};
+  let purchaseProgressExpanded = false;
+  let purchaseBatchTotal = 0;
+  let purchaseBatchDone = 0;
+  let purchaseCurrentIndex = 0;
+
+  const PURCHASE_PHASE_LABELS = {
+    prepare: '校验',
+    submit: '提交',
+    wait_task: '等待任务',
+    wait_vdc: '确认 VDC',
+  };
+
+  function setPurchaseExpanded(expanded) {
+    purchaseProgressExpanded = !!expanded;
+    if (purchaseProgressBody) purchaseProgressBody.hidden = !purchaseProgressExpanded;
+    if (purchaseProgressToggle) purchaseProgressToggle.setAttribute('aria-expanded', purchaseProgressExpanded ? 'true' : 'false');
+    if (purchaseProgressChevron) purchaseProgressChevron.textContent = purchaseProgressExpanded ? '▾' : '▸';
+  }
+
+  function setPurchaseCurrent(text) {
+    if (purchaseProgressCurrent) purchaseProgressCurrent.textContent = text || '';
+  }
+
+  function purchasePhaseShortLabel(phase, step) {
+    const base = PURCHASE_PHASE_LABELS[phase] || phase;
+    return step ? base + ' ' + step : base;
+  }
+  let allLoadedItems = [];
+  let showPurchasableOnly = false;
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  async function readJsonResponse(resp) {
+    const text = await resp.text();
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 160);
+      throw new Error(
+        'HTTP ' + resp.status + (snippet ? '：' + snippet : '：响应不是 JSON（多为服务端异常，请刷新后重试）')
+      );
+    }
+  }
+
+  function byoipStatusClass(item) {
+    if (item && item.status_tone) return item.status_tone;
+    const code = String((item && item.status) || '').toLowerCase();
+    if (code === 'broadcasted') return 'ok';
+    if (code === 'broadcasting') return 'warn';
+    if (code === 'creating' || code === 'processing') return 'info';
+    if (code === 'failed') return 'err';
+    if (code === 'revoked' || code === 'unbroadcasted') return 'muted';
+    return statusClassFromLabel((item && item.status_label) || code);
+  }
+
+  function statusClassFromLabel(text) {
+    const s = String(text || '').toLowerCase();
+    if (s.includes('broadcasted') || s.includes('已广播')) return 'ok';
+    if (s.includes('broadcasting') || s.includes('广播中')) return 'warn';
+    if (s.includes('creating') || s.includes('创建中') || s.includes('processing') || s.includes('处理中')) return 'info';
+    if (s.includes('failed') || s.includes('失败')) return 'err';
+    if (s.includes('revoked') || s.includes('撤销')) return 'muted';
+    if (s.includes('unbroadcasted') || s.includes('未广播')) return 'muted';
+    return 'muted';
+  }
+
+  function loaStatusClass(item) {
+    if (!item || !item.loa_ready) return 'loa-err';
+    if (item.loa_location === 'permanent') return 'loa-ok';
+    return 'loa-warn';
+  }
+
+  function renderStatusPill(text, extraClass) {
+    const t = text || '-';
+    const cls = extraClass || statusClassFromLabel(t);
+    return '<span class="status-pill ' + cls + '">' + escapeHtml(t) + '</span>';
+  }
+
+  function populateStatusSelect(options, keepValue) {
+    const current = keepValue ? statusSelect.value : '';
+    statusSelect.innerHTML = '<option value="">全部状态</option>';
+    (options || []).forEach(opt => {
+      const el = document.createElement('option');
+      el.value = opt.value || '';
+      el.textContent = opt.label || opt.value || '-';
+      statusSelect.appendChild(el);
+    });
+    if (current && Array.from(statusSelect.options).some(o => o.value === current)) {
+      statusSelect.value = current;
+    }
+    statusOptionsLoaded = true;
+  }
+
+  function loaText(item) {
+    if (item.loa_ready) {
+      return item.loa_location === 'permanent' ? '已就绪（正式）' : '已就绪（临时）';
+    }
+    return '未就绪';
+  }
+
+  function renderUpstream(item) {
+    const cidr = item.cidr || '';
+    const label = item.upstream_label || '-';
+    const err = item.upstream_error;
+    const pending = !!item.upstream_pending;
+    const pinned = !!item.upstream_pinned;
+    let pillClass = 'muted';
+    if (pending) pillClass = 'upstream-pending';
+    else if (err) pillClass = 'muted';
+    else pillClass = item.upstream_accepted ? 'upstream-ok' : 'upstream-err';
+    const url = item.upstream_url || (cidr ? ('https://bgp.tools/prefix/' + encodeURIComponent(cidr) + '#connectivity') : '');
+    let title = err || '';
+    if (!title && pinned) title = '已缓存接受状态；撤播/再宣告或点「单刷」后将重新查询';
+    let html = '<div class="upstream-cell" data-upstream-cidr="' + escapeHtml(cidr) + '">'
+      + '<div class="upstream-actions-row">'
+      + '<span class="status-pill ' + pillClass + '"' + (title ? ' title="' + escapeHtml(title) + '"' : '') + '>'
+      + escapeHtml(label) + (pinned ? ' · 缓存' : '') + '</span>';
+    if (cidr) {
+      html += '<button type="button" class="btn btn-secondary btn-upstream-row-refresh" data-cidr="' + escapeHtml(cidr) + '"'
+        + ' title="仅刷新此网段的上游接收"' + (pending ? ' disabled' : '') + '>单刷</button>';
+    }
+    html += '</div>';
+    if (url && !pending) {
+      html += '<a class="upstream-link" href="' + escapeHtml(url) + '" target="_blank" rel="noopener">Connectivity</a>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function patchItemUpstream(cidr, data) {
+    const patch = {
+      upstream_label: data.upstream_label,
+      upstream_accepted: !!data.upstream_accepted,
+      upstream_count: data.upstream_count,
+      upstream_pending: false,
+      upstream_error: data.upstream_error || '',
+      upstream_url: data.upstream_url,
+      upstream_pinned: !!data.upstream_pinned,
+      upstream_cached: !!data.upstream_cached,
+    };
+    [allLoadedItems, currentItems].forEach(list => {
+      const it = list.find(x => x.cidr === cidr);
+      if (it) Object.assign(it, patch);
+    });
+  }
+
+  function updateUpstreamCell(cidr, data) {
+    const cell = tableBody.querySelector('[data-upstream-cidr="' + CSS.escape(cidr) + '"]');
+    if (!cell) return;
+    const merged = { cidr: cidr, ...data, upstream_pending: false };
+    cell.outerHTML = renderUpstream(merged);
+    patchItemUpstream(cidr, merged);
+  }
+
+  function markUpstreamPending(cidr) {
+    const pending = {
+      cidr: cidr,
+      upstream_pending: true,
+      upstream_label: '查询中…',
+      upstream_accepted: false,
+      upstream_count: null,
+      upstream_error: '',
+    };
+    const cell = tableBody.querySelector('[data-upstream-cidr="' + CSS.escape(cidr) + '"]');
+    if (cell) cell.outerHTML = renderUpstream(pending);
+  }
+
+  let upstreamLoadToken = 0;
+  let upstreamRefreshing = false;
+  async function loadUpstreamForItems(items, refresh) {
+    const token = ++upstreamLoadToken;
+    const queue = items.filter(it => {
+      if (!it || !it.cidr) return false;
+      if (refresh) return true;
+      if (it.upstream_pinned) return false;
+      if (it.upstream_pending) return true;
+      if (it.upstream_accepted && it.upstream_count != null) return false;
+      return it.upstream_count === undefined || it.upstream_count === null;
+    });
+    if (!queue.length) return;
+    let idx = 0;
+    const workers = 3;
+    async function worker() {
+      while (idx < queue.length) {
+        if (token !== upstreamLoadToken) return;
+        const item = queue[idx++];
+        const params = new URLSearchParams({ cidr: item.cidr });
+        if (refresh) params.set('refresh', '1');
+        try {
+          const resp = await fetch('/api/bgp-tools/upstream?' + params.toString());
+          const payload = await readJsonResponse(resp);
+          if (token !== upstreamLoadToken) return;
+          if (resp.ok && payload.ok) {
+            updateUpstreamCell(item.cidr, payload);
+          } else {
+            updateUpstreamCell(item.cidr, {
+              upstream_label: '查询失败',
+              upstream_error: payload.error || payload.upstream_error || '上游查询失败',
+              upstream_accepted: false,
+            });
+          }
+        } catch (err) {
+          if (token !== upstreamLoadToken) return;
+          updateUpstreamCell(item.cidr, {
+            upstream_label: '查询失败',
+            upstream_error: err && err.message ? err.message : '网络错误',
+            upstream_accepted: false,
+          });
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+  }
+
+  const upstreamRowRefreshing = new Set();
+
+  async function refreshUpstreamOne(cidr) {
+    if (!cidr || upstreamRowRefreshing.has(cidr)) return;
+    upstreamRowRefreshing.add(cidr);
+    markUpstreamPending(cidr);
+    try {
+      const params = new URLSearchParams({ cidr: cidr, refresh: '1' });
+      const resp = await fetch('/api/bgp-tools/upstream?' + params.toString());
+      const payload = await readJsonResponse(resp);
+      if (resp.ok && payload.ok) {
+        updateUpstreamCell(cidr, payload);
+      } else {
+        updateUpstreamCell(cidr, {
+          upstream_label: '查询失败',
+          upstream_error: payload.error || payload.upstream_error || '上游查询失败',
+          upstream_accepted: false,
+        });
+      }
+    } catch (err) {
+      updateUpstreamCell(cidr, {
+        upstream_label: '查询失败',
+        upstream_error: err && err.message ? err.message : '网络错误',
+        upstream_accepted: false,
+      });
+    } finally {
+      upstreamRowRefreshing.delete(cidr);
+    }
+  }
+
+  async function refreshUpstreamOnly() {
+    const items = (currentItems.length ? currentItems : allLoadedItems).filter(it => it && it.cidr);
+    if (!items.length) {
+      setError('请先加载列表');
+      return;
+    }
+    if (upstreamRefreshing) return;
+    upstreamRefreshing = true;
+    if (refreshUpstreamBtn) {
+      refreshUpstreamBtn.disabled = true;
+      refreshUpstreamBtn.textContent = '刷新中…';
+    }
+    setError('');
+    items.forEach(it => markUpstreamPending(it.cidr));
+    try {
+      await loadUpstreamForItems(items, true);
+    } finally {
+      upstreamRefreshing = false;
+      if (refreshUpstreamBtn) {
+        refreshUpstreamBtn.disabled = false;
+        refreshUpstreamBtn.textContent = '刷新上游';
+      }
+    }
+  }
+
+  function maskHintForNumber(n) {
+    const m = { 4: '/30', 8: '/29', 16: '/28', 32: '/27', 64: '/26', 128: '/25' };
+    return m[n] || '';
+  }
+
+  function renderPurchaseCell(item) {
+    if (!item.can_purchase_ipv4) {
+      const st = String(item.status || '').toLowerCase();
+      const hint = st === 'broadcasted' || st === 'broadcasting'
+        ? '缺少公网 PublicId'
+        : '须先已广播';
+      return '<span class="hint" title="' + escapeHtml(hint) + '">不可购</span>';
+    }
+
+    const halves = Array.isArray(item.purchase_slash25_halves) ? item.purchase_slash25_halves : [];
+    const existing = Number(item.existing_slash25_count || 0);
+    const isDual = item.purchase_mode === 'dual_slash25' && halves.length === 2;
+
+    if (isDual) {
+      const need = Math.max(0, 2 - existing);
+      const btnLabel = need === 2 ? '新购双 /25' : (need === 1 ? '补购 1 个 /25' : '已满');
+      const disabled = need === 0 ? ' disabled' : '';
+      let summary = '<div class="ipv4-count">128×2</div>';
+      summary += '<div class="ipv4-segments">' + escapeHtml(halves[0]) + '<br>' + escapeHtml(halves[1]) + '</div>';
+      if (existing > 0) {
+        summary += '<div class="hint" style="margin-top:4px">已有 ' + existing + ' 个 /25</div>';
+      }
+      return '<div class="purchase-cell" data-purchase-cidr="' + escapeHtml(item.cidr || '') + '"'
+        + ' data-existing-slash25="' + existing + '"'
+        + ' data-half-0="' + escapeHtml(halves[0]) + '"'
+        + ' data-half-1="' + escapeHtml(halves[1]) + '">'
+        + summary
+        + '<div class="purchase-row" style="margin-top:6px">'
+        + '<button type="button" class="btn btn-primary btn-purchase" data-mode="dual_slash25"'
+        + ' data-cidr="' + escapeHtml(item.cidr || '') + '"' + disabled + '>' + escapeHtml(btnLabel) + '</button>'
+        + '</div></div>';
+    }
+
+    const opts = Array.isArray(item.purchase_number_options) && item.purchase_number_options.length
+      ? item.purchase_number_options
+      : [4, 8, 16, 32, 64, 128];
+    const def = item.purchase_default_number || DEFAULT_PURCHASE_NUMBER;
+    const optionsHtml = opts.map(n => {
+      const hint = maskHintForNumber(n);
+      const label = hint ? (n + ' ' + hint) : String(n);
+      return '<option value="' + n + '"' + (n === def ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+    }).join('');
+    return '<div class="purchase-cell" data-purchase-cidr="' + escapeHtml(item.cidr || '') + '">'
+      + '<div class="purchase-row">'
+      + '<select class="purchase-number" title="首云新购 IPv4 数量（Number）">' + optionsHtml + '</select>'
+      + '<button type="button" class="btn btn-primary btn-purchase" data-mode="single" data-cidr="' + escapeHtml(item.cidr || '') + '">新购</button>'
+      + '</div></div>';
+  }
+
+  function renderIpv4Count(item) {
+    const label = item.ipv4_count_label;
+    if (!label || label === '-') {
+      return '<span class="hint">-</span>';
+    }
+    const title = item.classic_public_mounted
+      ? '经典公网已挂载（来源 DescribeVdc Segments）'
+      : '';
+    const segments = Array.isArray(item.ipv4_segments) ? item.ipv4_segments : [];
+    let html = '<div class="ipv4-cell"><span class="ipv4-count"'
+      + (title ? ' title="' + escapeHtml(title) + '"' : '') + '>'
+      + escapeHtml(label) + '</span>';
+    if (segments.length) {
+      html += '<div class="ipv4-segments">' + segments.map(s => escapeHtml(s)).join('<br>') + '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function rowCanBatchPurchase(item) {
+    if (!item || !item.can_purchase_ipv4) return false;
+    if (item.purchase_mode === 'dual_slash25') {
+      return Number(item.existing_slash25_count || 0) < 2;
+    }
+    return true;
+  }
+
+  function buildPurchasePayload(item) {
+    const mode = item.purchase_mode === 'dual_slash25' ? 'dual_slash25' : 'single';
+    const body = {
+      cidr: item.cidr,
+      mode: mode,
+      existing_slash25: Number(item.existing_slash25_count || 0),
+      public_id: item.public_id || '',
+    };
+    if (mode !== 'dual_slash25') {
+      body.number = item.purchase_default_number || DEFAULT_PURCHASE_NUMBER;
+    }
+    return body;
+  }
+
+  function getSelectedPurchaseItems() {
+    const selected = [];
+    tableBody.querySelectorAll('tr[data-cidr]').forEach(tr => {
+      const cb = tr.querySelector('.row-purchase-select');
+      if (cb && cb.checked) {
+        const item = currentItems.find(x => x.cidr === tr.dataset.cidr);
+        if (item) selected.push(item);
+      }
+    });
+    return selected;
+  }
+
+  function countPurchasable(items) {
+    return (items || []).filter(rowCanBatchPurchase).length;
+  }
+
+  function getDisplayItems() {
+    if (!showPurchasableOnly) return allLoadedItems;
+    return allLoadedItems.filter(rowCanBatchPurchase);
+  }
+
+  function refreshTableView() {
+    const display = getDisplayItems();
+    currentItems = display;
+    renderRows(display);
+    const totalPurchasable = countPurchasable(allLoadedItems);
+    purchasableCountHint.textContent = '可新购 ' + totalPurchasable + ' 条'
+      + (showPurchasableOnly ? '（已筛选）' : '');
+    if (showPurchasableOnly) {
+      rowCount.textContent = '显示 ' + display.length + ' 条（仅可新购）';
+    } else {
+      rowCount.textContent = '共 ' + allLoadedItems.length + ' 条';
+    }
+  }
+
+  function updatePurchaseSelectionUi() {
+    const selected = getSelectedPurchaseItems();
+    const purchasable = allLoadedItems.filter(rowCanBatchPurchase);
+    selectedPurchaseHint.textContent = '已选 ' + selected.length + ' 条';
+    purchasableCountHint.textContent = '可新购 ' + purchasable.length + ' 条'
+      + (showPurchasableOnly ? '（已筛选）' : '');
+    batchPurchaseBtn.disabled = selected.length === 0;
+    const rowCbs = tableBody.querySelectorAll('.row-purchase-select');
+    const checked = Array.from(rowCbs).filter(cb => cb.checked).length;
+    if (selectAllPurchase) {
+      selectAllPurchase.indeterminate = checked > 0 && checked < rowCbs.length;
+      selectAllPurchase.checked = rowCbs.length > 0 && checked === rowCbs.length;
+    }
+  }
+
+  function renderRowCheckbox(item) {
+    if (!rowCanBatchPurchase(item)) {
+      return '<td class="col-check"><span class="hint">—</span></td>';
+    }
+    return '<td class="col-check"><input type="checkbox" class="row-purchase-select" data-cidr="'
+      + escapeHtml(item.cidr || '') + '"></td>';
+  }
+
+  async function executePurchase(item, btn) {
+    const body = buildPurchasePayload(item);
+    const mode = body.mode;
+    const cell = btn ? btn.closest('.purchase-cell') : null;
+    const existingSlash25 = body.existing_slash25;
+
+    let confirmMsg;
+    if (mode === 'dual_slash25') {
+      const need = Math.max(0, 2 - existingSlash25);
+      const halves = item.purchase_slash25_halves || [];
+      const h0 = halves[0] || (cell && cell.dataset.half0) || '';
+      const h1 = halves[1] || (cell && cell.dataset.half1) || '';
+      confirmMsg = '确认为网段 ' + item.cidr + ' 一次新购 ' + need + ' 个 /25（每次 Number=128）？\n'
+        + '目标两段：\n  ' + h0 + '\n  ' + h1;
+    } else {
+      const number = body.number;
+      const maskHint = maskHintForNumber(number);
+      confirmMsg = '确认为网段 ' + item.cidr + ' 新购 ' + number + ' 个经典公网 IPv4'
+        + (maskHint ? '（约 ' + maskHint + '）' : '') + '？';
+    }
+    if (!window.confirm(confirmMsg)) return null;
+
+    if (btn) {
+      btn.disabled = true;
+      var oldText = btn.textContent;
+      btn.textContent = '执行中…';
+    }
+    setError('');
+    try {
+      return await runPurchaseStream([body]);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
+    }
+  }
+
+  function purchaseStepKey(phase, step) {
+    if (!step) return phase;
+    return phase + '_' + step;
+  }
+
+  function buildPurchaseStepDefs(needCount, mode) {
+    const defs = [{ key: 'prepare', label: '校验 BYOIP 与公网' }];
+    const isDual = mode === 'dual_slash25';
+    const n = Math.max(1, needCount || 1);
+    const loops = isDual ? n : 1;
+    for (let i = 1; i <= loops; i++) {
+      const suffix = isDual && n > 1 ? '（' + i + '/' + n + '）' : '';
+      defs.push({ key: purchaseStepKey('submit', i), label: (isDual ? '提交 /25' : '提交 AddPublicIp') + suffix });
+      defs.push({ key: purchaseStepKey('wait_task', i), label: '等待首云任务' + suffix });
+      if (isDual) {
+        defs.push({ key: purchaseStepKey('wait_vdc', i), label: '确认 VDC 段' + suffix });
+      }
+    }
+    return defs;
+  }
+
+  function purchaseStepIconClass(status) {
+    if (status === 'done') return 'done';
+    if (status === 'failed') return 'failed';
+    if (status === 'running') return 'running';
+    if (status === 'skipped') return 'skipped';
+    return 'pending';
+  }
+
+  function purchaseStepIconChar(status) {
+    if (status === 'done') return '✓';
+    if (status === 'failed') return '✕';
+    if (status === 'running') return '…';
+    if (status === 'skipped') return '—';
+    return '○';
+  }
+
+  function ensurePurchaseCidrBlock(cidr, needCount, mode) {
+    if (purchaseProgressByCidr[cidr]) return purchaseProgressByCidr[cidr];
+    const defs = buildPurchaseStepDefs(needCount, mode);
+    const stepsHtml = defs.map(d => ''
+      + '<div class="purchase-step" data-step="' + d.key + '">'
+      + '  <div class="step-icon pending" data-role="icon">○</div>'
+      + '  <div><div class="step-label">' + escapeHtml(d.label) + '</div>'
+      + '  <div class="step-msg" data-role="msg">等待开始…</div></div>'
+      + '</div>').join('');
+    const block = document.createElement('div');
+    block.className = 'purchase-cidr-block';
+    block.dataset.cidr = cidr;
+    block.innerHTML = '<div class="purchase-cidr-title">' + escapeHtml(cidr) + '</div>' + stepsHtml;
+    purchaseProgressByCidr[cidr] = { el: block, needCount: needCount || 1, mode: mode || 'single' };
+    return purchaseProgressByCidr[cidr];
+  }
+
+  function updatePurchasePhase(cidr, stepKey, status, message) {
+    const state = purchaseProgressByCidr[cidr];
+    if (!state) return;
+    const step = state.el.querySelector('.purchase-step[data-step="' + stepKey + '"]');
+    if (!step) return;
+    const icon = step.querySelector('[data-role="icon"]');
+    const msg = step.querySelector('[data-role="msg"]');
+    icon.className = 'step-icon ' + purchaseStepIconClass(status);
+    icon.textContent = purchaseStepIconChar(status);
+    msg.textContent = message || '';
+  }
+
+  function renderPurchaseProgressList() {
+    purchaseProgressList.innerHTML = '';
+    Object.keys(purchaseProgressByCidr).forEach(cidr => {
+      purchaseProgressList.appendChild(purchaseProgressByCidr[cidr].el);
+    });
+  }
+
+  function markPurchaseFailed(cidr, error) {
+    const block = purchaseProgressByCidr[cidr]?.el;
+    if (!block) return;
+    let marked = false;
+    block.querySelectorAll('.purchase-step').forEach(step => {
+      const icon = step.querySelector('[data-role="icon"]');
+      if (!icon) return;
+      if (icon.classList.contains('running') || icon.classList.contains('pending')) {
+        const key = step.dataset.step;
+        if (!marked) {
+          updatePurchasePhase(cidr, key, 'failed', error || '失败');
+          marked = true;
+        } else {
+          updatePurchasePhase(cidr, key, 'skipped', '已中止');
+        }
+      }
+    });
+  }
+
+  function handlePurchaseProgressEvent(ev) {
+    const type = ev.type;
+    if (type === 'keepalive') return;
+    if (type === 'task_queued') {
+      const pos = ev.position || 1;
+      setPurchaseCurrent(pos > 1 ? `已排队（第 ${pos} 位）…` : '已排队，等待执行…');
+      if (purchaseProgressSummary) purchaseProgressSummary.textContent = pos > 1 ? `当前排在第 ${pos} 位，等待前面任务完成…` : '已入队，即将开始…';
+      if (purchaseQueueHint) {
+        purchaseQueueHint.style.display = pos > 1 ? '' : 'none';
+        purchaseQueueHint.textContent = pos > 1 ? `⚠ 前方有 ${pos - 1} 个任务排队，请稍候…` : '';
+      }
+      if (cancelTaskBtn) cancelTaskBtn.style.display = '';
+      currentTaskId = ev.task_id || '';
+      return;
+    }
+    if (type === 'task_started') {
+      setPurchaseCurrent('任务开始执行…');
+      if (purchaseQueueHint) purchaseQueueHint.style.display = 'none';
+      if (cancelTaskBtn) cancelTaskBtn.style.display = '';
+      currentTaskId = ev.task_id || currentTaskId;
+      return;
+    }
+    if (type === 'task_cancelled') {
+      setPurchaseCurrent('任务已取消');
+      if (purchaseProgressSummary) purchaseProgressSummary.textContent = '任务已取消';
+      if (cancelTaskBtn) cancelTaskBtn.style.display = 'none';
+      return;
+    }
+    if (type === 'task_error') {
+      setPurchaseCurrent('任务出错：' + (ev.error || '未知错误'));
+      if (cancelTaskBtn) cancelTaskBtn.style.display = 'none';
+      return;
+    }
+    if (type === 'batch_start') {
+      purchaseBatchTotal = ev.total || 0;
+      purchaseBatchDone = 0;
+      const batchHint = '共 ' + ev.total + ' 个网段' + (ev.dry_run ? '（演练）' : '');
+      if (purchaseProgressSummary) purchaseProgressSummary.textContent = batchHint;
+      setPurchaseCurrent(batchHint + ' · 准备中…');
+      return;
+    }
+    if (type === 'cidr_start') {
+      purchaseCurrentIndex = ev.index != null ? ev.index : 0;
+      delete purchaseProgressByCidr[ev.cidr];
+      ensurePurchaseCidrBlock(ev.cidr, ev.need_count || 1, ev.mode || 'single');
+      renderPurchaseProgressList();
+      buildPurchaseStepDefs(ev.need_count || 1, ev.mode || 'single').forEach(d => {
+        updatePurchasePhase(ev.cidr, d.key, 'pending', '等待开始…');
+      });
+      const pos = purchaseBatchTotal > 1
+        ? ('[' + (purchaseCurrentIndex + 1) + '/' + purchaseBatchTotal + '] ')
+        : '';
+      setPurchaseCurrent(pos + ev.cidr + '：开始…');
+      return;
+    }
+    if (type === 'phase') {
+      const st = ev.completed ? 'done' : (ev.status === 'failed' ? 'failed' : (ev.status || 'running'));
+      const key = purchaseStepKey(ev.phase, ev.step || 0);
+      updatePurchasePhase(ev.cidr, key, st, ev.message);
+      const pos = purchaseBatchTotal > 1
+        ? ('[' + (purchaseCurrentIndex + 1) + '/' + purchaseBatchTotal + '] ')
+        : '';
+      const phaseName = purchasePhaseShortLabel(ev.phase, ev.step || 0);
+      const statusWord = st === 'done' ? '完成' : (st === 'failed' ? '失败' : '进行中');
+      const msg = ev.message ? (' — ' + ev.message) : '';
+      setPurchaseCurrent(pos + ev.cidr + '：' + phaseName + statusWord + msg);
+      return;
+    }
+    if (type === 'cidr_result') {
+      purchaseBatchDone += 1;
+      return;
+    }
+    if (type === 'batch_done') {
+      const summary = '全部完成：成功 ' + ev.success_count + ' / ' + ev.total;
+      if (purchaseProgressSummary) purchaseProgressSummary.textContent = summary;
+      setPurchaseCurrent(summary);
+      if (cancelTaskBtn) cancelTaskBtn.style.display = 'none';
+    }
+  }
+
+  if (purchaseProgressToggle) {
+    purchaseProgressToggle.onclick = () => setPurchaseExpanded(!purchaseProgressExpanded);
+  }
+
+  let purchaseInProgress = false;
+  let currentTaskId = '';
+
+  if (cancelTaskBtn) {
+    cancelTaskBtn.addEventListener('click', async () => {
+      const tid = currentTaskId;
+      cancelTaskBtn.disabled = true;
+      cancelTaskBtn.textContent = '取消中…';
+      try {
+        const resp = await fetch('/api/byoip/purchase-ipv4/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(tid ? { task_id: tid } : {}),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (data.ok) {
+          setPurchaseCurrent('取消信号已发送，等待任务停止…');
+        } else {
+          setError(data.error || '取消失败');
+        }
+      } catch (e) {
+        setError(e && e.message ? e.message : '取消请求失败');
+      } finally {
+        cancelTaskBtn.disabled = false;
+        cancelTaskBtn.textContent = '取消任务';
+      }
+    });
+  }
+
+  async function runPurchaseStream(items) {
+    // 不再阻塞重复提交，后端队列会自动排队
+    purchaseInProgress = true;
+    currentTaskId = '';
+    purchaseProgressCard.style.display = '';
+    setPurchaseExpanded(true);
+    Object.keys(purchaseProgressByCidr).forEach(k => delete purchaseProgressByCidr[k]);
+    purchaseProgressList.innerHTML = '';
+    if (purchaseProgressSummary) purchaseProgressSummary.textContent = '正在连接…';
+    if (purchaseQueueHint) purchaseQueueHint.style.display = 'none';
+    setPurchaseCurrent('正在连接首云…');
+    purchaseBatchTotal = items.length;
+    purchaseBatchDone = 0;
+
+    const resultLines = [];
+    let lastOkPayload = null;
+
+    try {
+      let resp;
+      try {
+        resp = await fetch('/api/byoip/purchase-ipv4/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items }),
+        });
+      } catch (err) {
+        const hint = '连接中断（常见于 gunicorn 超时）。请在服务器执行：sudo sed -i \'s|--timeout [0-9]*|--timeout 900|\' /etc/systemd/system/ip-announce-web.service && sudo systemctl daemon-reload && sudo systemctl restart ip-announce-web';
+        throw new Error((err && err.message ? err.message : '网络错误') + '。' + hint);
+      }
+
+      if (resp.status === 401) {
+        throw new Error('未登录或登录已失效，请重新登录');
+      }
+      if (!resp.ok) {
+        const errData = await readJsonResponse(resp).catch(() => ({}));
+        throw new Error(errData.error || '新购请求失败 HTTP ' + resp.status);
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n');
+          buffer = parts.pop() || '';
+          for (const line of parts) {
+            if (!line.trim()) continue;
+            let ev;
+            try { ev = JSON.parse(line); } catch { continue; }
+            handlePurchaseProgressEvent(ev);
+            if (ev.type === 'cidr_result') {
+              if (ev.ok) {
+                lastOkPayload = ev;
+                resultLines.push('[OK] ' + ev.cidr + ': ' + (ev.message || '完成'));
+              } else {
+                markPurchaseFailed(ev.cidr, ev.error);
+                const pos = purchaseBatchTotal > 1
+                  ? ('[' + (purchaseCurrentIndex + 1) + '/' + purchaseBatchTotal + '] ')
+                  : '';
+                setPurchaseCurrent(pos + ev.cidr + '：失败 — ' + (ev.error || '未知错误'));
+                resultLines.push('[FAIL] ' + ev.cidr + ': ' + (ev.error || '失败'));
+              }
+            }
+          }
+        }
+      } catch (err) {
+        throw new Error((err && err.message ? err.message : '读取进度流失败')
+          + '（新购可能仍在后台执行，请稍后刷新列表确认）');
+      }
+
+      if (buffer.trim()) {
+        try {
+          const ev = JSON.parse(buffer);
+          handlePurchaseProgressEvent(ev);
+        } catch { /* ignore */ }
+      }
+
+      const msg = resultLines.length ? resultLines.join('\n') : '新购已结束';
+      setError(msg);
+      await loadList(true);
+      return lastOkPayload;
+    } finally {
+      purchaseInProgress = false;
+      if (cancelTaskBtn) cancelTaskBtn.style.display = 'none';
+      updatePurchaseSelectionUi();
+    }
+  }
+
+  async function executeBatchPurchase(items) {
+    const lines = items.map(it => {
+      if (it.purchase_mode === 'dual_slash25') {
+        const halves = it.purchase_slash25_halves || [];
+        return it.cidr + ' → ' + halves.join(' + ');
+      }
+      return it.cidr;
+    });
+    const confirmMsg = '确认为以下 ' + items.length + ' 个网段批量新购 IPv4（/25）？\n\n'
+      + lines.join('\n')
+      + '\n\n将按顺序逐条提交至首云（每条 /24 为 128×2）。';
+    if (!window.confirm(confirmMsg)) return;
+
+    batchPurchaseBtn.disabled = true;
+    const oldBatchText = batchPurchaseBtn.textContent;
+    batchPurchaseBtn.textContent = '批量执行中…';
+    setError('');
+    try {
+      await runPurchaseStream(items.map(buildPurchasePayload));
+    } catch (err) {
+      setError(err && err.message ? err.message : '批量新购请求失败');
+      purchaseProgressSummary.textContent = '请求失败';
+    } finally {
+      batchPurchaseBtn.disabled = false;
+      batchPurchaseBtn.textContent = oldBatchText;
+      updatePurchaseSelectionUi();
+    }
+  }
+
+  function renderRows(items) {
+    if (!items.length) {
+      tableBody.innerHTML = '<tr><td colspan="11" class="hint">没有匹配数据</td></tr>';
+      updatePurchaseSelectionUi();
+      return;
+    }
+    tableBody.innerHTML = items.map(item => {
+      const statusText = item.status_label || item.status || '-';
+      const pipeVdc = (item.pipe_name || '-') + ' / ' + (item.vdc_name || '-');
+      const action = item.cidr
+        ? '<a class="btn btn-secondary btn-loa" href="/api/loa/download?cidr=' + encodeURIComponent(item.cidr) + '" target="_blank" rel="noopener">下载 LOA</a>'
+        : '-';
+      return '<tr data-cidr="' + escapeHtml(item.cidr || '') + '">'
+        + renderRowCheckbox(item)
+        + '<td>' + escapeHtml(item.cidr || '-') + '</td>'
+        + '<td>' + renderStatusPill(statusText, byoipStatusClass(item)) + '</td>'
+        + '<td>' + escapeHtml(item.site_name || '-') + '</td>'
+        + '<td>' + escapeHtml(item.asn || '-') + '</td>'
+        + '<td>' + escapeHtml(pipeVdc) + '</td>'
+        + '<td>' + renderStatusPill(loaText(item), loaStatusClass(item)) + '</td>'
+        + '<td>' + action + '</td>'
+        + '<td>' + renderIpv4Count(item) + '</td>'
+        + '<td>' + renderUpstream(item) + '</td>'
+        + '<td>' + renderPurchaseCell(item) + '</td>'
+        + '</tr>';
+    }).join('');
+    updatePurchaseSelectionUi();
+  }
+
+  function setError(message) {
+    if (!message) {
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+      return;
+    }
+    errorBox.style.display = 'block';
+    errorBox.textContent = message;
+  }
+
+  function updateCount(count) {
+    rowCount.textContent = '共 ' + count + ' 条';
+  }
+
+  async function loadList(refresh = false) {
+    const params = new URLSearchParams();
+    if (refresh) params.set('refresh', '1');
+    if (keywordInput.value.trim()) params.set('keyword', keywordInput.value.trim());
+    if (statusSelect.value) params.set('status', statusSelect.value);
+    const url = '/api/byoip/list' + (params.toString() ? ('?' + params.toString()) : '');
+
+    searchBtn.disabled = true;
+    refreshBtn.disabled = true;
+    resetBtn.disabled = true;
+    setError('');
+    tableBody.innerHTML = '<tr><td colspan="11" class="hint">加载中...</td></tr>';
+    try {
+      const resp = await fetch(url);
+      const payload = await readJsonResponse(resp);
+      if (!resp.ok || !payload.ok) {
+        const detail = payload.error || (payload.errors || []).join(';') || '列表加载失败';
+        throw new Error(detail);
+      }
+      allLoadedItems = payload.items || [];
+      if (payload.status_options && payload.status_options.length) {
+        populateStatusSelect(payload.status_options, true);
+      }
+      refreshTableView();
+      const refreshedAt = new Date((payload.refreshed_at || 0) * 1000).toLocaleString('zh-CN', { hour12: false });
+      if (payload.cached) {
+        const age = payload.cache_age_seconds != null ? ('，约 ' + payload.cache_age_seconds + ' 秒前') : '';
+        lastUpdateHint.textContent = '缓存数据' + age + ' · 首云同步于 ' + refreshedAt + '（点「刷新」强制更新）';
+      } else {
+        lastUpdateHint.textContent = '最近更新：' + refreshedAt;
+      }
+      if ((payload.errors || []).length) {
+        setError(payload.errors.join('；'));
+      }
+      loadUpstreamForItems(allLoadedItems, refresh);
+    } catch (err) {
+      allLoadedItems = [];
+      refreshTableView();
+      setError(err && err.message ? err.message : '请求失败，请稍后重试');
+      lastUpdateHint.textContent = '加载失败';
+    } finally {
+      searchBtn.disabled = false;
+      refreshBtn.disabled = false;
+      resetBtn.disabled = false;
+    }
+  }
+
+  searchBtn.onclick = () => loadList(false);
+  refreshBtn.onclick = () => loadList(true);
+  if (refreshUpstreamBtn) refreshUpstreamBtn.onclick = () => refreshUpstreamOnly();
+  resetBtn.onclick = () => {
+    keywordInput.value = '';
+    statusSelect.value = '';
+    showPurchasableOnly = false;
+    if (purchasableOnlyFilter) purchasableOnlyFilter.checked = false;
+    loadList(false);
+  };
+
+  if (purchasableOnlyFilter) {
+    purchasableOnlyFilter.addEventListener('change', () => {
+      showPurchasableOnly = purchasableOnlyFilter.checked;
+      refreshTableView();
+    });
+  }
+  keywordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadList(false); });
+  statusSelect.addEventListener('change', () => loadList(false));
+
+  tableBody.addEventListener('change', (e) => {
+    if (e.target.classList.contains('row-purchase-select')) {
+      updatePurchaseSelectionUi();
+    }
+  });
+
+  if (selectAllPurchase) {
+    selectAllPurchase.addEventListener('change', () => {
+      const checked = selectAllPurchase.checked;
+      tableBody.querySelectorAll('.row-purchase-select').forEach(cb => { cb.checked = checked; });
+      updatePurchaseSelectionUi();
+    });
+  }
+
+  selectAllPurchasableBtn.onclick = () => {
+    tableBody.querySelectorAll('.row-purchase-select').forEach(cb => { cb.checked = true; });
+    updatePurchaseSelectionUi();
+  };
+
+  clearPurchaseSelectBtn.onclick = () => {
+    tableBody.querySelectorAll('.row-purchase-select').forEach(cb => { cb.checked = false; });
+    if (selectAllPurchase) selectAllPurchase.checked = false;
+    updatePurchaseSelectionUi();
+  };
+
+  batchPurchaseBtn.onclick = () => {
+    const selected = getSelectedPurchaseItems();
+    if (!selected.length) return;
+    executeBatchPurchase(selected);
+  };
+
+  tableBody.addEventListener('click', async (e) => {
+    const upstreamBtn = e.target.closest('.btn-upstream-row-refresh');
+    if (upstreamBtn && !upstreamBtn.disabled) {
+      e.preventDefault();
+      const cidr = upstreamBtn.dataset.cidr;
+      if (cidr) refreshUpstreamOne(cidr);
+      return;
+    }
+    const btn = e.target.closest('.btn-purchase');
+    if (!btn || btn.disabled) return;
+    const item = currentItems.find(x => x.cidr === btn.dataset.cidr);
+    if (!item) return;
+    if (item.purchase_mode !== 'dual_slash25') {
+      const cell = btn.closest('.purchase-cell');
+      const select = cell && cell.querySelector('.purchase-number');
+      if (select) item.purchase_default_number = parseInt(select.value, 10);
+    }
+    try {
+      const payload = await executePurchase(item, btn);
+      if (payload && payload.message) {
+        setError(payload.message);
+      }
+    } catch (err) {
+      setError(err && err.message ? err.message : '新购请求失败');
+    }
+  });
+
+  loadList(false);
+
+  // 自动刷新：若有网段处于过渡态（创建中/广播中），每 5 分钟自动刷新一次，直到全部稳定
+  const TRANSIENT_STATUSES = new Set(['creating', 'processing', 'broadcasting']);
+  const AUTO_REFRESH_SECONDS = 300; // 5 分钟
+  let autoRefreshTimer = null;
+  let autoRefreshCountdown = null;
+
+  function hasTransientItems() {
+    return allLoadedItems.some(it => TRANSIENT_STATUSES.has(String(it.status || '').toLowerCase()));
+  }
+
+  function stopAutoRefreshCountdown() {
+    if (autoRefreshCountdown) { clearInterval(autoRefreshCountdown); autoRefreshCountdown = null; }
+    if (autoRefreshTimer) { clearTimeout(autoRefreshTimer); autoRefreshTimer = null; }
+  }
+
+  function startAutoRefreshCountdown(seconds) {
+    stopAutoRefreshCountdown();
+    let remaining = seconds;
+    const update = () => {
+      const base = lastUpdateHint.dataset.baseText || lastUpdateHint.textContent.split('·')[0].trim();
+      lastUpdateHint.dataset.baseText = base;
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      const countdownText = mins > 0 ? `${mins}分${secs}秒` : `${secs}s`;
+      lastUpdateHint.textContent = base + ' · 自动刷新倒计时 ' + countdownText + '（有过渡中网段）';
+    };
+    update();
+    autoRefreshCountdown = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        update();
+      } else {
+        clearInterval(autoRefreshCountdown);
+        autoRefreshCountdown = null;
+      }
+    }, 1000);
+    autoRefreshTimer = setTimeout(async () => {
+      autoRefreshTimer = null;
+      delete lastUpdateHint.dataset.baseText;
+      if (!hasTransientItems()) return;
+      await loadList(true);
+      if (hasTransientItems()) startAutoRefreshCountdown(AUTO_REFRESH_SECONDS);
+    }, seconds * 1000);
+  }
+
+  // 每次 loadList 完成后检查是否有过渡态网段
+  const _origLoadList = loadList;
+  loadList = async function(refresh) {
+    await _origLoadList(refresh);
+    delete lastUpdateHint.dataset.baseText;
+    if (hasTransientItems()) {
+      startAutoRefreshCountdown(AUTO_REFRESH_SECONDS);
+    } else {
+      stopAutoRefreshCountdown();
+    }
+  };
+
+  if (!CAN_PURCHASE) {
+    const bar = document.querySelector('.batch-purchase-bar');
+    if (bar) bar.style.display = 'none';
+    document.querySelectorAll('.btn-purchase, #batchPurchaseBtn').forEach(el => {
+      if (el) el.style.display = 'none';
+    });
+  }
+
+  // ---- 旁观者模式：其他标签页/用户轮询当前购买任务进度 ----
+  let watcherTimer = null;
+  let watcherTaskId = null;   // 正在观看的 task_id
+
+  function stopWatcher() {
+    if (watcherTimer) { clearInterval(watcherTimer); watcherTimer = null; }
+    watcherTaskId = null;
+  }
+
+  function applyRemoteSnapshot(snap) {
+    if (!snap) return;
+    // snap 格式：{ current: {...} | null, queue: [...], history: [...] }
+    const cur = snap.current;
+    const queueLen = snap.queue_length || 0;
+
+    if (!cur) {
+      // 没有正在跑的任务
+      if (watcherTaskId) {
+        // 上一次观察的任务已结束
+        stopWatcher();
+        loadList(true);
+      }
+      return;
+    }
+
+    const taskId = cur.task_id || '';
+    const running = cur.status === 'running' || cur.status === 'queued';
+
+    // 同步任务 ID
+    watcherTaskId = taskId;
+
+    // 显示进度面板
+    purchaseProgressCard.style.display = '';
+    if (!purchaseProgressExpanded) setPurchaseExpanded(true);
+    if (cancelTaskBtn) cancelTaskBtn.style.display = '';
+
+    // 队列等待提示
+    if (purchaseQueueHint) {
+      if (queueLen > 0) {
+        purchaseQueueHint.style.display = '';
+        purchaseQueueHint.textContent = `⚠ 另有 ${queueLen} 个任务排队等待`;
+      } else {
+        purchaseQueueHint.style.display = 'none';
+      }
+    }
+
+    const hint = cur.current_hint || (running ? '购买进行中…' : '购买已完成');
+    if (purchaseProgressSummary) purchaseProgressSummary.textContent = hint;
+    setPurchaseCurrent(hint);
+
+    // 同步各 cidr 进度块
+    const order = cur.cidr_order || [];
+    const phases = cur.phases || {};
+    const results = cur.cidr_results || {};
+
+    order.forEach(cidr => {
+      const phaseKeys = Object.keys(phases[cidr] || {});
+      const dualSlash25 = phaseKeys.some(k => k.startsWith('wait_vdc'));
+      const submitKeys = phaseKeys.filter(k => k.startsWith('submit_') || k === 'submit');
+      const needCount = dualSlash25 ? Math.max(1, submitKeys.length) : 1;
+      const mode = dualSlash25 ? 'dual_slash25' : 'single';
+
+      if (!purchaseProgressByCidr[cidr]) {
+        ensurePurchaseCidrBlock(cidr, needCount, mode);
+        renderPurchaseProgressList();
+      }
+
+      Object.entries(phases[cidr] || {}).forEach(([key, info]) => {
+        updatePurchasePhase(cidr, key, info.status || 'running', info.message || '');
+      });
+
+      const res = results[cidr];
+      if (res) {
+        if (!res.ok) markPurchaseFailed(cidr, res.error);
+      }
+    });
+
+    // 任务已结束
+    if (!running) {
+      stopWatcher();
+      if (cancelTaskBtn) cancelTaskBtn.style.display = 'none';
+      loadList(true);
+    }
+  }
+
+  async function pollRemoteTask() {
+    if (purchaseInProgress) return;  // 自己在跑，不干扰
+    try {
+      const resp = await fetch('/api/byoip/purchase-ipv4/task-status');
+      if (!resp.ok) return;
+      const snap = await resp.json();
+      if (!snap || !snap.ok) return;
+
+      const cur = snap.current;
+      if (!cur || !cur.task_id) return;
+
+      const running = cur.status === 'running' || cur.status === 'queued';
+      if (running || (cur.task_id && cur.task_id !== watcherTaskId)) {
+        applyRemoteSnapshot(snap);
+        if (running && !watcherTimer) {
+          watcherTimer = setInterval(async () => {
+            if (purchaseInProgress) return;
+            try {
+              const r2 = await fetch('/api/byoip/purchase-ipv4/task-status');
+              if (!r2.ok) return;
+              const s2 = await r2.json();
+              if (s2 && s2.ok) applyRemoteSnapshot(s2);
+            } catch (_) { /* ignore */ }
+          }, 2000);
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  // 页面加载后立即探测一次，若有任务就开始显示
+  setTimeout(pollRemoteTask, 1200);
+
+</script>
+{% endblock %}

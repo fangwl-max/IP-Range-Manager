@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IP段宣告/撤播控制台</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #fff;
+      --border: #e6ebf0;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --primary: #0f9d58;
+      --primary-hover: #0b8048;
+      --danger: #dc2626;
+      --warn: #d97706;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: var(--bg); color: var(--text); }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .badge.ok { background: #e8f7ee; color: var(--primary); }
+    .badge.warn { background: #fff7e6; color: var(--warn); }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .link-btn { color: var(--primary); cursor: pointer; border: none; background: none; font-size: 14px; }
+    .link-btn:hover { text-decoration: underline; }
+    .grid-head, .grid-row { display: grid; grid-template-columns: 2fr 1fr 1.2fr 1fr 120px; gap: 10px; align-items: start; }
+    .grid-head { color: var(--muted); font-size: 12px; padding: 0 8px 8px; border-bottom: 1px solid var(--border); }
+    .grid-row { padding: 10px 8px; border-bottom: 1px solid #f0f3f6; }
+    .grid-row:last-child { border-bottom: none; }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    input, select { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
+    input[readonly] { background: #f8fafc; color: #64748b; }
+    .row-actions { display: flex; gap: 8px; padding-top: 22px; }
+    .icon-btn { width: 34px; height: 34px; border: 1px solid var(--border); background: #fff; border-radius: 8px; cursor: pointer; }
+    .icon-btn:hover { background: #f8fafc; }
+    .status { font-size: 12px; margin-top: 4px; min-height: 16px; }
+    .status.ok { color: var(--primary); }
+    .status.err { color: var(--danger); }
+    .footer { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .btn-primary { background: var(--primary); color: #fff; border: none; border-radius: 8px; padding: 10px 20px; font-size: 14px; cursor: pointer; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-primary:disabled { opacity: .6; cursor: not-allowed; }
+    .btn-danger { background: #ef4444; color: #fff; border: none; border-radius: 8px; padding: 10px 20px; font-size: 14px; cursor: pointer; }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-danger:disabled { opacity: .6; cursor: not-allowed; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    textarea { width: 100%; min-height: 150px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
+    .note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+    #resultBox { white-space: pre-wrap; font-size: 13px; background: #f8fafc; border-radius: 8px; padding: 12px; border: 1px solid var(--border); max-height: 240px; overflow: auto; }
+    .loading { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>IP段宣告/撤播控制台</h1>
+    <div class="sub">
+      当前模式：
+      {% if dry_run %}
+      <span class="badge warn">dry-run（演练，不真实调用）</span>
+      {% else %}
+      <span class="badge ok">真实执行</span>
+      {% endif %}
+      · IP 堆栈类型 <span class="badge ok">IPv4</span>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <div><strong>宣告任务（批量）</strong></div>
+        <div class="toolbar-right">
+          <button type="button" class="link-btn" id="refreshMeta">刷新区域数据</button>
+          <button type="button" class="link-btn" id="addRow">+ 添加一行</button>
+        </div>
+      </div>
+
+      <div class="grid-head">
+        <div>IP 前缀<br><span style="font-weight:normal">右侧显示执行状态</span></div>
+        <div>网络类型</div>
+        <div>区域</div>
+        <div>源 ASN</div>
+        <div>操作</div>
+      </div>
+      <div id="rowsContainer"></div>
+      <div class="footer" style="margin-top: 12px;">
+        <button type="button" class="btn-primary" id="runAnnounce">开始宣告（多段顺序）</button>
+        <span class="loading" id="runHint"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar" style="margin-bottom: 8px;">
+        <div><strong>批量撤播（文本框）</strong></div>
+      </div>
+      <div class="form-row" style="margin-bottom: 10px;">
+        <div>
+          <label>删除账号（admin）</label>
+          <input type="text" id="withdrawUser" placeholder="请输入 admin 账号" value="admin">
+        </div>
+        <div>
+          <label>删除密码</label>
+          <input type="password" id="withdrawPass" placeholder="请输入 admin 密码">
+        </div>
+      </div>
+      <div>
+        <label>网段（每行一个，支持逗号分隔）</label>
+        <textarea id="withdrawText" placeholder="示例：
+155.117.118.0/24
+167.148.189.0/24
+212.135.166.0/24"></textarea>
+      </div>
+      <div class="footer" style="margin-top: 12px;">
+        <button type="button" class="btn-danger" id="runWithdraw">开始撤播（多段顺序）</button>
+      </div>
+      <p class="note" style="margin-top:12px">
+        说明：区域来自首云 <code>DescribeBYOIPSiteCreateOptions</code>；宣告新网段需准备 LOA 文件
+        <code>loa/网段地址_掩码.pdf</code>（例如 <code>loa/164.52.66.0_24.pdf</code>）。
+        撤播无需选择区域和 ASN，直接在文本框输入网段；撤播必须填写 admin 账号密码。
+      </p>
+    </div>
+
+    <div class="card">
+      <strong>执行结果</strong>
+      <div id="resultBox" style="margin-top:8px">等待执行...</div>
+    </div>
+  </div>
+
+  <script>
+    let metaSites = [];
+
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function siteOptionsHtml(selected) {
+      const opts = ['<option value="">选择区域</option>'];
+      for (const site of metaSites) {
+        const val = site.site_id;
+        const label = site.site_name || site.site_id;
+        const sel = val === selected ? ' selected' : '';
+        opts.push(`<option value="${val}"${sel}>${label}</option>`);
+      }
+      return opts.join('');
+    }
+
+    function asnListForSite(siteId) {
+      const site = metaSites.find(s => s.site_id === siteId);
+      if (!site) return [];
+      const set = new Set(site.as_list || []);
+      for (const p of (site.pipes || [])) set.add(p.asn);
+      return Array.from(set).filter(Boolean);
+    }
+
+    function normalizeAsnInput(value) {
+      let text = (value || '').trim();
+      text = text.replace(/^as/i, '').replace(/\s+/g, '');
+      text = text.replace(/[^\d]/g, '');
+      return text;
+    }
+
+    function createRow(data = {}) {
+      const row = el('div', 'grid-row');
+      row.innerHTML = `
+        <div>
+          <input type="text" class="cidr" placeholder="输入网段，如 203.0.113.0/24" value="${data.cidr || ''}">
+          <div class="status row-status"></div>
+        </div>
+        <div>
+          <input type="text" value="标准 BGP" readonly>
+        </div>
+        <div>
+          <select class="site">${siteOptionsHtml(data.site_id || '')}</select>
+        </div>
+        <div>
+          <input type="text" class="asn" list="asn-list" placeholder="必填：输入 ASN 数字" value="${data.asn || ''}">
+        </div>
+        <div class="row-actions">
+          <button type="button" class="icon-btn copy" title="复制">⧉</button>
+          <button type="button" class="icon-btn del" title="删除">🗑</button>
+        </div>
+      `;
+      row.querySelector('.copy').onclick = () => {
+        const payload = collectRow(row);
+        rowsContainer.appendChild(createRow(payload));
+      };
+      row.querySelector('.del').onclick = () => {
+        if (rowsContainer.children.length > 1) row.remove();
+      };
+      row.querySelector('.site').onchange = () => {
+        const asnInput = row.querySelector('.asn');
+        const list = asnListForSite(row.querySelector('.site').value);
+        if (!asnInput.value && list.length) asnInput.value = list[0];
+      };
+      const asnInput = row.querySelector('.asn');
+      asnInput.addEventListener('input', () => {
+        const normalized = normalizeAsnInput(asnInput.value);
+        if (normalized !== asnInput.value) asnInput.value = normalized;
+      });
+      asnInput.addEventListener('blur', () => {
+        asnInput.value = normalizeAsnInput(asnInput.value);
+      });
+      return row;
+    }
+
+    function collectRow(row) {
+      return {
+        cidr: row.querySelector('.cidr').value.trim(),
+        site_id: row.querySelector('.site').value,
+        asn: normalizeAsnInput(row.querySelector('.asn').value),
+      };
+    }
+
+    function collectRows() {
+      return Array.from(rowsContainer.querySelectorAll('.grid-row')).map(collectRow);
+    }
+
+    function setRowStatus(row, ok, text) {
+      const st = row.querySelector('.row-status');
+      st.className = 'status row-status ' + (ok ? 'ok' : 'err');
+      st.textContent = text || '';
+    }
+
+    async function loadMeta(refresh = false) {
+      runHint.textContent = '正在加载区域数据...';
+      const url = '/api/meta/options' + (refresh ? '?refresh=1' : '');
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!data.ok && !(data.sites || []).length) {
+        runHint.textContent = '区域数据加载失败: ' + (data.errors || []).join('; ');
+        return;
+      }
+      metaSites = data.sites || [];
+      const asnSet = new Set();
+      for (const s of metaSites) {
+        for (const a of (s.as_list || [])) asnSet.add(a);
+        for (const p of (s.pipes || [])) asnSet.add(p.asn);
+      }
+      let dl = document.getElementById('asn-list');
+      if (!dl) {
+        dl = document.createElement('datalist');
+        dl.id = 'asn-list';
+        document.body.appendChild(dl);
+      }
+      dl.innerHTML = Array.from(asnSet).map(a => `<option value="${a}">`).join('');
+      rowsContainer.querySelectorAll('.site').forEach(sel => {
+        const cur = sel.value;
+        sel.innerHTML = siteOptionsHtml(cur);
+      });
+      runHint.textContent = `已加载 ${metaSites.length} 个区域`;
+    }
+
+    async function runAnnounce() {
+      const rows = collectRows().filter(r => r.cidr);
+      if (!rows.length) {
+        alert('请至少填写一条 IP 前缀');
+        return;
+      }
+      runBatchBtn.disabled = true;
+      runHint.textContent = '执行中...';
+      resultBox.textContent = '';
+      try {
+        const resp = await fetch('/api/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'announce', rows }),
+        });
+        const data = await resp.json();
+        const lines = [];
+        lines.push(`动作: ${data.action} | 成功 ${data.success_count}/${data.total} | dry_run=${data.dry_run}`);
+        for (const item of (data.results || [])) {
+          const rowEl = rowsContainer.querySelectorAll('.grid-row')[item.index];
+          if (item.ok) {
+            if (rowEl) setRowStatus(rowEl, true, item.message);
+            lines.push(`[OK] ${item.cidr}: ${item.message}`);
+          } else {
+            if (rowEl) setRowStatus(rowEl, false, item.error);
+            lines.push(`[FAIL] ${item.cidr}: ${item.error}`);
+          }
+        }
+        resultBox.textContent = lines.join('\n');
+        runHint.textContent = '执行完成';
+      } catch (err) {
+        resultBox.textContent = '请求失败: ' + err;
+        runHint.textContent = '';
+      } finally {
+        runAnnounceBtn.disabled = false;
+      }
+    }
+
+    async function runWithdraw() {
+      const withdrawText = document.getElementById('withdrawText').value;
+      const adminUsername = document.getElementById('withdrawUser').value.trim();
+      const adminPassword = document.getElementById('withdrawPass').value;
+      if (!withdrawText.trim()) {
+        alert('请在文本框输入至少一个 IP 段');
+        return;
+      }
+      runWithdrawBtn.disabled = true;
+      runHint.textContent = '撤播执行中...';
+      resultBox.textContent = '';
+      try {
+        const resp = await fetch('/api/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'withdraw',
+            withdraw_text: withdrawText,
+            admin_username: adminUsername,
+            admin_password: adminPassword,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          resultBox.textContent = `[FAIL] ${data.error || '撤播请求失败'}`;
+          runHint.textContent = '';
+          return;
+        }
+        const lines = [];
+        lines.push(`动作: ${data.action} | 成功 ${data.success_count}/${data.total} | dry_run=${data.dry_run}`);
+        for (const item of (data.results || [])) {
+          if (item.ok) {
+            lines.push(`[OK] ${item.cidr}: ${item.message}`);
+          } else {
+            lines.push(`[FAIL] ${item.cidr}: ${item.error}`);
+          }
+        }
+        resultBox.textContent = lines.join('\n');
+        runHint.textContent = '撤播执行完成';
+      } catch (err) {
+        resultBox.textContent = '请求失败: ' + err;
+        runHint.textContent = '';
+      } finally {
+        runWithdrawBtn.disabled = false;
+      }
+    }
+
+    const rowsContainer = document.getElementById('rowsContainer');
+    const runAnnounceBtn = document.getElementById('runAnnounce');
+    const runWithdrawBtn = document.getElementById('runWithdraw');
+    const runHint = document.getElementById('runHint');
+    const resultBox = document.getElementById('resultBox');
+
+    document.getElementById('addRow').onclick = () => rowsContainer.appendChild(createRow());
+    document.getElementById('refreshMeta').onclick = () => loadMeta(true);
+    runAnnounceBtn.onclick = runAnnounce;
+    runWithdrawBtn.onclick = runWithdraw;
+
+    rowsContainer.appendChild(createRow());
+    loadMeta(false);
+  </script>
+</body>
+</html>

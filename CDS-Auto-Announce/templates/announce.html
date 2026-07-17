@@ -1,0 +1,790 @@
+{% extends "base.html" %}
+{% block title %}批量宣告 - IP段控制台{% endblock %}
+{% block page_title %}批量宣告{% endblock %}
+
+{% block extra_head %}
+<style>
+  .announce-grid .grid-head,
+  .announce-grid .announce-row-grid {
+    grid-template-columns: minmax(168px, 1.5fr) minmax(88px, 0.75fr) minmax(120px, 0.95fr) minmax(108px, 0.85fr) minmax(248px, 1.6fr) 72px;
+    gap: 10px;
+    align-items: center;
+  }
+  .announce-grid .grid-head {
+    align-items: end;
+    padding-bottom: 8px;
+  }
+  .announce-grid .grid-head > div:last-child { text-align: right; }
+  .announce-grid .grid-row {
+    display: block;
+    padding: 10px 4px;
+  }
+  .announce-grid .announce-row-grid {
+    display: grid;
+    width: 100%;
+  }
+  .announce-grid .cell {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+  }
+  .announce-grid .cell input,
+  .announce-grid .cell select {
+    height: 38px;
+    box-sizing: border-box;
+    margin: 0;
+  }
+  .announce-grid .cell-readonly input {
+    font-size: 13px;
+    text-align: center;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+  .announce-grid .row-actions {
+    justify-content: flex-end;
+    gap: 6px;
+    padding: 0;
+  }
+  .announce-grid .btn-icon {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+  }
+  .announce-grid .loa-cell {
+    justify-content: flex-start;
+  }
+  .loa-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    align-items: center;
+    width: 100%;
+  }
+  .loa-actions .btn {
+    padding: 0 10px;
+    font-size: 12px;
+    border-radius: 6px;
+    min-width: 0;
+    line-height: 1;
+    height: 38px;
+    box-sizing: border-box;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+  .hidden-file { display: none; }
+  .announce-row-foot {
+    display: none;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 18px;
+    margin-top: 6px;
+    padding: 0 2px;
+    min-height: 16px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .announce-row-foot.is-visible { display: flex; }
+  .announce-row-foot .row-status,
+  .announce-row-foot .loa-summary {
+    margin: 0;
+    min-height: 0;
+  }
+  .announce-row-foot .row-status::before {
+    content: '执行：';
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .announce-row-foot .loa-summary::before {
+    content: 'LOA：';
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .announce-row-foot .row-status:empty { display: none; }
+  .announce-row-foot .row-status:empty::before { content: none; }
+  .announce-row-foot .loa-summary:empty { display: none; }
+  .announce-row-foot .loa-summary:empty::before { content: none; }
+  .announce-row-foot .loa-summary { color: var(--muted); }
+  .announce-row-foot .loa-summary.ok { color: var(--primary); }
+  .announce-row-foot .loa-summary.err { color: var(--danger); }
+  .announce-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+    user-select: none;
+    margin-right: 12px;
+  }
+  .announce-option input { width: 16px; height: 16px; cursor: pointer; }
+  .announce-progress-list { display: flex; flex-direction: column; gap: 14px; }
+  .announce-cidr-block {
+    border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+    background: #fafbfc;
+  }
+  .announce-cidr-title { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
+  .announce-step {
+    display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start;
+    padding: 8px 0; border-top: 1px solid #edf2f7;
+  }
+  .announce-step:first-of-type { border-top: none; padding-top: 0; }
+  .step-icon {
+    width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .step-icon.pending { background: #e2e8f0; color: #64748b; }
+  .step-icon.running { background: #dbeafe; color: #1d4ed8; }
+  .step-icon.done { background: #dcfce7; color: #15803d; }
+  .step-icon.failed { background: #fee2e2; color: #b91c1c; }
+  .step-icon.skipped { background: #f1f5f9; color: #64748b; }
+  .step-label { font-weight: 600; font-size: 14px; }
+  .step-msg { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+  @media (max-width: 1480px) {
+    .announce-grid .grid-head,
+    .announce-grid .announce-row-grid {
+      grid-template-columns: minmax(150px, 1.4fr) minmax(80px, 0.7fr) minmax(110px, 0.9fr) minmax(100px, 0.8fr) minmax(220px, 1.5fr) 68px;
+      gap: 8px;
+    }
+    .loa-actions .btn { padding: 0 8px; font-size: 11px; height: 36px; }
+    .announce-grid .cell input,
+    .announce-grid .cell select,
+    .announce-grid .btn-icon { height: 36px; }
+    .announce-grid .btn-icon { width: 36px; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{% if not current_user %}
+<div class="card auth-banner">
+  <div class="auth-banner-inner">
+    <div>
+      <div class="card-title" style="margin:0;color:var(--secondary)">未登录</div>
+      <p class="note" style="margin:6px 0 0">批量宣告需登录且具备「宣告」权限，请先登录。</p>
+    </div>
+    <a href="/login?next=/" class="btn btn-primary">前往登录</a>
+  </div>
+</div>
+{% elif not can_announce %}
+<div class="card auth-banner">
+  <div class="auth-banner-inner">
+    <div>
+      <div class="card-title" style="margin:0;color:var(--warn)">无宣告权限</div>
+      <p class="note" style="margin:6px 0 0">当前账号 <strong>{{ current_user }}</strong> 未分配「宣告」权限，请联系超级管理员。</p>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="toolbar">
+    <div class="card-title" style="margin:0">宣告任务</div>
+    <div class="toolbar-actions">
+      <button type="button" class="btn btn-ghost" id="refreshMeta">刷新区域与 ASN</button>
+      <button type="button" class="btn btn-ghost" id="cleanupOrphanedLoaBtn" title="删除本地 LOA 目录中首云 BYOIP 不存在的孤儿文件">清理孤儿 LOA</button>
+      <button type="button" class="btn btn-secondary" id="addRow">+ 添加一行</button>
+    </div>
+  </div>
+
+  <div class="grid-table announce-grid">
+    <div class="grid-head">
+      <div>IP 前缀</div>
+      <div>网络类型</div>
+      <div>区域</div>
+      <div>源 ASN</div>
+      <div>LOA</div>
+      <div>操作</div>
+    </div>
+    <div id="rowsContainer"></div>
+  </div>
+
+  <div class="footer-bar">
+    <label class="announce-option" for="stopOnCreating">
+      <input type="checkbox" id="stopOnCreating" checked>
+      创建中即视为宣告成功（不等待广播与挂载公网）
+    </label>
+    <button type="button" class="btn btn-primary" id="runAnnounce">开始宣告（多段顺序）</button>
+    <span class="hint" id="runHint">正在加载...</span>
+  </div>
+
+  <p class="note">
+    区域与 ASN 默认缓存约 5 分钟（可在 config 中配置 meta_options_cache_seconds）；点「刷新区域与 ASN」强制拉首云。<br>
+    新加坡 B/C/D/E/F 节点已设为禁止选择。宣告时若本地无 LOA，将按 config 中 IPXO 配置自动从平台拉取 PDF；也可点击「上传 LOA」直接保存到正式目录。<br>
+    默认勾选「创建中即视为宣告成功」：仅提交 BYOIP 创建，首云状态为「创建中」即返回成功；取消勾选则继续执行广播与挂载公网。
+  </p>
+</div>
+
+<div class="card" id="progressCard" style="display:none">
+  <div class="card-title">宣告进度</div>
+  <p class="hint" id="progressSummary" style="margin:0 0 12px">准备中…</p>
+  <div id="progressList" class="announce-progress-list"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">执行结果</div>
+  <pre id="resultBox" class="result-box">等待执行...</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const CAN_ANNOUNCE = {{ 'true' if can_announce else 'false' }};
+  const IS_LOGGED_IN = {{ 'true' if current_user else 'false' }};
+
+  let metaSites = [];
+  let globalAsns = [];
+
+  const rowsContainer = document.getElementById('rowsContainer');
+  const runAnnounceBtn = document.getElementById('runAnnounce');
+  const runHint = document.getElementById('runHint');
+  const resultBox = document.getElementById('resultBox');
+  const progressCard = document.getElementById('progressCard');
+  const progressList = document.getElementById('progressList');
+  const progressSummary = document.getElementById('progressSummary');
+
+  const progressByCidr = {};
+  let announceStopOnCreating = true;
+
+  const PHASE_LABELS = {
+    prepare: '校验与 LOA',
+    create: '创建 BYOIP',
+    wait_creating: '等待创建中',
+    broadcast: '广播 BYOIP',
+    attach: '挂载公网',
+  };
+
+  const PHASES_CREATE_ONLY = ['prepare', 'create', 'wait_creating'];
+  const PHASES_FULL = ['prepare', 'create', 'broadcast', 'attach'];
+
+  function escapeAttr(value) {
+    return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function formatDateTime(ts) {
+    if (!ts) return '';
+    const d = new Date(Number(ts) * 1000);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleString('zh-CN', { hour12: false });
+  }
+
+  function normalizeAsnInput(value) {
+    const text = (value || '').trim().replace(/^as/i, '').replace(/\s+/g, '');
+    return text.replace(/[^\d]/g, '');
+  }
+
+  function siteOptionsHtml(selected) {
+    const opts = ['<option value="">选择区域</option>'];
+    for (const site of metaSites) {
+      const val = site.site_id;
+      const label = site.site_name || site.site_id;
+      const disabled = site.disabled ? ' disabled' : '';
+      const suffix = site.disabled ? '（禁止选择）' : '';
+      const sel = val === selected ? ' selected' : '';
+      opts.push('<option value="' + escapeAttr(val) + '"' + disabled + sel + '>' + escapeAttr(label + suffix) + '</option>');
+    }
+    return opts.join('');
+  }
+
+  function asnListForSite(siteId) {
+    const site = metaSites.find(s => s.site_id === siteId);
+    return site ? (site.as_list || []) : [];
+  }
+
+  function updateAsnDatalist() {
+    let dl = document.getElementById('asn-list');
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = 'asn-list';
+      document.body.appendChild(dl);
+    }
+    dl.innerHTML = globalAsns.map(a => '<option value="' + escapeAttr(a) + '"></option>').join('');
+  }
+
+  function syncRowFoot(row) {
+    const foot = row.querySelector('.announce-row-foot');
+    if (!foot) return;
+    const hasStatus = !!(row.querySelector('.row-status')?.textContent?.trim());
+    const hasLoa = !!(row.querySelector('.loa-summary')?.textContent?.trim());
+    foot.classList.toggle('is-visible', hasStatus || hasLoa);
+  }
+
+  function setRowStatus(row, ok, text) {
+    const st = row.querySelector('.row-status');
+    st.className = 'status row-status ' + (ok ? 'ok' : (ok === false ? 'err' : ''));
+    st.textContent = text || '';
+    syncRowFoot(row);
+  }
+
+  function setLoaSummary(row, ok, text) {
+    const summary = row.querySelector('.loa-summary');
+    summary.className = 'loa-summary ' + (ok === null ? '' : (ok ? 'ok' : 'err'));
+    summary.textContent = text || '';
+    syncRowFoot(row);
+  }
+
+  function getCidrFromRow(row) {
+    return (row.querySelector('.cidr').value || '').trim();
+  }
+
+  function collectRow(row) {
+    return {
+      cidr: getCidrFromRow(row),
+      site_id: row.querySelector('.site').value,
+      asn: normalizeAsnInput(row.querySelector('.asn').value),
+    };
+  }
+
+  function loaStatusText(data) {
+    if (!data || !data.ready) return '未就绪：本地未找到 LOA';
+    if (data.source === 'ipxo') return '已从 IPXO 拉取（' + (data.ipxo_loa_status || 'Active') + '）';
+    const locMap = { permanent: '正式目录', temp: '临时目录' };
+    const where = locMap[data.location] || data.location || '未知';
+    const sizeKb = data.size ? (data.size / 1024).toFixed(1) + ' KB' : '-';
+    const timeText = formatDateTime(data.updated_at);
+    return '已就绪（' + where + '）' + (timeText ? '，更新时间：' + timeText : '') + '，大小：' + sizeKb;
+  }
+
+  async function fetchLoaStatus(row, silent = false) {
+    const cidr = getCidrFromRow(row);
+    if (!cidr) {
+      if (!silent) setLoaSummary(row, false, '请先填写 CIDR');
+      return null;
+    }
+    try {
+      const resp = await fetch('/api/loa/status?cidr=' + encodeURIComponent(cidr));
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        setLoaSummary(row, false, data.error || '检查失败');
+        return null;
+      }
+      setLoaSummary(row, true, loaStatusText(data));
+      return data;
+    } catch (err) {
+      setLoaSummary(row, false, '检查失败: ' + err);
+      return null;
+    }
+  }
+
+  async function uploadLoa(row, file) {
+    const cidr = getCidrFromRow(row);
+    if (!cidr) { alert('请先填写 CIDR 再上传 LOA'); return; }
+    if (!file) return;
+
+    const form = new FormData();
+    form.append('cidr', cidr);
+    form.append('file', file);
+    form.append('permanent', 'true');
+
+    const uploadBtn = row.querySelector('.btn-upload-loa');
+    uploadBtn.disabled = true;
+    setLoaSummary(row, null, '上传中...');
+    try {
+      const resp = await fetch('/api/loa/upload', { method: 'POST', body: form });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        setLoaSummary(row, false, data.error || '上传失败');
+        return;
+      }
+      setLoaSummary(row, true, '上传成功：' + loaStatusText(data));
+    } catch (err) {
+      setLoaSummary(row, false, '上传失败: ' + err);
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  }
+
+  async function fetchLoaFromIpxo(row) {
+    const cidr = getCidrFromRow(row);
+    if (!cidr) { alert('请先填写 CIDR'); return; }
+    const asn = normalizeAsnInput(row.querySelector('.asn').value || '');
+    const btn = row.querySelector('.btn-fetch-ipxo-loa');
+    btn.disabled = true;
+    setLoaSummary(row, null, '正在从 IPXO 拉取...');
+    try {
+      const resp = await fetch('/api/loa/fetch-ipxo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cidr, asn, permanent: true }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        setLoaSummary(row, false, data.error || 'IPXO 拉取失败');
+        return;
+      }
+      setLoaSummary(row, true, 'IPXO 拉取成功：' + loaStatusText(data));
+    } catch (err) {
+      setLoaSummary(row, false, 'IPXO 拉取失败: ' + err);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function bindLoaEvents(row) {
+    const fileInput = row.querySelector('.loa-file-input');
+    row.querySelector('.btn-check-loa').onclick = () => fetchLoaStatus(row);
+    row.querySelector('.btn-fetch-ipxo-loa').onclick = () => fetchLoaFromIpxo(row);
+    row.querySelector('.btn-download-loa').onclick = () => {
+      const cidr = getCidrFromRow(row);
+      if (!cidr) { alert('请先填写 CIDR 再下载 LOA'); return; }
+      window.open('/api/loa/download?cidr=' + encodeURIComponent(cidr), '_blank', 'noopener');
+    };
+    row.querySelector('.btn-upload-loa').onclick = () => {
+      if (!getCidrFromRow(row)) { alert('请先填写 CIDR 再上传 LOA'); return; }
+      fileInput.click();
+    };
+    fileInput.onchange = () => {
+      const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+      uploadLoa(row, file);
+      fileInput.value = '';
+    };
+  }
+
+  function createRow(data = {}) {
+    const row = document.createElement('div');
+    row.className = 'grid-row announce-row';
+    row.innerHTML = ''
+      + '<div class="announce-row-grid">'
+      + '<div class="cell"><input type="text" class="cidr" placeholder="203.0.113.0/24" value="' + escapeAttr(data.cidr || '') + '"></div>'
+      + '<div class="cell cell-readonly"><input type="text" value="标准 BGP" readonly tabindex="-1"></div>'
+      + '<div class="cell"><select class="site">' + siteOptionsHtml(data.site_id || '') + '</select></div>'
+      + '<div class="cell"><input type="text" class="asn" list="asn-list" placeholder="ASN" value="' + escapeAttr(data.asn || '') + '"></div>'
+      + '<div class="cell loa-cell"><div class="loa-actions">'
+      + '<button type="button" class="btn btn-ghost btn-check-loa" title="检查本地 LOA">检查</button>'
+      + '<button type="button" class="btn btn-secondary btn-fetch-ipxo-loa" title="从 IPXO 拉取 LOA">IPXO拉取</button>'
+      + '<button type="button" class="btn btn-ghost btn-download-loa" title="下载本地 LOA">下载</button>'
+      + '<button type="button" class="btn btn-primary btn-upload-loa" title="上传 LOA PDF">上传</button>'
+      + '<input type="file" class="hidden-file loa-file-input" accept=".pdf,application/pdf">'
+      + '</div></div>'
+      + '<div class="cell row-actions">'
+      + '<button type="button" class="btn btn-icon copy" title="复制本行">复制</button>'
+      + '<button type="button" class="btn btn-icon del" title="删除本行">删除</button>'
+      + '</div></div>'
+      + '<div class="announce-row-foot">'
+      + '<span class="status row-status"></span>'
+      + '<span class="loa-summary"></span>'
+      + '</div>';
+
+    row.querySelector('.copy').onclick = () => rowsContainer.appendChild(createRow(collectRow(row)));
+    row.querySelector('.del').onclick = () => { if (rowsContainer.children.length > 1) row.remove(); };
+
+    const siteSel = row.querySelector('.site');
+    const asnInput = row.querySelector('.asn');
+    siteSel.onchange = () => {
+      if (siteSel.selectedOptions[0]?.disabled) {
+        siteSel.value = '';
+        setRowStatus(row, false, '该区域禁止选择');
+        return;
+      }
+      const list = asnListForSite(siteSel.value);
+      if (!asnInput.value && list.length) asnInput.value = list[0];
+      setRowStatus(row, true, list.length ? ('可选 ASN: ' + list.length + ' 个') : '');
+    };
+    asnInput.addEventListener('input', () => {
+      const n = normalizeAsnInput(asnInput.value);
+      if (n !== asnInput.value) asnInput.value = n;
+    });
+    asnInput.addEventListener('blur', () => { asnInput.value = normalizeAsnInput(asnInput.value); });
+
+    bindLoaEvents(row);
+    return row;
+  }
+
+  async function readJsonResponse(resp) {
+    const text = await resp.text();
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 160);
+      throw new Error('HTTP ' + resp.status + (snippet ? '：' + snippet : ''));
+    }
+  }
+
+  async function loadMeta(refresh = false) {
+    runHint.textContent = refresh ? '正在刷新区域与 ASN...' : '正在加载...';
+    try {
+      const resp = await fetch('/api/meta/options' + (refresh ? '?refresh=1' : ''));
+      const data = await readJsonResponse(resp);
+      if (!resp.ok || data.ok === false) {
+        throw new Error(data.error || (data.errors || []).join('；') || '加载区域失败');
+      }
+      metaSites = data.sites || [];
+      globalAsns = data.global_asns || [];
+      updateAsnDatalist();
+
+      rowsContainer.querySelectorAll('.grid-row').forEach(row => {
+        const cur = row.querySelector('.site').value;
+        row.querySelector('.site').innerHTML = siteOptionsHtml(cur);
+        if (cur && metaSites.find(s => s.site_id === cur && s.disabled)) {
+          row.querySelector('.site').value = '';
+          setRowStatus(row, false, '原区域已禁止选择，请重选');
+        }
+      });
+      const disabledCount = metaSites.filter(s => s.disabled).length;
+      const refreshedAt = new Date((data.refreshed_at || 0) * 1000).toLocaleString('zh-CN', { hour12: false });
+      let hint = `已加载 ${metaSites.length} 个区域（禁用 ${disabledCount}），ASN ${globalAsns.length} 个`;
+      if (data.cached) {
+        const age = data.cache_age_seconds != null ? `，缓存约 ${data.cache_age_seconds} 秒前` : '';
+        hint += ` · 缓存${age} · 首云同步于 ${refreshedAt}（点「刷新区域与 ASN」更新）`;
+      } else {
+        hint += ` · 更新于 ${refreshedAt}`;
+      }
+      runHint.textContent = hint;
+      if ((data.errors || []).length) {
+        runHint.textContent += '；警告：' + data.errors.join('；');
+      }
+    } catch (err) {
+      runHint.textContent = err && err.message ? err.message : '加载区域与 ASN 失败';
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+  }
+
+  function stepIconClass(status) {
+    if (status === 'done') return 'done';
+    if (status === 'failed') return 'failed';
+    if (status === 'running') return 'running';
+    if (status === 'skipped') return 'skipped';
+    return 'pending';
+  }
+
+  function stepIconChar(status) {
+    if (status === 'done') return '✓';
+    if (status === 'failed') return '✕';
+    if (status === 'running') return '…';
+    if (status === 'skipped') return '—';
+    return '○';
+  }
+
+  function phaseListForMode() {
+    return announceStopOnCreating ? PHASES_CREATE_ONLY : PHASES_FULL;
+  }
+
+  function ensureCidrBlock(cidr) {
+    if (progressByCidr[cidr]) return progressByCidr[cidr];
+    const phases = phaseListForMode();
+    const stepsHtml = phases.map(ph => ''
+      + '<div class="announce-step" data-phase="' + ph + '">'
+      + '  <div class="step-icon pending" data-role="icon">○</div>'
+      + '  <div><div class="step-label">' + escapeHtml(PHASE_LABELS[ph] || ph) + '</div>'
+      + '  <div class="step-msg" data-role="msg">等待开始…</div></div>'
+      + '</div>').join('');
+    const block = document.createElement('div');
+    block.className = 'announce-cidr-block';
+    block.dataset.cidr = cidr;
+    block.innerHTML = '<div class="announce-cidr-title">' + escapeHtml(cidr) + '</div>' + stepsHtml;
+    progressByCidr[cidr] = { el: block };
+    return progressByCidr[cidr];
+  }
+
+  function updatePhase(cidr, phase, status, message) {
+    const state = ensureCidrBlock(cidr);
+    const step = state.el.querySelector('.announce-step[data-phase="' + phase + '"]');
+    if (!step) return;
+    const icon = step.querySelector('[data-role="icon"]');
+    const msg = step.querySelector('[data-role="msg"]');
+    icon.className = 'step-icon ' + stepIconClass(status);
+    icon.textContent = stepIconChar(status);
+    msg.textContent = message || '';
+  }
+
+  function renderProgressList() {
+    progressList.innerHTML = '';
+    Object.keys(progressByCidr).forEach(cidr => {
+      progressList.appendChild(progressByCidr[cidr].el);
+    });
+  }
+
+  function markFailedCidr(cidr, error) {
+    const phases = phaseListForMode();
+    let marked = false;
+    for (const ph of phases) {
+      const step = progressByCidr[cidr]?.el?.querySelector('.announce-step[data-phase="' + ph + '"]');
+      if (!step) continue;
+      const icon = step.querySelector('[data-role="icon"]');
+      if (icon.classList.contains('running') || icon.classList.contains('pending')) {
+        if (!marked) {
+          updatePhase(cidr, ph, 'failed', error || '失败');
+          marked = true;
+        } else {
+          updatePhase(cidr, ph, 'skipped', '已中止');
+        }
+      }
+    }
+    if (!marked && cidr) updatePhase(cidr, phases[0], 'failed', error || '失败');
+  }
+
+  function handleProgressEvent(ev) {
+    const type = ev.type;
+    if (type === 'batch_start') {
+      announceStopOnCreating = !!ev.stop_on_creating;
+      progressSummary.textContent = '共 ' + ev.total + ' 个网段'
+        + (ev.stop_on_creating ? '（创建中即成功）' : '（完整宣告：含广播与挂载）')
+        + (ev.dry_run ? ' · 演练模式' : '') + '…';
+      return;
+    }
+    if (type === 'cidr_start') {
+      ensureCidrBlock(ev.cidr);
+      renderProgressList();
+      phaseListForMode().forEach(ph => updatePhase(ev.cidr, ph, 'pending', '等待开始…'));
+      return;
+    }
+    if (type === 'phase') {
+      const st = ev.completed ? 'done' : (ev.status === 'failed' ? 'failed' : (ev.status || 'running'));
+      updatePhase(ev.cidr, ev.phase, st, ev.message);
+      return;
+    }
+    if (type === 'batch_done') {
+      progressSummary.textContent = '全部完成：成功 ' + ev.success_count + ' / ' + ev.total;
+    }
+  }
+
+  async function runAnnounce() {
+    const rows = Array.from(rowsContainer.querySelectorAll('.grid-row')).map(collectRow).filter(r => r.cidr);
+    if (!rows.length) { alert('请至少填写一条 IP 前缀'); return; }
+
+    runAnnounceBtn.disabled = true;
+    runHint.textContent = '宣告执行中…';
+    resultBox.textContent = '';
+    progressCard.style.display = '';
+    Object.keys(progressByCidr).forEach(k => delete progressByCidr[k]);
+    progressList.innerHTML = '';
+    progressSummary.textContent = '正在连接…';
+    announceStopOnCreating = document.getElementById('stopOnCreating').checked;
+
+    const resultLines = [];
+
+    try {
+      const resp = await fetch('/api/announce/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rows,
+          stop_on_creating: announceStopOnCreating,
+        }),
+      });
+
+      if (resp.status === 401) {
+        resultBox.textContent = '[FAIL] 未登录或登录已失效，请重新登录';
+        runHint.textContent = '';
+        return;
+      }
+      if (!resp.ok) {
+        const errData = await readJsonResponse(resp).catch(() => ({}));
+        resultBox.textContent = '[FAIL] ' + (errData.error || '宣告请求失败 HTTP ' + resp.status);
+        progressSummary.textContent = '请求失败';
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n');
+        buffer = parts.pop() || '';
+        for (const line of parts) {
+          if (!line.trim()) continue;
+          let ev;
+          try { ev = JSON.parse(line); } catch { continue; }
+          handleProgressEvent(ev);
+          if (ev.type === 'cidr_result') {
+            const rowEl = rowsContainer.querySelectorAll('.grid-row')[ev.index];
+            if (ev.ok) {
+              if (rowEl) setRowStatus(rowEl, true, ev.message || '执行成功');
+              resultLines.push('[OK] ' + ev.cidr + ': ' + (ev.message || '执行成功'));
+            } else {
+              if (rowEl) setRowStatus(rowEl, false, ev.error || '执行失败');
+              markFailedCidr(ev.cidr, ev.error);
+              resultLines.push('[FAIL] ' + ev.cidr + ': ' + (ev.error || '执行失败'));
+            }
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        try {
+          const ev = JSON.parse(buffer);
+          handleProgressEvent(ev);
+        } catch { /* ignore */ }
+      }
+
+      resultBox.textContent = resultLines.length
+        ? resultLines.join('\n')
+        : '宣告已结束（无明细）';
+      runHint.textContent = '宣告完成';
+    } catch (err) {
+      resultBox.textContent = '请求失败: ' + err;
+      runHint.textContent = '';
+      progressSummary.textContent = '请求失败';
+    } finally {
+      if (CAN_ANNOUNCE && IS_LOGGED_IN) runAnnounceBtn.disabled = false;
+    }
+  }
+
+  document.getElementById('addRow').onclick = () => rowsContainer.appendChild(createRow());
+  document.getElementById('refreshMeta').onclick = () => loadMeta(true);
+  runAnnounceBtn.onclick = runAnnounce;
+  if (!IS_LOGGED_IN || !CAN_ANNOUNCE) {
+    runAnnounceBtn.disabled = true;
+    runAnnounceBtn.title = IS_LOGGED_IN ? '无宣告权限' : '请先登录';
+  }
+
+  const cleanupOrphanedLoaBtn = document.getElementById('cleanupOrphanedLoaBtn');
+  if (cleanupOrphanedLoaBtn) {
+    cleanupOrphanedLoaBtn.onclick = async () => {
+      // 先演练一次，展示待删文件列表让用户确认
+      cleanupOrphanedLoaBtn.disabled = true;
+      cleanupOrphanedLoaBtn.textContent = '查询中…';
+      try {
+        const previewResp = await fetch('/api/loa/cleanup-orphaned', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dry_run: true }),
+        });
+        const preview = await previewResp.json();
+        if (!preview.ok) {
+          alert('查询失败：' + (preview.error || '未知错误'));
+          return;
+        }
+        if (preview.deleted_count === 0) {
+          alert('✓ 本地 LOA 目录中无孤儿文件，无需清理。\n\n首云当前共 ' + preview.active_count + ' 个 BYOIP 网段，本地 LOA 均有对应。');
+          return;
+        }
+        const lines = (preview.deleted || []).map(d => '  · ' + d.cidr + '（' + d.location + '）' + ' ' + d.path);
+        const msg = '发现以下 ' + preview.deleted_count + ' 个孤儿 LOA 文件（首云 BYOIP 中不存在对应网段）：\n\n'
+          + lines.join('\n')
+          + '\n\n确认删除？（此操作不可撤销）';
+        if (!window.confirm(msg)) return;
+
+        // 执行真正的删除
+        const execResp = await fetch('/api/loa/cleanup-orphaned', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dry_run: false }),
+        });
+        const result = await execResp.json();
+        if (!result.ok) {
+          alert('清理失败：' + (result.error || '未知错误'));
+          return;
+        }
+        alert('✓ 清理完成！已删除 ' + result.deleted_count + ' 个孤儿 LOA 文件，保留 ' + result.skipped_count + ' 个有效文件。');
+      } catch (e) {
+        alert('请求失败：' + (e && e.message ? e.message : String(e)));
+      } finally {
+        cleanupOrphanedLoaBtn.disabled = false;
+        cleanupOrphanedLoaBtn.textContent = '清理孤儿 LOA';
+      }
+    };
+  }
+
+  rowsContainer.appendChild(createRow());
+  loadMeta(false);
+</script>
+{% endblock %}

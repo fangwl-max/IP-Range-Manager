@@ -1,0 +1,2 @@
+# Ubuntu 生产部署可选依赖（配合 gunicorn）
+gunicorn==23.0.0

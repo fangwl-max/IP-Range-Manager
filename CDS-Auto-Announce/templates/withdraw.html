@@ -1,0 +1,420 @@
+{% extends "base.html" %}
+{% block title %}批量撤播 - IP段控制台{% endblock %}
+{% block page_title %}批量撤播{% endblock %}
+
+{% block content %}
+{% if dry_run %}
+<div class="card" style="border-color:#fde68a;background:#fffbeb">
+  <strong>dry-run 模式</strong>：撤播仅演练，不会真实调用首云 API。
+</div>
+{% endif %}
+
+<div class="card auth-banner" id="authBanner">
+  <div class="auth-banner-inner">
+    <div>
+      <div class="card-title" style="margin:0;color:var(--danger)">未登录</div>
+      <p class="note" style="margin:6px 0 0">请先登录撤播管理员账号，登录后下方网段输入与撤播按钮将自动解锁。</p>
+    </div>
+    <a href="/login?next=/withdraw" class="btn btn-primary">前往登录</a>
+  </div>
+</div>
+
+<div class="card auth-banner ok" id="loggedBanner" style="display:none">
+  <div class="auth-banner-inner">
+    <div>
+      <div class="card-title" style="margin:0;color:var(--primary)">已登录</div>
+      <p class="note" style="margin:6px 0 0">当前账号：<strong id="loggedUserName">-</strong> · 可进行撤播操作</p>
+    </div>
+    <div class="toolbar-actions">
+      <a href="/admin/accounts" class="btn btn-ghost" id="accountLink" style="text-decoration:none;display:none">账号管理</a>
+      <button type="button" class="btn btn-ghost" id="logoutBtn">退出登录</button>
+    </div>
+  </div>
+</div>
+
+<div class="card locked-section" id="withdrawSection">
+  <div class="card-title">撤播任务（文本框批量）</div>
+  <label>网段列表（每行一个，支持逗号分隔）</label>
+  <textarea id="withdrawText" rows="10" disabled placeholder="请先登录管理员账号后再输入网段&#10;&#10;示例：&#10;155.117.118.0/24&#10;167.148.189.0/24"></textarea>
+
+  <div class="footer-bar">
+    <label class="withdraw-option" for="deleteByoip" style="margin-right:12px">
+      <input type="checkbox" id="deleteByoip">
+      撤播后删除 BYOIP 地址（须无 /25 且已撤播）
+    </label>
+    <button type="button" class="btn btn-danger" id="runWithdraw" disabled>开始撤播（多段顺序）</button>
+    <span class="hint" id="runHint">未登录，撤播功能已锁定</span>
+  </div>
+
+  <p class="note">
+    撤播顺序：① 删除该 BYOIP 下已购买的经典公网 IP（/25 等）→ ② BYOIP 撤播（UndoBroadcastBYOIP）→ ③（可选）删除 BYOIP 地址（DeleteBYOIP）。<br>
+    第 ③ 步仅在<strong>无剩余经典公网段</strong>且 BYOIP 处于<strong>撤播态</strong>（未广播/已撤销）时执行。
+  </p>
+</div>
+
+<div class="card" id="progressCard" style="display:none">
+  <div class="card-title">撤播进度</div>
+  <p class="hint" id="progressSummary" style="margin:0 0 8px">准备中…</p>
+  <div id="phaseGlobalBar" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;font-size:13px;font-weight:600;color:#1d4ed8"></div>
+  <div id="progressList" class="withdraw-progress-list"></div>
+</div>
+
+<div class="card">
+  <div class="card-title">执行结果</div>
+  <pre id="resultBox" class="note result-box">等待执行...</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .withdraw-progress-list { display: flex; flex-direction: column; gap: 14px; }
+  .withdraw-cidr-block {
+    border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+    background: #fafbfc;
+  }
+  .withdraw-cidr-title { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
+  .withdraw-step {
+    display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start;
+    padding: 8px 0; border-top: 1px solid #edf2f7;
+  }
+  .withdraw-step:first-of-type { border-top: none; padding-top: 0; }
+  .step-icon {
+    width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .step-icon.pending { background: #e2e8f0; color: #64748b; }
+  .step-icon.running { background: #dbeafe; color: #1d4ed8; }
+  .step-icon.done { background: #dcfce7; color: #15803d; }
+  .step-icon.failed { background: #fee2e2; color: #b91c1c; }
+  .step-icon.skipped { background: #f1f5f9; color: #64748b; }
+  .withdraw-option {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
+    color: var(--text); cursor: pointer; user-select: none;
+  }
+  .withdraw-option input { width: 16px; height: 16px; cursor: pointer; }
+  .step-label { font-weight: 600; font-size: 14px; }
+  .step-msg { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+  .segment-list { margin: 6px 0 0 0; padding-left: 0; list-style: none; font-size: 12px; }
+  .segment-list li { padding: 2px 0; color: var(--muted); }
+  .segment-list li.running { color: #1d4ed8; }
+  .segment-list li.done { color: #15803d; }
+  .segment-list li.failed { color: #b91c1c; }
+</style>
+<script>
+  const withdrawText = document.getElementById('withdrawText');
+  const runWithdrawBtn = document.getElementById('runWithdraw');
+  const runHint = document.getElementById('runHint');
+  const resultBox = document.getElementById('resultBox');
+  const authBanner = document.getElementById('authBanner');
+  const loggedBanner = document.getElementById('loggedBanner');
+  const withdrawSection = document.getElementById('withdrawSection');
+  const progressCard = document.getElementById('progressCard');
+  const progressList = document.getElementById('progressList');
+  const progressSummary = document.getElementById('progressSummary');
+  const phaseGlobalBar = document.getElementById('phaseGlobalBar');
+
+  const PHASE_GLOBAL_LABELS = {
+    collect: '查询网段信息',
+    delete_ip_all: '阶段一：删除 /25 经典公网段',
+    unbroadcast_all: '阶段二：BYOIP 撤播',
+    delete_byoip_all: '阶段三：删除 BYOIP 地址',
+    cleanup_loa: '阶段四：清理 LOA 文件',
+  };
+
+  const progressByCidr = {};
+
+  function setWithdrawLocked(locked, username, canWithdraw) {
+    withdrawText.disabled = locked;
+    runWithdrawBtn.disabled = locked;
+    withdrawSection.classList.toggle('is-locked', locked);
+    if (locked) {
+      authBanner.style.display = '';
+      loggedBanner.style.display = username ? '' : 'none';
+      if (username && canWithdraw === false) {
+        document.getElementById('loggedUserName').textContent = username;
+        runHint.textContent = '已登录但无「撤播」权限，请联系超级管理员';
+      } else {
+        runHint.textContent = '未登录，撤播功能已锁定';
+      }
+    } else {
+      authBanner.style.display = 'none';
+      loggedBanner.style.display = '';
+      document.getElementById('loggedUserName').textContent = username || '-';
+      runHint.textContent = '已解锁，可输入网段并撤播';
+      withdrawText.placeholder = '示例：\n155.117.118.0/24\n167.148.189.0/24';
+    }
+  }
+
+  function stepIconClass(status) {
+    if (status === 'done') return 'done';
+    if (status === 'failed') return 'failed';
+    if (status === 'running') return 'running';
+    if (status === 'skipped') return 'skipped';
+    return 'pending';
+  }
+
+  function stepIconChar(status) {
+    if (status === 'done') return '✓';
+    if (status === 'failed') return '✕';
+    if (status === 'running') return '…';
+    if (status === 'skipped') return '—';
+    return '○';
+  }
+
+  function ensureCidrBlock(cidr) {
+    if (progressByCidr[cidr]) return progressByCidr[cidr];
+    const block = document.createElement('div');
+    block.className = 'withdraw-cidr-block';
+    block.dataset.cidr = cidr;
+    block.innerHTML =
+      '<div class="withdraw-cidr-title">' + escapeHtml(cidr) + '</div>'
+      + '<div class="withdraw-step" data-phase="delete_ip">'
+      + '  <div class="step-icon pending" data-role="icon">○</div>'
+      + '  <div><div class="step-label">购买 IP 删除</div><div class="step-msg" data-role="msg">等待开始…</div>'
+      + '    <ul class="segment-list" data-role="segments"></ul></div>'
+      + '</div>'
+      + '<div class="withdraw-step" data-phase="unbroadcast">'
+      + '  <div class="step-icon pending" data-role="icon">○</div>'
+      + '  <div><div class="step-label">撤播 IP 段（BYOIP）</div><div class="step-msg" data-role="msg">等待上一步完成…</div></div>'
+      + '</div>'
+      + '<div class="withdraw-step" data-phase="delete_byoip">'
+      + '  <div class="step-icon pending" data-role="icon">○</div>'
+      + '  <div><div class="step-label">删除 BYOIP 地址</div><div class="step-msg" data-role="msg">等待撤播完成…</div></div>'
+      + '</div>';
+    progressByCidr[cidr] = { el: block, segments: {} };
+    return progressByCidr[cidr];
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+  }
+
+  function updatePhase(cidr, phase, status, message) {
+    const state = ensureCidrBlock(cidr);
+    const step = state.el.querySelector('.withdraw-step[data-phase="' + phase + '"]');
+    if (!step) return;
+    const icon = step.querySelector('[data-role="icon"]');
+    const msg = step.querySelector('[data-role="msg"]');
+    icon.className = 'step-icon ' + stepIconClass(status);
+    icon.textContent = stepIconChar(status);
+    msg.textContent = message || '';
+  }
+
+  function updateSegment(cidr, segmentCidr, status, message) {
+    const state = ensureCidrBlock(cidr);
+    const list = state.el.querySelector('[data-role="segments"]');
+    let li = state.segments[segmentCidr];
+    if (!li) {
+      li = document.createElement('li');
+      li.dataset.segment = segmentCidr;
+      state.segments[segmentCidr] = li;
+      list.appendChild(li);
+    }
+    li.className = status;
+    li.textContent = (status === 'running' ? '▸ ' : status === 'done' ? '✓ ' : status === 'failed' ? '✕ ' : '· ')
+      + segmentCidr + (message ? ' — ' + message : '');
+  }
+
+  function renderProgressList() {
+    progressList.innerHTML = '';
+    Object.keys(progressByCidr).forEach(cidr => {
+      progressList.appendChild(progressByCidr[cidr].el);
+    });
+  }
+
+  function handleProgressEvent(ev) {
+    const type = ev.type;
+    if (type === 'batch_start') {
+      progressSummary.textContent = '共 ' + ev.total + ' 个网段'
+        + (ev.dry_run ? '（演练模式）' : '') + '…';
+      return;
+    }
+    if (type === 'phase_global') {
+      // 全局阶段横幅：显示当前批量执行到哪一步
+      if (phaseGlobalBar) {
+        const label = PHASE_GLOBAL_LABELS[ev.phase] || ev.phase;
+        const isDone = !!ev.completed;
+        phaseGlobalBar.style.display = '';
+        if (isDone) {
+          phaseGlobalBar.style.background = '#e8f7ee';
+          phaseGlobalBar.style.borderColor = '#bbf7d0';
+          phaseGlobalBar.style.color = '#15803d';
+          phaseGlobalBar.textContent = '✓ ' + label + ' 完成';
+        } else {
+          phaseGlobalBar.style.background = '#eff6ff';
+          phaseGlobalBar.style.borderColor = '#bfdbfe';
+          phaseGlobalBar.style.color = '#1d4ed8';
+          phaseGlobalBar.textContent = '▸ ' + label + '…';
+        }
+      }
+      if (!ev.completed) {
+        progressSummary.textContent = (PHASE_GLOBAL_LABELS[ev.phase] || ev.phase) + '…';
+      }
+      return;
+    }
+    if (type === 'cidr_start') {
+      const isNew = !progressByCidr[ev.cidr];
+      ensureCidrBlock(ev.cidr);
+      renderProgressList();
+      // 仅在首次创建时初始化为 pending；已有进度的块不重置（四阶段模式下阶段一/二/三已写入进度）
+      if (isNew) {
+        updatePhase(ev.cidr, 'delete_ip', 'pending', '等待开始…');
+        updatePhase(ev.cidr, 'unbroadcast', 'pending', '等待购买 IP 删除完成…');
+        updatePhase(ev.cidr, 'delete_byoip', 'pending', '等待撤播完成…');
+      }
+      return;
+    }
+    if (type === 'phase') {
+      const st = ev.completed ? 'done' : (ev.status || 'running');
+      // 如果 cidr block 还不存在，立即创建并插入 DOM（阶段一/二/三的 phase 事件会带 cidr）
+      if (ev.cidr && !progressByCidr[ev.cidr]) {
+        ensureCidrBlock(ev.cidr);
+        renderProgressList();
+      }
+      updatePhase(ev.cidr, ev.phase, st, ev.message);
+      if (ev.phase === 'delete_ip' && st === 'done') {
+        updatePhase(ev.cidr, 'unbroadcast', 'pending', '等待撤播…');
+      }
+      if (ev.phase === 'unbroadcast' && st === 'done') {
+        updatePhase(ev.cidr, 'delete_byoip', 'pending', '等待删除 BYOIP…');
+      }
+      return;
+    }
+    if (type === 'segment') {
+      if (ev.cidr && !progressByCidr[ev.cidr]) {
+        ensureCidrBlock(ev.cidr);
+        renderProgressList();
+      }
+      updateSegment(ev.cidr, ev.segment_cidr, ev.status, ev.message);
+      return;
+    }
+    if (type === 'phase_detail' && ev.cidr && ev.message) {
+      updatePhase(ev.cidr, ev.phase || 'delete_ip', ev.status || 'running', ev.message);
+      return;
+    }
+    if (type === 'batch_done') {
+      progressSummary.textContent = '全部完成：成功 ' + ev.success_count + ' / ' + ev.total;
+      if (phaseGlobalBar) {
+        phaseGlobalBar.style.display = 'none';
+      }
+    }
+  }
+
+  async function refreshAuth() {
+    try {
+      const resp = await fetch('/api/auth/me');
+      const data = await resp.json();
+      setWithdrawLocked(!data.logged_in || !data.can_withdraw, data.username, data.can_withdraw);
+      const link = document.getElementById('accountLink');
+      if (link && data.logged_in) {
+        link.style.display = '';
+        link.textContent = data.can_manage_accounts ? '账号管理' : '修改密码';
+      }
+    } catch {
+      setWithdrawLocked(true, '');
+    }
+  }
+
+  document.getElementById('logoutBtn').onclick = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    await refreshAuth();
+    resultBox.textContent = '已退出登录';
+  };
+
+  async function runWithdraw() {
+    if (withdrawText.disabled) {
+      alert('请先登录管理员账号');
+      location.href = '/login?next=/withdraw';
+      return;
+    }
+    const text = withdrawText.value;
+    if (!text.trim()) { alert('请在文本框输入至少一个 IP 段'); return; }
+
+    runWithdrawBtn.disabled = true;
+    runHint.textContent = '撤播执行中…';
+    resultBox.textContent = '';
+    progressCard.style.display = '';
+    Object.keys(progressByCidr).forEach(k => delete progressByCidr[k]);
+    progressList.innerHTML = '';
+    progressSummary.textContent = '正在连接…';
+    if (phaseGlobalBar) { phaseGlobalBar.style.display = 'none'; phaseGlobalBar.textContent = ''; }
+
+    const resultLines = [];
+
+    try {
+      const resp = await fetch('/api/withdraw/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          withdraw_text: text,
+          delete_byoip: document.getElementById('deleteByoip').checked,
+        }),
+      });
+
+      if (resp.status === 401) {
+        await refreshAuth();
+        resultBox.textContent = '[FAIL] 登录已失效，请重新登录';
+        return;
+      }
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        resultBox.textContent = '[FAIL] ' + (errData.error || '撤播请求失败 HTTP ' + resp.status);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n');
+        buffer = parts.pop() || '';
+        for (const line of parts) {
+          if (!line.trim()) continue;
+          let ev;
+          try { ev = JSON.parse(line); } catch { continue; }
+          handleProgressEvent(ev);
+          if (ev.type === 'cidr_result') {
+            resultLines.push(
+              ev.ok
+                ? '[OK] ' + ev.cidr + ': ' + (ev.message || '完成')
+                : '[FAIL] ' + ev.cidr + ': ' + (ev.error || '失败')
+            );
+            if (!ev.ok) {
+              updatePhase(ev.cidr, 'delete_ip', 'failed', ev.error || '失败');
+              updatePhase(ev.cidr, 'unbroadcast', 'skipped', '已中止');
+              updatePhase(ev.cidr, 'delete_byoip', 'skipped', '已中止');
+            }
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        try {
+          const ev = JSON.parse(buffer);
+          handleProgressEvent(ev);
+        } catch { /* ignore */ }
+      }
+
+      resultBox.textContent = resultLines.length
+        ? resultLines.join('\n')
+        : '撤播已结束（无明细）';
+      runHint.textContent = '撤播完成';
+    } catch (err) {
+      resultBox.textContent = '请求失败: ' + err;
+      runHint.textContent = '';
+      progressSummary.textContent = '请求失败';
+    } finally {
+      if (!withdrawText.disabled) runWithdrawBtn.disabled = false;
+    }
+  }
+
+  runWithdrawBtn.onclick = runWithdraw;
+  refreshAuth();
+</script>
+{% endblock %}
