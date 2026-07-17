@@ -1830,6 +1830,30 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           let html = Buffer.concat(chunks).toString('utf-8');
           html = html.replace(/(<head[^>]*>)/i, '$1\n  <base href="/cds-proxy/">');
           html = html.replace(/(href|action|src)="\/(?!cds-proxy|http|\/)/g, '$1="/cds-proxy/');
+          // 注入 JS 拦截器：将页面内 fetch/XHR 的绝对路径 /api/ 改为 /cds-proxy/api/
+          // 这样 withdraw.html 里的 /api/auth/me 等请求都会走代理，带上内部 token
+          const interceptScript = `
+<script>
+(function(){
+  var _fetch = window.fetch;
+  window.fetch = function(input, init) {
+    if (typeof input === 'string' && input.startsWith('/') && !input.startsWith('/cds-proxy')) {
+      input = '/cds-proxy' + input;
+    } else if (input instanceof Request && input.url.startsWith('/') && !input.url.startsWith('/cds-proxy')) {
+      input = new Request('/cds-proxy' + input.url, input);
+    }
+    return _fetch.call(this, input, init);
+  };
+  var _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('/cds-proxy')) {
+      url = '/cds-proxy' + url;
+    }
+    return _open.apply(this, arguments);
+  };
+})();
+</script>`;
+          html = html.replace(/<\/head>/i, interceptScript + '</head>');
           res.end(html);
         });
       } else {
