@@ -455,6 +455,10 @@ async function sendRenewalNotifyEmail(
           billing_service: { ...bs, next_due_date: lastRenewalTs },
           _localRenewalStatus: 'renewed',
           _localRemark: upcomingStore[segKey]?.remark || '',
+          _localSupplier: (() => {
+            const local = (localData.ipSegments || []).find((s: any) => s.segment === segKey);
+            return local?.supplier || '';
+          })(),
         };
       });
 
@@ -492,6 +496,7 @@ async function sendRenewalNotifyEmail(
           loa: [],
           _localRenewalStatus: 'renewed',
           _localRemark: seg.remark || '',
+          _localSupplier: seg.supplier || '',
         };
       })
       .filter(Boolean);
@@ -566,7 +571,11 @@ async function sendRenewalNotifyEmail(
     </tr>`;
   }).join('');
 
-  const totalFee = sorted.reduce((acc: number, item: any) => acc + (item.billing_service?.recurring_amount ?? 0), 0) * 1.04;
+  const totalFee = sorted.reduce((acc: number, item: any) => {
+    const amount = Number(item.billing_service?.recurring_amount ?? 0);
+    const sup = (item._localSupplier || 'IPXO').trim().toLowerCase();
+    return acc + (sup === 'ipxo' || !sup ? amount * 1.04 : amount);
+  }, 0);
   const urgentCount = sorted.filter((item: any) => {
     const ts = item.billing_service?.next_due_date;
     return ts && (ts - nowSec2) <= 3 * 86400;
@@ -5378,7 +5387,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             remark: upcomingStore[segKey]?.remark || localSeg?.remark || '',
             projectGroups: localSeg?.projectGroups || [],
             monthlyPrice: localSeg?.monthlyPrice ?? bs?.recurring_amount ?? null,
-            supplier: localSeg?.supplier || 'IPXO',
+            supplier: localSeg?.supplier || '',
           };
         });
         res.statusCode = 200;
