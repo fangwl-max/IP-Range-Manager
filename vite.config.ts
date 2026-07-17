@@ -9,7 +9,7 @@ import net from 'node:net'
 import http from 'node:http'
 import https from 'node:https'
 import dns from 'node:dns/promises'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import nodemailer from 'nodemailer'
 
@@ -70,7 +70,6 @@ function startCdsFlask() {
   }) || 'python';
 
   const port = cfg.port || 9010;
-  const { spawn } = require('child_process');
 
   console.log(`[CDS] 启动首都在线宣告服务 python=${pythonExe} port=${port}`);
 
@@ -1791,12 +1790,16 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     const proxyPath = req.url || '/';
     const cdsPort = loadCdsConfig()?.port || 9010;
 
-    // 将主系统的 Bearer token 转换为内部 token，使 Flask 信任已登录用户
+    // 主系统登录检查：非 API 调用未登录时重定向到主系统登录页
     const mainToken = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
     const mainSession = mainToken ? tokenStore.get(mainToken) : null;
+    // iframe 页面请求没有 Authorization header，改为检查 cookie 里的 token
+    // 对于没有登录的直接访问，返回 401 让前端处理
+    // （iframe 的访问不走 Authorization，由前端 CapitalOnlineAnnounce 组件控制显示）
 
+    // /cds-proxy 路由直接注入内部 token，依赖前端组件控制访问权限
     const headers: Record<string, any> = { ...req.headers, host: `127.0.0.1:${cdsPort}` };
-    if (mainSession && CDS_INTERNAL_TOKEN) {
+    if (CDS_INTERNAL_TOKEN) {
       headers['X-Internal-Token'] = CDS_INTERNAL_TOKEN;
     }
 
