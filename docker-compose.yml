@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  ip-range-manager:
+    build: .
+    image: ip-range-manager:latest
+    container_name: ip-range-manager
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    volumes:
+      # ── 敏感配置文件（需在宿主机上提前创建）──────────────────────────────
+      - ./data/zen-config.json:/app/zen-config.json
+      - ./data/users.json:/app/users.json
+      - ./data/ipxo-config.json:/app/ipxo-config.json
+      - ./data/notify-config.json:/app/notify-config.json
+      - ./data/cds-config.json:/app/cds-config.json
+      - ./data/cds-app-config.yaml:/app/CDS-Auto-Announce/config.yaml
+
+      # ── 数据文件（线上动态更新）─────────────────────────────────────────
+      - ./data/ip-data.json:/app/ip-data.json
+      - ./data/ipxo-cache.json:/app/ipxo-cache.json
+      - ./data/ipxo-upcoming-status.json:/app/ipxo-upcoming-status.json
+      - ./data/asn-standby-groups.json:/app/asn-standby-groups.json
+
+      # ── 持久化目录（备份、导出、LOA 文件）──────────────────────────────
+      - ./data/backups:/app/backups
+      - ./data/exports:/app/exports
+      - ./data/loa:/app/CDS-Auto-Announce/loa
+      - ./data/cds-data:/app/CDS-Auto-Announce/data
+
+    environment:
+      - NODE_ENV=production
+      - TZ=Asia/Shanghai
+
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/api/auth/me"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

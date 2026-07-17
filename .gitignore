@@ -30,6 +30,9 @@ cds-config.json
 .env
 .env.*
 
+# Docker 数据挂载目录（含所有配置和数据文件）
+data/
+
 # 数据文件（线上为准，不用 git 管理）
 ip-data.json
 ip-data*.json
