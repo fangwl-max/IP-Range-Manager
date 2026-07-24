@@ -239,7 +239,11 @@ class IpxoLoaService:
             raise ValueError(
                 "IPXO 返回空内容（网段或 LOA 可能已终止），请在 IPXO 门户确认 LOA 仍为 Active"
             )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            detail = resp.text[:500] if resp.text else ""
+            raise ValueError(
+                f"IPXO LOA 下载失败 (HTTP {resp.status_code}): {detail}"
+            )
         return self._extract_pdf_from_payload(resp.content, loa_uuid)
 
     def fetch_and_save(
