@@ -41,8 +41,8 @@ web:
   # bgp.tools 上游接收查询缓存（秒）；未接受结果过期后重查；已接受结果长期固定展示直至撤播/再宣告/手动刷新
   bgp_upstream_cache_seconds: 3600
   # bgp.tools 上游查询代理（服务器机房 IP 被限流时配置）
-  # 支持 http://host:port 或 socks5://user:pass@host:port
-  # bgp_tools_proxy: "http://127.0.0.1:7890"
+  # 支持 http://user:pass@host:port 或 socks5://user:pass@host:port
+  bgp_tools_proxy: "http://user:pass@gate.kookeey.info:1000"
   # 撤播 DeletePublicIp 后轮询任务/VDC 的最长等待秒数
   withdraw_delete_wait_seconds: 300
   withdraw_delete_poll_seconds: 5
@@ -54,7 +54,7 @@ web:
 
 # IPXO：批量宣告时若本地无 LOA，自动从 IPXO 下载 PDF（需 billing scope）
 ipxo:
-  enabled: false
+  enabled: true
   client_id: "你的 Client ID"
   client_secret: "你的 APP API Key"
   tenant_uuid: "你的 Company UUID"

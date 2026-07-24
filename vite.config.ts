@@ -1853,6 +1853,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     }
     return _open.apply(this, arguments);
   };
+  var _winOpen = window.open;
+  window.open = function(url) {
+    if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('/cds-proxy')) {
+      arguments[0] = '/cds-proxy' + url;
+    }
+    return _winOpen.apply(this, arguments);
+  };
 })();
 </script>`;
           html = html.replace(/<\/head>/i, interceptScript + '</head>');
