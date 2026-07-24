@@ -229,22 +229,35 @@ class IpxoLoaService:
         raise ValueError("IPXO 返回的内容既不是 PDF 也不是 LOA 文档 ZIP")
 
     def download_loa_pdf(self, service_uuid: str, loa_uuid: str) -> bytes:
-        resp = requests.get(
-            self._tenant_url(f"/market/ipv4/services/{service_uuid}/loa/download"),
-            headers=self._headers(),
-            params={"loa_uuid": loa_uuid},
-            timeout=self.download_timeout,
+        max_retries = 3
+        last_err = ""
+        for attempt in range(max_retries):
+            if attempt > 0:
+                time.sleep(5 * attempt)
+            resp = requests.get(
+                self._tenant_url(f"/market/ipv4/services/{service_uuid}/loa/download"),
+                headers=self._headers(),
+                params={"loa_uuid": loa_uuid},
+                timeout=self.download_timeout,
+            )
+            if resp.status_code == 204 or not resp.content:
+                raise ValueError(
+                    "IPXO 返回空内容（网段或 LOA 可能已终止），请在 IPXO 门户确认 LOA 仍为 Active"
+                )
+            if resp.status_code >= 500 or (
+                resp.status_code == 400 and "not available" in (resp.text or "").lower()
+            ):
+                last_err = resp.text[:500] if resp.text else ""
+                continue
+            if resp.status_code >= 400:
+                detail = resp.text[:500] if resp.text else ""
+                raise ValueError(
+                    f"IPXO LOA 下载失败 (HTTP {resp.status_code}): {detail}"
+                )
+            return self._extract_pdf_from_payload(resp.content, loa_uuid)
+        raise ValueError(
+            f"IPXO LOA 下载失败（重试 {max_retries} 次仍不可用）: {last_err}"
         )
-        if resp.status_code == 204 or not resp.content:
-            raise ValueError(
-                "IPXO 返回空内容（网段或 LOA 可能已终止），请在 IPXO 门户确认 LOA 仍为 Active"
-            )
-        if resp.status_code >= 400:
-            detail = resp.text[:500] if resp.text else ""
-            raise ValueError(
-                f"IPXO LOA 下载失败 (HTTP {resp.status_code}): {detail}"
-            )
-        return self._extract_pdf_from_payload(resp.content, loa_uuid)
 
     def fetch_and_save(
         self,
