@@ -47,7 +47,8 @@ class IpxoLoaService:
         self.token_url = str(ipxo.get("token_url", DEFAULT_TOKEN_URL)).strip()
         self.api_base = str(ipxo.get("api_base", DEFAULT_API_BASE)).rstrip("/")
         self.scope = str(ipxo.get("scope", DEFAULT_SCOPE)).strip()
-        self.timeout = int(ipxo.get("timeout_seconds", 30))
+        self.timeout = int(ipxo.get("timeout_seconds", 60))
+        self.download_timeout = int(ipxo.get("download_timeout_seconds", 120))
         self._token: str = ""
         self._token_expires_at: float = 0.0
         self._services_cache: Optional[List[Dict[str, Any]]] = None
@@ -232,7 +233,7 @@ class IpxoLoaService:
             self._tenant_url(f"/market/ipv4/services/{service_uuid}/loa/download"),
             headers=self._headers(),
             params={"loa_uuid": loa_uuid},
-            timeout=self.timeout,
+            timeout=self.download_timeout,
         )
         if resp.status_code == 204 or not resp.content:
             raise ValueError(

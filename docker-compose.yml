@@ -33,10 +33,10 @@ services:
       - NODE_ENV=production
       - TZ=Asia/Shanghai
 
-    # 健康检查
+    # 健康检查（node:20-slim 无 wget/curl，使用 node 内置 http）
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/api/auth/me"]
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:8081/api/auth/me',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 60s
