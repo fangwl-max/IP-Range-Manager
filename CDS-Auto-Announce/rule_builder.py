@@ -95,12 +95,12 @@ def build_rule_from_form_row(
 
     loa_service = LoaService(cfg)
     if action == "announce" and auto_create:
-        try:
-            # force=True：始终重新从 IPXO 拉取最新 LOA，覆盖本地旧文件
-            # 确保 ASN 变更后不会沿用缓存的旧 LOA
-            ensure_loa_from_ipxo(cfg, normalized_cidr, asn=normalized_asn, force=True)
-        except ValueError as exc:
-            raise ValueError(f"IPXO 自动获取 LOA 失败（{normalized_cidr}）：{exc}") from exc
+        # 先检查本地是否已有 LOA（手动上传的优先），有则跳过 IPXO
+        if not loa_service.resolve_loa_path(normalized_cidr):
+            try:
+                ensure_loa_from_ipxo(cfg, normalized_cidr, asn=normalized_asn, force=True)
+            except ValueError as exc:
+                raise ValueError(f"IPXO 自动获取 LOA 失败（{normalized_cidr}）：{exc}") from exc
 
     loa_path = loa_service.resolve_loa_path(normalized_cidr) or loa_path_for_cidr(cfg, normalized_cidr)
     if action == "announce" and auto_create:
