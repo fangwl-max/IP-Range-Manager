@@ -688,8 +688,9 @@ def create_app(config_path: str) -> Flask:
         cidr = str(request.args.get("cidr", "")).strip()
         if not cidr:
             return jsonify({"ok": False, "error": "请提供 cidr 参数"}), 400
+        asn = str(request.args.get("asn", "")).strip()
         try:
-            status = _loa_service().loa_status(normalize_cidr_input(cidr))
+            status = _loa_service().loa_status(normalize_cidr_input(cidr), asn)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         return jsonify({"ok": True, **status})
@@ -699,6 +700,7 @@ def create_app(config_path: str) -> Flask:
         cidr = str(request.form.get("cidr", "")).strip()
         if not cidr:
             return jsonify({"ok": False, "error": "请提供网段 cidr"}), 400
+        asn = str(request.form.get("asn", "")).strip()
         upload = request.files.get("file")
         permanent = str(request.form.get("permanent", "")).lower() in {"1", "true", "yes"}
         try:
@@ -706,6 +708,7 @@ def create_app(config_path: str) -> Flask:
                 normalize_cidr_input(cidr),
                 upload,
                 permanent=permanent,
+                asn=asn,
             )
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
@@ -749,8 +752,9 @@ def create_app(config_path: str) -> Flask:
         cidr = str(request.args.get("cidr", "")).strip()
         if not cidr:
             return jsonify({"ok": False, "error": "请提供 cidr 参数"}), 400
+        asn = str(request.args.get("asn", "")).strip()
         try:
-            path = _loa_service().resolve_loa_path(normalize_cidr_input(cidr))
+            path = _loa_service().resolve_loa_path(normalize_cidr_input(cidr), asn)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         if not path:

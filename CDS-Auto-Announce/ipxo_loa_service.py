@@ -281,9 +281,9 @@ class IpxoLoaService:
 
         # 非强制模式：本地有文件直接返回，不调用 IPXO
         if not force:
-            existing = loa_service.resolve_loa_path(normalized)
+            existing = loa_service.resolve_loa_path(normalized, asn)
             if existing:
-                status = loa_service.loa_status(normalized)
+                status = loa_service.loa_status(normalized, asn)
                 status["source"] = "local"
                 return status
 
@@ -297,15 +297,16 @@ class IpxoLoaService:
         loa_uuid = str(loa.get("uuid", ""))
         pdf = self.download_loa_pdf(service_uuid, loa_uuid)
 
+        loa_asn = str(loa.get("asn", asn or ""))
         target = (
-            loa_service.permanent_path(normalized)
+            loa_service.permanent_path(normalized, loa_asn)
             if permanent
-            else loa_service.temp_path(normalized)
+            else loa_service.temp_path(normalized, loa_asn)
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(pdf)
 
-        status = loa_service.loa_status(normalized)
+        status = loa_service.loa_status(normalized, loa_asn)
         status["source"] = "ipxo"
         status["ipxo_service_uuid"] = service_uuid
         status["ipxo_service_status"] = service_status

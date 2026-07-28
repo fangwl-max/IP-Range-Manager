@@ -350,8 +350,11 @@
       if (!silent) setLoaSummary(row, false, '请先填写 CIDR');
       return null;
     }
+    const asn = normalizeAsnInput(row.querySelector('.asn').value || '');
     try {
-      const resp = await fetch('/api/loa/status?cidr=' + encodeURIComponent(cidr));
+      let url = '/api/loa/status?cidr=' + encodeURIComponent(cidr);
+      if (asn) url += '&asn=' + encodeURIComponent(asn);
+      const resp = await fetch(url);
       const data = await resp.json();
       if (!resp.ok || !data.ok) {
         setLoaSummary(row, false, data.error || '检查失败');
@@ -369,11 +372,13 @@
     const cidr = getCidrFromRow(row);
     if (!cidr) { alert('请先填写 CIDR 再上传 LOA'); return; }
     if (!file) return;
+    const asn = normalizeAsnInput(row.querySelector('.asn').value || '');
 
     const form = new FormData();
     form.append('cidr', cidr);
     form.append('file', file);
     form.append('permanent', 'true');
+    if (asn) form.append('asn', asn);
 
     const uploadBtn = row.querySelector('.btn-upload-loa');
     uploadBtn.disabled = true;
@@ -426,7 +431,10 @@
     row.querySelector('.btn-download-loa').onclick = () => {
       const cidr = getCidrFromRow(row);
       if (!cidr) { alert('请先填写 CIDR 再下载 LOA'); return; }
-      window.open('/api/loa/download?cidr=' + encodeURIComponent(cidr), '_blank', 'noopener');
+      const asn = normalizeAsnInput(row.querySelector('.asn').value || '');
+      let url = '/api/loa/download?cidr=' + encodeURIComponent(cidr);
+      if (asn) url += '&asn=' + encodeURIComponent(asn);
+      window.open(url, '_blank', 'noopener');
     };
     row.querySelector('.btn-upload-loa').onclick = () => {
       if (!getCidrFromRow(row)) { alert('请先填写 CIDR 再上传 LOA'); return; }

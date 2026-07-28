@@ -95,19 +95,19 @@ def build_rule_from_form_row(
 
     loa_service = LoaService(cfg)
     if action == "announce" and auto_create:
-        # 先检查本地是否已有 LOA（手动上传的优先），有则跳过 IPXO
-        if not loa_service.resolve_loa_path(normalized_cidr):
+        # 先检查本地是否已有匹配 ASN 的 LOA（手动上传的优先），有则跳过 IPXO
+        if not loa_service.resolve_loa_path(normalized_cidr, normalized_asn):
             try:
                 ensure_loa_from_ipxo(cfg, normalized_cidr, asn=normalized_asn, force=True)
             except ValueError as exc:
                 raise ValueError(f"IPXO 自动获取 LOA 失败（{normalized_cidr}）：{exc}") from exc
 
-    loa_path = loa_service.resolve_loa_path(normalized_cidr) or loa_path_for_cidr(cfg, normalized_cidr)
+    loa_path = loa_service.resolve_loa_path(normalized_cidr, normalized_asn) or loa_path_for_cidr(cfg, normalized_cidr)
     if action == "announce" and auto_create:
-        if not loa_service.resolve_loa_path(normalized_cidr):
-            expected = loa_service.permanent_path(normalized_cidr).name
+        if not loa_service.resolve_loa_path(normalized_cidr, normalized_asn):
+            expected = loa_service.permanent_path(normalized_cidr, normalized_asn).name
             raise ValueError(
-                f"缺少 LOA 文件（{normalized_cidr}），请先上传 PDF、配置 IPXO 自动拉取，"
+                f"缺少 LOA 文件（{normalized_cidr}, ASN {normalized_asn}），请先上传 PDF、配置 IPXO 自动拉取，"
                 f"或放入 loa 目录：{expected}"
             )
 

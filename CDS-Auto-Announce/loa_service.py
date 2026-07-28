@@ -16,7 +16,10 @@ ALLOWED_LOA_SUFFIX = {".pdf"}
 DEFAULT_TEMP_TTL_HOURS = 72
 
 
-def _loa_filename(address: str, mask: str) -> str:
+def _loa_filename(address: str, mask: str, asn: str = "") -> str:
+    if asn:
+        normalized_asn = asn.strip().upper().replace("AS", "")
+        return f"{address}_{mask}_AS{normalized_asn}.pdf"
     return f"{address}_{mask}.pdf"
 
 
@@ -51,51 +54,64 @@ class LoaService:
                 continue
         return removed
 
-    def permanent_path(self, cidr: str) -> Path:
+    def permanent_path(self, cidr: str, asn: str = "") -> Path:
         address, mask = parse_cidr(cidr)
-        return self.permanent_dir / _loa_filename(address, mask)
+        return self.permanent_dir / _loa_filename(address, mask, asn)
 
-    def temp_path(self, cidr: str) -> Path:
+    def temp_path(self, cidr: str, asn: str = "") -> Path:
         address, mask = parse_cidr(cidr)
-        return self.temp_dir / _loa_filename(address, mask)
+        return self.temp_dir / _loa_filename(address, mask, asn)
 
-    def resolve_loa_path(self, cidr: str) -> Optional[str]:
-        permanent = self.permanent_path(cidr)
-        if permanent.is_file():
-            return str(permanent)
-        temp = self.temp_path(cidr)
-        if temp.is_file():
-            return str(temp)
+    def resolve_loa_path(self, cidr: str, asn: str = "") -> Optional[str]:
+        """按 CIDR + ASN 查找 LOA 文件。
+
+        优先级：精确匹配(含ASN) > 无ASN通配文件。
+        分别在 permanent 和 temp 目录中查找。
+        """
+        address, mask = parse_cidr(cidr)
+        normalized_asn = ""
+        if asn:
+            normalized_asn = asn.strip().upper().replace("AS", "")
+
+        # 精确匹配（含 ASN）
+        if normalized_asn:
+            exact = self.permanent_dir / _loa_filename(address, mask, normalized_asn)
+            if exact.is_file():
+                return str(exact)
+            exact_temp = self.temp_dir / _loa_filename(address, mask, normalized_asn)
+            if exact_temp.is_file():
+                return str(exact_temp)
+
+        # 回退：无 ASN 的通配文件（兼容旧格式和手动上传）
+        generic = self.permanent_dir / _loa_filename(address, mask)
+        if generic.is_file():
+            return str(generic)
+        generic_temp = self.temp_dir / _loa_filename(address, mask)
+        if generic_temp.is_file():
+            return str(generic_temp)
         return None
 
-    def loa_status(self, cidr: str) -> Dict[str, Any]:
+    def loa_status(self, cidr: str, asn: str = "") -> Dict[str, Any]:
         address, mask = parse_cidr(cidr)
-        permanent = self.permanent_path(cidr)
-        temp = self.temp_path(cidr)
-        if permanent.is_file():
+        resolved = self.resolve_loa_path(cidr, asn)
+        if resolved:
+            p = Path(resolved)
+            location = "permanent" if self.permanent_dir in p.parents or p.parent == self.permanent_dir else "temp"
             return {
                 "cidr": f"{address}/{mask}",
                 "ready": True,
-                "location": "permanent",
-                "path": str(permanent),
-                "size": permanent.stat().st_size,
-                "updated_at": int(permanent.stat().st_mtime),
+                "location": location,
+                "path": resolved,
+                "size": p.stat().st_size,
+                "updated_at": int(p.stat().st_mtime),
             }
-        if temp.is_file():
-            return {
-                "cidr": f"{address}/{mask}",
-                "ready": True,
-                "location": "temp",
-                "path": str(temp),
-                "size": temp.stat().st_size,
-                "updated_at": int(temp.stat().st_mtime),
-            }
+        permanent = self.permanent_path(cidr, asn)
         return {
             "cidr": f"{address}/{mask}",
             "ready": False,
             "location": "none",
             "path": str(permanent),
-            "expected_filename": _loa_filename(address, mask),
+            "expected_filename": permanent.name,
         }
 
     def _validate_upload(self, upload: FileStorage) -> None:
@@ -112,13 +128,13 @@ class LoaService:
         if size > max_bytes:
             raise ValueError(f"文件过大，最大 {self.max_upload_mb} MB")
 
-    def save_upload(self, cidr: str, upload: FileStorage, *, permanent: bool = False) -> Dict[str, Any]:
+    def save_upload(self, cidr: str, upload: FileStorage, *, permanent: bool = False, asn: str = "") -> Dict[str, Any]:
         self._validate_upload(upload)
         address, mask = parse_cidr(cidr)
-        target = self.permanent_path(cidr) if permanent else self.temp_path(cidr)
+        target = self.permanent_path(cidr, asn) if permanent else self.temp_path(cidr, asn)
         upload.save(str(target))
         self.cleanup_temp()
-        status = self.loa_status(f"{address}/{mask}")
+        status = self.loa_status(f"{address}/{mask}", asn)
         status["saved_to"] = "permanent" if permanent else "temp"
         return status
 
