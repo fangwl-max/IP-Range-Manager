@@ -6415,20 +6415,8 @@ export default defineConfig({
     strictPort: true,
     hmr: false,       // 禁用 HMR，避免外网访问时 WebSocket 连接失败导致页面空白
     watch: {
-      ignored: [
-        '**/ip-data.json',
-        '**/ipxo-cache.json',
-        '**/ipxo-upcoming-status.json',
-        '**/asn-standby-groups.json',
-        '**/notify-config.json',
-        '**/local-cart.json',
-        '**/backups/**',
-        '**/exports/**',
-        '**/data/**',
-        '**/CDS-Auto-Announce/loa/**',
-        '**/CDS-Auto-Announce/data/**',
-        '**/node_modules/**',
-      ],
+      usePolling: false,
+      ignored: ['**/*'],
     },
   },
   preview: {
