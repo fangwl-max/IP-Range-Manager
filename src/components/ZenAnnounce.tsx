@@ -51,12 +51,12 @@ const ZenAnnounce: React.FC = () => {
                   },
                   {
                     key: 'zec-eip-delete',
-                    label: <span><DeleteOutlined /> EIP 删除</span>,
+                    label: <span><DeleteOutlined /> ZEC 删除弹性IP</span>,
                     children: <AdminOnly><ZenEipDelete regionOptions={regionOptions} /></AdminOnly>,
                   },
                   {
                     key: 'zec-cidr-delete',
-                    label: <span><ScissorOutlined /> CIDR 删除</span>,
+                    label: <span><ScissorOutlined /> ZEC 取消宣告</span>,
                     children: <AdminOnly><ZenCidrDeleteTab regionOptions={regionOptions} /></AdminOnly>,
                   },
                 ]}
