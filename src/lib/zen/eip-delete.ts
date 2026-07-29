@@ -732,6 +732,7 @@ async function* runOneSegment(
   const maxRounds = eipDeleteMaxRounds();
   let deleted = 0;
   let failed = 0;
+  let boundSkipped = 0;
   let pending = targets.map((t) => t.eipId);
 
   for (let round = 1; round <= maxRounds && pending.length > 0; round++) {
@@ -739,7 +740,7 @@ async function* runOneSegment(
       yield {
         type: "log",
         level: "info",
-        message: `[delete] ? ${round} ????? ${pending.length} ???? ${delayMs}ms??`,
+        message: `[delete] 第 ${round} 轮重试剩余 ${pending.length} 个，等待 ${delayMs}ms…`,
       };
       await sleep(delayMs);
     }
@@ -776,23 +777,23 @@ async function* runOneSegment(
         } else {
           const msg =
             r.reason instanceof Error ? r.reason.message : String(r.reason);
-          const retriable =
-            /5\d\d|timeout|超时|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(
+          const isBound =
+            /bindIng|binded|bindEd|bindStatus|bindType|associated|bindResource|occupied|bindConflict|绑定|已绑定|绑定中|bindingId|bindedId/i.test(
               msg
             );
-          if (retriable) {
+          if (isBound) {
+            boundSkipped += 1;
+            yield {
+              type: "log",
+              level: "warn",
+              message: `[delete] 跳过绑定状态 EIP：${ip} ${eipId}`,
+            };
+          } else {
             nextPending.push(eipId);
             yield {
               type: "log",
               level: "warn",
-              message: `[delete] ?????? ${ip} ${eipId}: ${msg.slice(0, 200)}`,
-            };
-          } else {
-            failed += 1;
-            yield {
-              type: "log",
-              level: "error",
-              message: `[delete] ????????${ip} ${eipId}: ${msg.slice(0, 400)}`,
+              message: `[delete] 删除失败（将重试）${ip} ${eipId}: ${msg.slice(0, 300)}`,
             };
           }
         }
@@ -807,14 +808,22 @@ async function* runOneSegment(
     yield {
       type: "log",
       level: "error",
-      message: `[delete] ?????? ${maxRounds}??? ${pending.length} ??????`,
+      message: `[delete] 达到最大轮次 ${maxRounds}，仍有 ${pending.length} 个删除失败`,
+    };
+  }
+
+  if (boundSkipped > 0) {
+    yield {
+      type: "log",
+      level: "warn",
+      message: `[delete] ${norm} 有 ${boundSkipped} 个 EIP 处于绑定状态已跳过`,
     };
   }
 
   yield {
     type: "delete_done",
     deleted,
-    skippedBound,
+    skippedBound: skippedBound + boundSkipped,
     failed,
     dryRun: false,
     deletableCount: targets.length,
