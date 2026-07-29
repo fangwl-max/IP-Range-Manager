@@ -3,11 +3,13 @@ import { Tabs, Result, Button } from 'antd';
 import { LockOutlined } from '@ant-design/icons';
 import {
   SoundOutlined, DeleteOutlined, GlobalOutlined, ScissorOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons';
 import ZenAnnounceTab from './ZenAnnounceTab';
 import ZenEipDelete from './ZenEipDelete';
 import ZenVobTab from './ZenVobTab';
 import ZenCidrDeleteTab from './ZenCidrDeleteTab';
+import ZenAnnouncedList from './ZenAnnouncedList';
 import { useAuth } from '../contexts/AuthContext';
 
 interface RegionOption { regionId: string; label: string; }
@@ -70,6 +72,11 @@ const ZenAnnounce: React.FC = () => {
                 onRegionsLoaded={setRegionOptions}
               />
             ),
+          },
+          {
+            key: 'announced',
+            label: <span><UnorderedListOutlined /> 已宣告IP段</span>,
+            children: <ZenAnnouncedList />,
           },
         ]}
       />

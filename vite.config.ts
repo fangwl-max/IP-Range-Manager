@@ -6285,7 +6285,63 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     }
   });
 
-  // 
+  // GET /api/zen/announced/zec — 列出 ZEC 所有已宣告 CIDR
+  server.middlewares.use('/api/zen/announced/zec', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    try {
+      const { ak, sk } = getZenCreds();
+      const { zecCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js');
+      const ver = (await import('./src/lib/zen/credentials.js')).apiVersion();
+      const allRows: any[] = [];
+      let pageNum = 1;
+      while (true) {
+        const data = await zecCall('DescribeCidrs', { pageSize: 100, pageNum }, ak, sk, ver);
+        const inner = unwrapResponse(data);
+        const rows = (inner.dataSet as any[]) || [];
+        allRows.push(...rows);
+        const total = Number(inner.totalCount ?? 0);
+        if (pageNum * 100 >= total || rows.length < 100) break;
+        pageNum++;
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length }));
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // GET /api/zen/announced/bmc — 列出 BMC(VOB) 所有已宣告 CIDR Block
+  server.middlewares.use('/api/zen/announced/bmc', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    try {
+      const { ak, sk } = getZenCreds();
+      const { bmcCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js');
+      const ver = '2024-09-01';
+      const allRows: any[] = [];
+      let pageNum = 1;
+      while (true) {
+        const data = await bmcCall('DescribeCidrBlocks', { pageSize: 100, pageNum }, ak, sk, ver);
+        const inner = unwrapResponse(data);
+        const rows = (inner.dataSet as any[]) || [];
+        allRows.push(...rows);
+        const total = Number(inner.totalCount ?? 0);
+        if (pageNum * 100 >= total || rows.length < 100) break;
+        pageNum++;
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length }));
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  //
   // DEBUG: GET /api/zen/debug/cidr-blocks?cidr=xxx
   server.middlewares.use('/api/zen/debug/cidr-blocks', async (req, res, _next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
