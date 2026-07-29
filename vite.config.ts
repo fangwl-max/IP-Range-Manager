@@ -107,6 +107,15 @@ function hashPassword(password: string): string {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
 
+function readRequestBody(req: any): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: any) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+
 function loadUsers(): any[] {
   try {
     if (fs.existsSync(usersFilePath)) {
@@ -1892,11 +1901,12 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
       
       if (req.method === 'POST') {
-        let body = '';
+        const chunks: Buffer[] = [];
         req.on('data', chunk => {
-          body += chunk.toString();
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         });
         req.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf-8');
           try {
             fs.writeFileSync(dataFilePath, body, 'utf-8');
 
@@ -2007,9 +2017,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         res.end('Method Not Allowed');
         return;
       }
-      let body = '';
-      req.on('data', chunk => { body += chunk.toString(); });
-      req.on('end', () => {
+      const _chunks: Buffer[] = []; let body = '';
+      req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+      req.on('end', () => { body = Buffer.concat(_chunks).toString('utf-8');
         try {
           const { username, password } = JSON.parse(body);
           const users = loadUsers();
@@ -2120,9 +2130,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         return;
       }
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', () => {
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             const data = JSON.parse(body);
             const { action, id, username, password, displayName, role } = data;
@@ -2809,9 +2819,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
 
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             const data = JSON.parse(body);
             const asn = normalizeAS(data.asn || '');
@@ -2878,9 +2888,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
 
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             const data = JSON.parse(body);
             const prefix = (data.prefix || '').trim();
@@ -2934,9 +2944,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
 
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             const data = JSON.parse(body);
             const asn = normalizeAS(data.asn || '');
@@ -3195,9 +3205,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
 
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             const data = JSON.parse(body);
             const asn = (data.asn || '').trim();
@@ -3481,9 +3491,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (req.method === 'GET' || req.method === 'POST') {
         let resource = '';
         if (req.method === 'POST') {
-          let body = '';
-          req.on('data', chunk => { body += chunk.toString(); });
-          req.on('end', async () => {
+          const _chunks: Buffer[] = []; let body = '';
+          req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+          req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
             try {
               try {
                 const data = JSON.parse(body || '{}');
@@ -3981,9 +3991,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const config = loadIpxoConfig();
         if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
 
-        let body = '';
-        req.on('data', (chunk: any) => { body += chunk.toString(); });
-        req.on('end', async () => {
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             // payload: { asn: number, subnets: string[], companyName?: string }
             const payload = JSON.parse(body);
@@ -4217,9 +4227,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
 
         if (req.method === 'POST') {
-          let body = '';
-          req.on('data', (chunk: any) => { body += chunk.toString(); });
-          req.on('end', async () => {
+          const _chunks: Buffer[] = []; let body = '';
+          req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+          req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
             try {
               const payload = JSON.parse(body);
               const items: any[] = Array.isArray(payload) ? payload : [payload];
@@ -5325,9 +5335,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
 
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', (chunk: any) => { body += chunk.toString(); });
-        req.on('end', () => {
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             const payload = JSON.parse(body);
             const existing = loadNotifyConfig();
@@ -5433,11 +5443,12 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           return;
         }
         // 读取请求体（前端可传入自定义 items/renewedItems，否则后端自动从缓存获取）
-        let body = '';
+        const _chunks: Buffer[] = [];
         await new Promise<void>((resolve) => {
-          req.on('data', (chunk: any) => { body += chunk.toString(); });
+          req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
           req.on('end', resolve);
         });
+        const body = Buffer.concat(_chunks).toString('utf-8');
 
         let customItems: any[] | undefined;
         let renewedItems: any[] | undefined;
@@ -5569,9 +5580,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
       if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' })); return; }
 
-      let body = '';
-      req.on('data', (chunk: any) => { body += chunk.toString(); });
-      req.on('end', () => {
+      const _chunks: Buffer[] = []; let body = '';
+      req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+      req.on('end', () => { body = Buffer.concat(_chunks).toString('utf-8');
         try {
           const { segments, renewalStatus } = JSON.parse(body);
           if (!Array.isArray(segments) || segments.length === 0) {
@@ -5611,9 +5622,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
       if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' })); return; }
 
-      let body = '';
-      req.on('data', (chunk: any) => { body += chunk.toString(); });
-      req.on('end', () => {
+      const _chunks: Buffer[] = []; let body = '';
+      req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+      req.on('end', () => { body = Buffer.concat(_chunks).toString('utf-8');
         try {
           const { segment, remark } = JSON.parse(body);
           if (!segment) {
@@ -5681,9 +5692,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
 
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', (chunk: any) => { body += chunk.toString(); });
-        req.on('end', () => {
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             const payload = JSON.parse(body);
             fs.writeFileSync(asnStandbyFilePath, JSON.stringify(payload, null, 2), 'utf-8');
