@@ -1602,10 +1602,10 @@ function startWeeklyReportScheduler(): void {
 }
 
 /**
- * 每天 03:00 北京时间自动刷新 IPXO 缓存并同步新增 IP 段
+ * 每天 00:00 北京时间自动刷新 IPXO 缓存并同步新增 IP 段
  */
 function startIpxoCacheRefreshScheduler(): void {
-  console.log('[IpxoCache] 每日自动刷新任务已启动，将在每天 03:00 北京时间执行...');
+  console.log('[IpxoCache] 每日自动刷新任务已启动，将在每天 00:00 北京时间执行...');
 
   let lastRefreshDate = '';
 
@@ -1621,10 +1621,10 @@ function startIpxoCacheRefreshScheduler(): void {
       const bjHour = bjNow.getUTCHours();
       const bjMinute = bjNow.getUTCMinutes();
 
-      if (bjHour !== 3 || bjMinute > 4) return;
+      if (bjHour !== 0 || bjMinute > 4) return;
       if (lastRefreshDate === bjDate) return;
 
-      console.log(`[IpxoCache] 开始每日自动刷新缓存（${bjDate} 03:00 北京时间）...`);
+      console.log(`[IpxoCache] 开始每日自动刷新缓存（${bjDate} 00:00 北京时间）...`);
       const { servicesCount, invoicesCount } = await refreshIpxoCache();
       lastRefreshDate = bjDate;
       console.log(`[IpxoCache] 缓存刷新完成：${servicesCount} 条服务，${invoicesCount} 条发票`);
