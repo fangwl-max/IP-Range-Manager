@@ -6334,6 +6334,31 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const { zecCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js');
       const ver = (await import('./src/lib/zen/credentials.js')).apiVersion();
 
+      // 城市名中文映射
+      const CITY_CN: Record<string, string> = {
+        'Frankfurt': '法兰克福', 'Los Angeles': '洛杉矶', 'Hong Kong': '香港',
+        'Singapore': '新加坡', 'Tokyo': '东京', 'Seoul': '首尔',
+        'Mumbai': '孟买', 'Jakarta': '雅加达', 'Bangkok': '曼谷',
+        'Manila': '马尼拉', 'Taipei': '台北', 'London': '伦敦',
+        'Amsterdam': '阿姆斯特丹', 'Paris': '巴黎', 'Dallas': '达拉斯',
+        'Washington': '华盛顿', 'Chicago': '芝加哥', 'Miami': '迈阿密',
+        'New York': '纽约', 'San Jose': '圣何塞', 'Seattle': '西雅图',
+        'São Paulo': '圣保罗', 'Sao Paulo': '圣保罗', 'Sydney': '悉尼',
+        'Johannesburg': '约翰内斯堡', 'Dubai': '迪拜', 'Istanbul': '伊斯坦布尔',
+        'Moscow': '莫斯科', 'Riyadh': '利雅得', 'Lagos': '拉各斯',
+        'Kuala Lumpur': '吉隆坡', 'Ho Chi Minh': '胡志明', 'Dhaka': '达卡',
+        'Guangzhou': '广州', 'Shanghai': '上海', 'Shenzhen': '深圳',
+        'Beijing': '北京', 'Osaka': '大阪', 'Chennai': '钦奈',
+        'Silicon Valley': '硅谷', 'Phoenix': '凤凰城',
+      };
+      const toChinese = (label: string) => {
+        if (!label) return label;
+        for (const [en, cn] of Object.entries(CITY_CN)) {
+          if (label.includes(en)) return label.replace(en, cn);
+        }
+        return label;
+      };
+
       // 1. 获取所有支持 BYOIP 的 region
       const regData = await zecCall('DescribeByoipRegions', {}, ak, sk, ver);
       const regInner = unwrapResponse(regData);
@@ -6347,7 +6372,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           const labelData = await zecCall('DescribeSubnetRegions', { regionIds }, ak, sk, ver);
           const labelInner = unwrapResponse(labelData);
           for (const r of (labelInner.regionSet as any[]) || []) {
-            if (r.regionId) regionLabels[r.regionId] = r.regionTitle || r.regionName || r.regionId;
+            if (r.regionId) regionLabels[r.regionId] = toChinese(r.regionTitle || r.regionName || r.regionId);
           }
         } catch { /* ignore */ }
       }
@@ -6362,6 +6387,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           const rows = (inner.dataSet as any[]) || [];
           for (const row of rows) {
             row._regionLabel = regionLabels[row.regionId] || row.regionId;
+            // snake_case → camelCase 兼容
+            if (row.network_type != null && row.networkType == null) row.networkType = row.network_type;
+            if (row.used_count != null && row.usedCount == null) row.usedCount = row.used_count;
+            if (row.total_count != null && row.totalCount == null) row.totalCount = row.total_count;
+            if (row.charge_type != null && row.chargeType == null) row.chargeType = row.charge_type;
+            if (row.create_time != null && row.createTime == null) row.createTime = row.create_time;
+            if (row.cidr_id != null && row.cidrId == null) row.cidrId = row.cidr_id;
+            if (row.cidr_block != null && row.cidrBlock == null) row.cidrBlock = row.cidr_block;
+            if (row.region_id != null && row.regionId == null) row.regionId = row.region_id;
+            // ip_count / ipCount 映射到 totalCount（ZEN API 中 CIDR 总 IPv4 数字段）
+            if (row.ipCount != null && row.totalCount == null) row.totalCount = row.ipCount;
+            if (row.ip_count != null && row.totalCount == null) row.totalCount = row.ip_count;
           }
           allRows.push(...rows);
           const total = Number(inner.totalCount ?? 0);
@@ -6370,8 +6407,15 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         }
       }
 
+      // 按 createTime 倒序（最新宣告的在上面）
+      allRows.sort((a, b) => {
+        const ta = a.createTime || '';
+        const tb = b.createTime || '';
+        return tb.localeCompare(ta);
+      });
+
       res.statusCode = 200;
-      res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length, regionLabels }));
+      res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length, regionLabels, _sampleKeys: allRows[0] ? Object.keys(allRows[0]) : [] }));
     } catch (e: any) {
       res.statusCode = 500;
       res.end(JSON.stringify({ success: false, message: e.message }));
@@ -6388,13 +6432,37 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const { bmcCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js');
       const ver = '2024-09-01';
 
+      const CITY_CN: Record<string, string> = {
+        'Frankfurt': '法兰克福', 'Los Angeles': '洛杉矶', 'Hong Kong': '香港',
+        'Singapore': '新加坡', 'Tokyo': '东京', 'Seoul': '首尔',
+        'Mumbai': '孟买', 'Jakarta': '雅加达', 'Bangkok': '曼谷',
+        'Manila': '马尼拉', 'Taipei': '台北', 'London': '伦敦',
+        'Amsterdam': '阿姆斯特丹', 'Paris': '巴黎', 'Dallas': '达拉斯',
+        'Washington': '华盛顿', 'Chicago': '芝加哥', 'Miami': '迈阿密',
+        'New York': '纽约', 'San Jose': '圣何塞', 'Seattle': '西雅图',
+        'São Paulo': '圣保罗', 'Sao Paulo': '圣保罗', 'Sydney': '悉尼',
+        'Johannesburg': '约翰内斯堡', 'Dubai': '迪拜', 'Istanbul': '伊斯坦布尔',
+        'Moscow': '莫斯科', 'Riyadh': '利雅得', 'Lagos': '拉各斯',
+        'Kuala Lumpur': '吉隆坡', 'Ho Chi Minh': '胡志明', 'Dhaka': '达卡',
+        'Guangzhou': '广州', 'Shanghai': '上海', 'Shenzhen': '深圳',
+        'Beijing': '北京', 'Osaka': '大阪', 'Chennai': '钦奈',
+        'Silicon Valley': '硅谷', 'Phoenix': '凤凰城',
+      };
+      const toChinese = (label: string) => {
+        if (!label) return label;
+        for (const [en, cn] of Object.entries(CITY_CN)) {
+          if (label.includes(en)) return label.replace(en, cn);
+        }
+        return label;
+      };
+
       // 获取 zone labels
       const zoneLabels: Record<string, string> = {};
       try {
         const zoneData = await bmcCall('DescribeZones', {}, ak, sk, ver);
         const zoneInner = unwrapResponse(zoneData);
         for (const z of (zoneInner.zoneSet as any[]) || []) {
-          if (z.zoneId) zoneLabels[z.zoneId] = z.cityName || z.zoneName || z.zoneId;
+          if (z.zoneId) zoneLabels[z.zoneId] = toChinese(z.cityName || z.zoneName || z.zoneId);
         }
       } catch { /* ignore */ }
 
@@ -6406,12 +6474,27 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const rows = (inner.dataSet as any[]) || [];
         for (const row of rows) {
           row._zoneLabel = zoneLabels[row.zoneId] || row.zoneId;
+          // snake_case → camelCase 兼容
+          if (row.cidr_block_id != null && row.cidrBlockId == null) row.cidrBlockId = row.cidr_block_id;
+          if (row.cidr_block_name != null && row.cidrBlockName == null) row.cidrBlockName = row.cidr_block_name;
+          if (row.cidr_block != null && row.cidrBlock == null) row.cidrBlock = row.cidr_block;
+          if (row.zone_id != null && row.zoneId == null) row.zoneId = row.zone_id;
+          if (row.instance_ids != null && row.instanceIds == null) row.instanceIds = row.instance_ids;
+          if (row.create_time != null && row.createTime == null) row.createTime = row.create_time;
         }
         allRows.push(...rows);
         const total = Number(inner.totalCount ?? 0);
         if (pageNum * 100 >= total || rows.length < 100) break;
         pageNum++;
       }
+
+      // 按 createTime 倒序
+      allRows.sort((a, b) => {
+        const ta = a.createTime || '';
+        const tb = b.createTime || '';
+        return tb.localeCompare(ta);
+      });
+
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length, zoneLabels }));
     } catch (e: any) {
