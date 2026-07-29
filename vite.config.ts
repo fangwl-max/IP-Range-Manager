@@ -4242,12 +4242,27 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
                   billing_cycle: item.billing_cycle || 1,
                   product_fields: { address: item.address, cidr: Number(item.cidr) },
                 });
-                const result = await callIpxoApiPost(
-                  `/billing/v1/{tenant_uuid}/cart/items`,
-                  cartBody
-                );
-                results.push({ address: item.address, cidr: item.cidr, status: result.status, body: result.body });
-                if (result.status === 200 || result.status === 201) {
+                try {
+                  const result = await callIpxoApiPost(
+                    `/billing/v1/{tenant_uuid}/cart/items`,
+                    cartBody
+                  );
+                  const ok = result.status >= 200 && result.status < 300;
+                  results.push({ address: item.address, cidr: item.cidr, status: result.status, body: result.body });
+                  if (ok) {
+                    successItems.push({
+                      address: item.address,
+                      cidr: item.cidr,
+                      segment: `${item.address}/${item.cidr}`,
+                      price: item.price || null,
+                      registry: item.registry || '',
+                      addedAt: new Date().toISOString(),
+                      cartUuid: result.body?.data?.uuid || result.body?.uuid || '',
+                    });
+                  }
+                } catch (reqErr: any) {
+                  // timeout 或网络错误 — IPXO 可能已处理，标记为 uncertain
+                  results.push({ address: item.address, cidr: item.cidr, status: 0, body: { message: reqErr.message || 'request error' }, uncertain: true });
                   successItems.push({
                     address: item.address,
                     cidr: item.cidr,
@@ -4255,7 +4270,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
                     price: item.price || null,
                     registry: item.registry || '',
                     addedAt: new Date().toISOString(),
-                    cartUuid: result.body?.data?.uuid || result.body?.uuid || '',
+                    cartUuid: '',
+                    uncertain: true,
                   });
                 }
               }

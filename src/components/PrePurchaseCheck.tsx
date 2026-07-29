@@ -179,6 +179,7 @@ const PrePurchaseCheck: React.FC = () => {
   const [cart, setCart] = useState<any>(null);
   const [cartLoading, setCartLoading] = useState(false);
   const [addingToCart, setAddingToCart] = useState(false);
+  const [cartAddedSegments, setCartAddedSegments] = useState<Set<string>>(new Set());
 
   // ── 已租用 IP 段列表 ────────────────────────────────────────────────────
   const [leasedItems, setLeasedItems] = useState<LeasedSegment[]>([]);
@@ -268,6 +269,7 @@ const PrePurchaseCheck: React.FC = () => {
     setSearching(true);
     setItems([]);
     setSelectedKeys([]);
+    setCartAddedSegments(new Set());
     try {
       await loadExistingSegments();
       const params = new URLSearchParams();
@@ -439,14 +441,23 @@ const PrePurchaseCheck: React.FC = () => {
       });
       const json = await res.json();
       if (json.success) {
-        const succeeded = json.results?.filter((r: any) => r.status === 200 || r.status === 201).length || 0;
+        const succeeded = json.results?.filter((r: any) => (r.status >= 200 && r.status < 300) || r.uncertain).length || 0;
+        const uncertain = json.results?.filter((r: any) => r.uncertain).length || 0;
         const failed = (json.results?.length || 0) - succeeded;
         if (succeeded > 0) {
-          message.success(`成功添加 ${succeeded} 个 IP 段到购物车`);
+          const confirmedSegments = json.results
+            ?.filter((r: any) => (r.status >= 200 && r.status < 300) || r.uncertain)
+            .map((r: any) => `${r.address}/${r.cidr}`) || [];
+          setCartAddedSegments(prev => new Set([...prev, ...confirmedSegments]));
+          setSelectedKeys(prev => prev.filter(k => !confirmedSegments.includes(k)));
+          const msg = uncertain > 0
+            ? `${succeeded} 个 IP 段已提交（其中 ${uncertain} 个因超时无法确认，请到 IPXO 平台验证）`
+            : `成功添加 ${succeeded} 个 IP 段到购物车`;
+          message.success(msg);
         }
         if (failed > 0) {
           const failedDetails = json.results
-            ?.filter((r: any) => r.status !== 200 && r.status !== 201)
+            ?.filter((r: any) => r.status >= 300 || (r.status > 0 && r.status < 200))
             .map((r: any) => `${r.address}/${r.cidr}: ${r.body?.message || r.status}`)
             .join('; ');
           message.warning(`${failed} 个添加失败（${failedDetails || '可能已在购物车或不可购买'}）`);
@@ -598,6 +609,7 @@ const PrePurchaseCheck: React.FC = () => {
       title: 'A/B 段',
       key: 'ab',
       width: 100,
+      sorter: (a: MarketItem, b: MarketItem) => (a.dupCount || 0) - (b.dupCount || 0),
       render: (_: any, r: MarketItem) => {
         const dup = r.dupCount || 0;
         const dupColor = dup === 0 ? 'green' : dup <= 7 ? 'blue' : dup <= 19 ? 'orange' : 'red';
@@ -837,7 +849,14 @@ const PrePurchaseCheck: React.FC = () => {
                       loading={searching} dataSource={displayItems} columns={columns} rowKey="segment"
                       size="small" scroll={{ x: 800 }}
                       pagination={{ defaultPageSize: 50, showSizeChanger: true, pageSizeOptions: ['20','50','100','200'], showTotal: t => `共 ${t} 条`, onChange: () => setSelectedKeys([]) }}
-                      rowSelection={{ selectedRowKeys: selectedKeys, onChange: keys => setSelectedKeys(keys as string[]) }}
+                      rowSelection={{
+                        selectedRowKeys: selectedKeys,
+                        onChange: keys => setSelectedKeys(keys as string[]),
+                        getCheckboxProps: (record: any) => ({
+                          disabled: cartAddedSegments.has(record.segment),
+                          title: cartAddedSegments.has(record.segment) ? '已添加到购物车' : undefined,
+                        }),
+                      }}
                       rowClassName={(r) => (r.dupCount || 0) > 0 ? 'row-dup-ab' : ''}
                     />
                   )}
