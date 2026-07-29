@@ -29,13 +29,13 @@ function eipListPageTimeoutMs(): number {
 function eipDeleteConcurrency(): number {
   const n = Number(process.env.ZENLAYER_EIP_DELETE_CONCURRENCY?.trim());
   if (Number.isFinite(n) && n >= 1) return Math.min(32, Math.floor(n));
-  return 16;
+  return 10;
 }
 
 function eipDeleteRetryDelayMs(): number {
   const n = Number(process.env.ZENLAYER_EIP_DELETE_RETRY_DELAY_MS?.trim());
   if (Number.isFinite(n) && n >= 0) return Math.min(120_000, Math.floor(n));
-  return 2500;
+  return 10000;
 }
 
 /** ? 1 ???????????????? DescribeEips?????????? */
