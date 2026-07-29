@@ -6230,6 +6230,45 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     }
   });
 
+  // ─── POST /api/zen/zec-cidr-delete ─── ZEC CIDR 删除（DeleteCidr）（NDJSON 流）
+  server.middlewares.use('/api/zen/zec-cidr-delete', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
+    const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
+    const session = token ? tokenStore.get(token) : null;
+    if (!session || session.role !== 'admin') {
+      res.setHeader('Content-Type', 'application/json');
+      res.statusCode = 403;
+      res.end(JSON.stringify({ type: 'error', message: '需要管理员权限才能执行 CIDR 删除操作' }));
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const { ak, sk } = getZenCreds();
+      let tasks: { regionId: string; cidrBlock: string }[];
+      if (Array.isArray(body?.tasks)) {
+        tasks = body.tasks.map((t: any) => ({
+          regionId: String(t.regionId ?? '').trim(),
+          cidrBlock: String(t.cidrBlock ?? '').trim(),
+        })).filter((t: any) => t.cidrBlock);
+      } else {
+        const cidrBlock = String(body?.cidrBlock ?? '').trim();
+        if (!cidrBlock) throw new Error('请求体需包含 tasks[] 或 cidrBlock');
+        tasks = [{ regionId: String(body?.regionId ?? '').trim(), cidrBlock }];
+      }
+      if (!tasks.length) throw new Error('请至少填写一行 CIDR');
+      const scanRegionIds = (body?.scanRegionIds || []).map((x: any) => String(x).trim()).filter(Boolean);
+      const { runZecCidrDelete } = await import('./src/lib/zen/zec-cidr-delete.js' as any);
+      await streamNdjson(res, runZecCidrDelete({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk));
+    } catch (e: any) {
+      if (!res.headersSent) { res.setHeader('Content-Type', 'application/json'); res.statusCode = 500; }
+      res.end(JSON.stringify({ type: 'error', message: e.message }));
+    }
+  });
+
   // ─── POST /api/zen/byoip-withdraw-by-id ─── 直接按 cidrBlockId 取消宣告（NDJSON 流）
   server.middlewares.use('/api/zen/byoip-withdraw-by-id', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');

@@ -99,7 +99,7 @@ const ZenCidrDeleteTab: React.FC<{ regionOptions: RegionOption[] }> = ({ regionO
       setSegments(prev => prev.map((s, i) => i === idx ? { ...s, logs: [...s.logs.slice(-299), msg] } : s));
 
     try {
-      const resp = await fetch('/api/zen/byoip-withdraw', {
+      const resp = await fetch('/api/zen/zec-cidr-delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
