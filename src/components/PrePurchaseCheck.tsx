@@ -159,6 +159,8 @@ const PrePurchaseCheck: React.FC = () => {
   // 智能筛选
   const [smartFilterModalVisible, setSmartFilterModalVisible] = useState(false);
   const [sfDedupAb, setSfDedupAb] = useState(false);
+  const [sfDedupKeepCount, setSfDedupKeepCount] = useState(1);
+  const [sfDedupSortBy, setSfDedupSortBy] = useState<'price_asc' | 'price_desc'>('price_asc');
   const [sfExcludeExisting, setSfExcludeExisting] = useState(false);
   const [sfNoAbuse, setSfNoAbuse] = useState(false);
   const [sfPriceFilterMin, setSfPriceFilterMin] = useState<number | null>(null);
@@ -405,18 +407,21 @@ const PrePurchaseCheck: React.FC = () => {
       result = result.filter(i => i.price <= sfPriceFilterMax);
     }
     if (sfDedupAb) {
-      const seen = new Map<string, MarketItem>();
+      const groups = new Map<string, MarketItem[]>();
       for (const item of result) {
         const key = item.abSegKey || item.segment;
-        const existing = seen.get(key);
-        if (!existing || item.price < existing.price) {
-          seen.set(key, item);
-        }
+        const arr = groups.get(key) || [];
+        arr.push(item);
+        groups.set(key, arr);
       }
-      result = [...seen.values()];
+      result = [];
+      for (const arr of groups.values()) {
+        arr.sort((a, b) => sfDedupSortBy === 'price_asc' ? a.price - b.price : b.price - a.price);
+        result.push(...arr.slice(0, sfDedupKeepCount));
+      }
     }
     return result;
-  }, [items, smartFilterActiveCount, sfDedupAb, sfExcludeExisting, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
+  }, [items, smartFilterActiveCount, sfDedupAb, sfDedupKeepCount, sfDedupSortBy, sfExcludeExisting, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
 
   // ── 添加到购物车 ────────────────────────────────────────────────────────
   const handleAddToCart = useCallback(async () => {
@@ -794,7 +799,8 @@ const PrePurchaseCheck: React.FC = () => {
                         </Badge>
                         {smartFilterActiveCount > 0 && (
                           <Button size="small" type="link" danger onClick={() => {
-                            setSfDedupAb(false); setSfExcludeExisting(false);
+                            setSfDedupAb(false); setSfDedupKeepCount(1); setSfDedupSortBy('price_asc');
+                            setSfExcludeExisting(false);
                             setSfNoAbuse(false); setSfPriceFilterMin(null); setSfPriceFilterMax(null);
                             setSelectedKeys([]);
                           }}>清除筛选</Button>
@@ -1133,8 +1139,21 @@ const PrePurchaseCheck: React.FC = () => {
       >
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
           <Checkbox checked={sfDedupAb} onChange={e => setSfDedupAb(e.target.checked)}>
-            过滤重复 AB 段（每组保留最低价的一个）
+            过滤重复 AB 段
           </Checkbox>
+          {sfDedupAb && (
+            <div style={{ marginLeft: 24 }}>
+              <Space size={16}>
+                <span>每组保留 <InputNumber value={sfDedupKeepCount} onChange={v => setSfDedupKeepCount(v || 1)} min={1} max={50} style={{ width: 65 }} /> 个</span>
+                <span>排序：
+                  <Select value={sfDedupSortBy} onChange={v => setSfDedupSortBy(v)} style={{ width: 110 }}>
+                    <Select.Option value="price_asc">价格最低</Select.Option>
+                    <Select.Option value="price_desc">价格最高</Select.Option>
+                  </Select>
+                </span>
+              </Space>
+            </div>
+          )}
           <Checkbox checked={sfExcludeExisting} onChange={e => setSfExcludeExisting(e.target.checked)}>
             排除已有 AB 段（隐藏与现有 IP 重复的 AB 段）
           </Checkbox>
