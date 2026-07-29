@@ -62,7 +62,7 @@ function eipUnbindSettleMs(): number {
 function eipDeleteMaxRounds(): number {
   const n = Number(process.env.ZENLAYER_EIP_DELETE_MAX_ROUNDS?.trim());
   if (Number.isFinite(n) && n >= 1) return Math.min(30, Math.floor(n));
-  return 10;
+  return 3;
 }
 
 function sleep(ms: number) {
