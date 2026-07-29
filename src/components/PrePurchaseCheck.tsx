@@ -7,7 +7,7 @@ import {
 import {
   SearchOutlined, ShoppingCartOutlined, FilterOutlined, BugOutlined,
   ReloadOutlined, CheckCircleOutlined,
-  WarningOutlined, CloudServerOutlined, TeamOutlined,
+  WarningOutlined, CloudServerOutlined, TeamOutlined, CopyOutlined, LinkOutlined,
 } from '@ant-design/icons';
 
 const { Text, Title, Link } = Typography;
@@ -64,6 +64,68 @@ const SORT_OPTIONS = [
   { label: '价格降序', value: 'price_desc' },
 ];
 
+const COUNTRY_OPTIONS = [
+  { label: '全部', value: '' },
+  { label: '美国 (US)', value: 'US' },
+  { label: '英国 (GB)', value: 'GB' },
+  { label: '德国 (DE)', value: 'DE' },
+  { label: '法国 (FR)', value: 'FR' },
+  { label: '荷兰 (NL)', value: 'NL' },
+  { label: '加拿大 (CA)', value: 'CA' },
+  { label: '澳大利亚 (AU)', value: 'AU' },
+  { label: '日本 (JP)', value: 'JP' },
+  { label: '新加坡 (SG)', value: 'SG' },
+  { label: '韩国 (KR)', value: 'KR' },
+  { label: '中国 (CN)', value: 'CN' },
+  { label: '中国香港 (HK)', value: 'HK' },
+  { label: '中国台湾 (TW)', value: 'TW' },
+  { label: '印度 (IN)', value: 'IN' },
+  { label: '巴西 (BR)', value: 'BR' },
+  { label: '俄罗斯 (RU)', value: 'RU' },
+  { label: '南非 (ZA)', value: 'ZA' },
+  { label: '瑞士 (CH)', value: 'CH' },
+  { label: '瑞典 (SE)', value: 'SE' },
+  { label: '挪威 (NO)', value: 'NO' },
+  { label: '芬兰 (FI)', value: 'FI' },
+  { label: '丹麦 (DK)', value: 'DK' },
+  { label: '爱尔兰 (IE)', value: 'IE' },
+  { label: '意大利 (IT)', value: 'IT' },
+  { label: '西班牙 (ES)', value: 'ES' },
+  { label: '葡萄牙 (PT)', value: 'PT' },
+  { label: '波兰 (PL)', value: 'PL' },
+  { label: '捷克 (CZ)', value: 'CZ' },
+  { label: '罗马尼亚 (RO)', value: 'RO' },
+  { label: '保加利亚 (BG)', value: 'BG' },
+  { label: '奥地利 (AT)', value: 'AT' },
+  { label: '比利时 (BE)', value: 'BE' },
+  { label: '卢森堡 (LU)', value: 'LU' },
+  { label: '乌克兰 (UA)', value: 'UA' },
+  { label: '土耳其 (TR)', value: 'TR' },
+  { label: '以色列 (IL)', value: 'IL' },
+  { label: '阿联酋 (AE)', value: 'AE' },
+  { label: '墨西哥 (MX)', value: 'MX' },
+  { label: '阿根廷 (AR)', value: 'AR' },
+  { label: '智利 (CL)', value: 'CL' },
+  { label: '哥伦比亚 (CO)', value: 'CO' },
+  { label: '印度尼西亚 (ID)', value: 'ID' },
+  { label: '泰国 (TH)', value: 'TH' },
+  { label: '马来西亚 (MY)', value: 'MY' },
+  { label: '越南 (VN)', value: 'VN' },
+  { label: '菲律宾 (PH)', value: 'PH' },
+  { label: '新西兰 (NZ)', value: 'NZ' },
+  { label: '尼日利亚 (NG)', value: 'NG' },
+  { label: '肯尼亚 (KE)', value: 'KE' },
+  { label: '埃及 (EG)', value: 'EG' },
+  { label: '立陶宛 (LT)', value: 'LT' },
+  { label: '拉脱维亚 (LV)', value: 'LV' },
+  { label: '爱沙尼亚 (EE)', value: 'EE' },
+  { label: '匈牙利 (HU)', value: 'HU' },
+  { label: '斯洛伐克 (SK)', value: 'SK' },
+  { label: '克罗地亚 (HR)', value: 'HR' },
+  { label: '塞尔维亚 (RS)', value: 'RS' },
+  { label: '冰岛 (IS)', value: 'IS' },
+];
+
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 
 const PrePurchaseCheck: React.FC = () => {
@@ -95,7 +157,20 @@ const PrePurchaseCheck: React.FC = () => {
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
 
   // 智能筛选
-  const [smartFilter, setSmartFilter] = useState(false);
+  const [smartFilterModalVisible, setSmartFilterModalVisible] = useState(false);
+  const [sfDedupAb, setSfDedupAb] = useState(false);
+  const [sfExcludeExisting, setSfExcludeExisting] = useState(false);
+  const [sfNoAbuse, setSfNoAbuse] = useState(false);
+  const [sfPriceFilterMin, setSfPriceFilterMin] = useState<number | null>(null);
+  const [sfPriceFilterMax, setSfPriceFilterMax] = useState<number | null>(null);
+  const smartFilterActiveCount = useMemo(() => {
+    let c = 0;
+    if (sfDedupAb) c++;
+    if (sfExcludeExisting) c++;
+    if (sfNoAbuse) c++;
+    if (sfPriceFilterMin != null || sfPriceFilterMax != null) c++;
+    return c;
+  }, [sfDedupAb, sfExcludeExisting, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
 
   // 购物车状态
   const [cartVisible, setCartVisible] = useState(false);
@@ -313,19 +388,35 @@ const PrePurchaseCheck: React.FC = () => {
     }
   }, [selectedKeys, items, handleCheckAbuse]);
 
-  // ── 智能筛选：每个 AB 段只保留一个（价格最低的）────────────────────────
+  // ── 智能筛选：多条件组合 ────────────────────────────────────────────────
   const smartFilteredItems = useMemo(() => {
-    if (!smartFilter) return items;
-    const seen = new Map<string, MarketItem>();
-    for (const item of items) {
-      const key = item.abSegKey || item.segment;
-      const existing = seen.get(key);
-      if (!existing || item.price < existing.price) {
-        seen.set(key, item);
-      }
+    if (smartFilterActiveCount === 0) return items;
+    let result = [...items];
+    if (sfExcludeExisting) {
+      result = result.filter(i => (i.dupCount || 0) === 0);
     }
-    return [...seen.values()];
-  }, [items, smartFilter]);
+    if (sfNoAbuse) {
+      result = result.filter(i => i.abuseScore == null || i.abuseScore === 0);
+    }
+    if (sfPriceFilterMin != null) {
+      result = result.filter(i => i.price >= sfPriceFilterMin);
+    }
+    if (sfPriceFilterMax != null) {
+      result = result.filter(i => i.price <= sfPriceFilterMax);
+    }
+    if (sfDedupAb) {
+      const seen = new Map<string, MarketItem>();
+      for (const item of result) {
+        const key = item.abSegKey || item.segment;
+        const existing = seen.get(key);
+        if (!existing || item.price < existing.price) {
+          seen.set(key, item);
+        }
+      }
+      result = [...seen.values()];
+    }
+    return result;
+  }, [items, smartFilterActiveCount, sfDedupAb, sfExcludeExisting, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
 
   // ── 添加到购物车 ────────────────────────────────────────────────────────
   const handleAddToCart = useCallback(async () => {
@@ -486,7 +577,16 @@ const PrePurchaseCheck: React.FC = () => {
       key: 'segment',
       width: 160,
       render: (v: string) => (
-        <Text style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: 13 }}>{v}</Text>
+        <Tooltip title="点击复制">
+          <Text
+            style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
+            onClick={() => {
+              navigator.clipboard.writeText(v).then(() => message.success(`已复制: ${v}`));
+            }}
+          >
+            {v} <CopyOutlined style={{ fontSize: 11, color: '#999' }} />
+          </Text>
+        </Tooltip>
       ),
     },
     {
@@ -495,11 +595,12 @@ const PrePurchaseCheck: React.FC = () => {
       width: 100,
       render: (_: any, r: MarketItem) => {
         const dup = r.dupCount || 0;
+        const dupColor = dup === 0 ? 'green' : dup <= 7 ? 'blue' : dup <= 19 ? 'orange' : 'red';
         return (
           <Space direction="vertical" size={2}>
             <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{r.abSegKey}</Text>
             {dup > 0 ? (
-              <Tag color="orange" style={{ fontSize: 11 }}>
+              <Tag color={dupColor} style={{ fontSize: 11 }}>
                 <WarningOutlined /> 已有 {dup} 个
               </Tag>
             ) : (
@@ -583,6 +684,14 @@ const PrePurchaseCheck: React.FC = () => {
                 )}
               </Space>
             )}
+            <a
+              href={`https://www.abuseipdb.com/check/${r.address}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 11 }}
+            >
+              <LinkOutlined /> 查看详情
+            </a>
           </Space>
         );
       },
@@ -630,13 +739,18 @@ const PrePurchaseCheck: React.FC = () => {
                     </Col>
                     <Col>
                       <Text>国家/地区：</Text>
-                      <Input
+                      <Select
                         value={countryCode}
-                        onChange={e => setCountryCode(e.target.value)}
-                        placeholder="如 US / CN"
-                        style={{ width: 80 }}
-                        maxLength={2}
+                        onChange={setCountryCode}
+                        placeholder="选择国家"
+                        style={{ width: 160 }}
                         allowClear
+                        showSearch
+                        filterOption={(input, option) =>
+                          (option?.label as string ?? '').toLowerCase().includes(input.toLowerCase()) ||
+                          (option?.value as string ?? '').toLowerCase().includes(input.toLowerCase())
+                        }
+                        options={COUNTRY_OPTIONS}
                       />
                     </Col>
                     <Col>
@@ -651,7 +765,7 @@ const PrePurchaseCheck: React.FC = () => {
                     </Col>
                     <Col>
                       <Text>返回数量：</Text>
-                      <Select value={limit} onChange={setLimit} style={{ width: 90 }} options={[50,100,200,500,1000].map(v=>({label:v,value:v}))} />
+                      <InputNumber value={limit} onChange={v => setLimit(v ?? 100)} min={1} max={5000} style={{ width: 90 }} />
                     </Col>
                     <Col>
                       <Button type="primary" icon={<SearchOutlined />} loading={searching} onClick={handleSearch}>搜索</Button>
@@ -664,15 +778,27 @@ const PrePurchaseCheck: React.FC = () => {
                     <Row justify="space-between" align="middle">
                       <Space wrap>
                         <Text>共 <strong>{displayItems.length}</strong> 个
-                          {smartFilter && items.length !== displayItems.length &&
+                          {smartFilterActiveCount > 0 && items.length !== displayItems.length &&
                             <Text type="secondary">（已从 {items.length} 个过滤）</Text>}
                         </Text>
                         <Divider type="vertical" />
-                        <Checkbox checked={smartFilter} onChange={e => { setSmartFilter(e.target.checked); setSelectedKeys([]); }}>
-                          <Tooltip title="每个 A/B 段只保留价格最低的一个">
-                            <FilterOutlined /> 智能筛选（过滤重复 AB 段）
-                          </Tooltip>
-                        </Checkbox>
+                        <Badge count={smartFilterActiveCount} size="small" offset={[2, -2]}>
+                          <Button
+                            icon={<FilterOutlined />}
+                            type={smartFilterActiveCount > 0 ? 'primary' : 'default'}
+                            ghost={smartFilterActiveCount > 0}
+                            onClick={() => setSmartFilterModalVisible(true)}
+                          >
+                            智能筛选
+                          </Button>
+                        </Badge>
+                        {smartFilterActiveCount > 0 && (
+                          <Button size="small" type="link" danger onClick={() => {
+                            setSfDedupAb(false); setSfExcludeExisting(false);
+                            setSfNoAbuse(false); setSfPriceFilterMin(null); setSfPriceFilterMax(null);
+                            setSelectedKeys([]);
+                          }}>清除筛选</Button>
+                        )}
                         {dupItems.length > 0 && <Tag color="orange" icon={<WarningOutlined />}>{dupItems.length} 个与现有 AB 段重复</Tag>}
                       </Space>
                       <Space>
@@ -704,7 +830,7 @@ const PrePurchaseCheck: React.FC = () => {
                     <Table<MarketItem>
                       loading={searching} dataSource={displayItems} columns={columns} rowKey="segment"
                       size="small" scroll={{ x: 800 }}
-                      pagination={{ pageSize: 50, showSizeChanger: true, pageSizeOptions: ['20','50','100'], showTotal: t => `共 ${t} 条` }}
+                      pagination={{ defaultPageSize: 50, showSizeChanger: true, pageSizeOptions: ['20','50','100','200'], showTotal: t => `共 ${t} 条`, onChange: () => setSelectedKeys([]) }}
                       rowSelection={{ selectedRowKeys: selectedKeys, onChange: keys => setSelectedKeys(keys as string[]) }}
                       rowClassName={(r) => (r.dupCount || 0) > 0 ? 'row-dup-ab' : ''}
                     />
@@ -993,6 +1119,45 @@ const PrePurchaseCheck: React.FC = () => {
           placeholder="粘贴 AbuseIPDB API Key"
           allowClear
         />
+      </Modal>
+
+      {/* 智能筛选弹窗 */}
+      <Modal
+        title={<Space><FilterOutlined />智能筛选条件</Space>}
+        open={smartFilterModalVisible}
+        onCancel={() => setSmartFilterModalVisible(false)}
+        onOk={() => { setSmartFilterModalVisible(false); setSelectedKeys([]); }}
+        okText="应用"
+        cancelText="关闭"
+        width={480}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <Checkbox checked={sfDedupAb} onChange={e => setSfDedupAb(e.target.checked)}>
+            过滤重复 AB 段（每组保留最低价的一个）
+          </Checkbox>
+          <Checkbox checked={sfExcludeExisting} onChange={e => setSfExcludeExisting(e.target.checked)}>
+            排除已有 AB 段（隐藏与现有 IP 重复的 AB 段）
+          </Checkbox>
+          <Checkbox checked={sfNoAbuse} onChange={e => setSfNoAbuse(e.target.checked)}>
+            仅显示无滥用记录（排除滥用评分 &gt; 0 的，需先检测）
+          </Checkbox>
+          <div>
+            <Checkbox
+              checked={sfPriceFilterMin != null || sfPriceFilterMax != null}
+              onChange={e => {
+                if (!e.target.checked) { setSfPriceFilterMin(null); setSfPriceFilterMax(null); }
+              }}
+            >
+              价格范围过滤
+            </Checkbox>
+            <div style={{ marginLeft: 24, marginTop: 4 }}>
+              <InputNumber value={sfPriceFilterMin} onChange={v => setSfPriceFilterMin(v)} min={0} precision={0} placeholder="最低" style={{ width: 90 }} />
+              <Text style={{ margin: '0 8px' }}>~</Text>
+              <InputNumber value={sfPriceFilterMax} onChange={v => setSfPriceFilterMax(v)} min={0} precision={0} placeholder="最高" style={{ width: 90 }} />
+              <Text type="secondary" style={{ marginLeft: 8 }}>USD/月</Text>
+            </div>
+          </div>
+        </Space>
       </Modal>
 
       <style>{`
