@@ -15,6 +15,7 @@ interface ZecCidrRow {
   usedCount?: number;
   createTime?: string;
   chargeType?: string;
+  _regionLabel?: string;
 }
 
 interface BmcCidrRow {
@@ -25,7 +26,32 @@ interface BmcCidrRow {
   status: string;
   instanceIds?: string[];
   createTime?: string;
+  _zoneLabel?: string;
 }
+
+const ZEC_STATUS_CN: Record<string, string> = {
+  BINDABLE: '可绑定',
+  BINDABLE_WITH_EIP: '可绑定(EIP)',
+  BINDABLE_WITH_SUBNET: '可绑定(子网)',
+  BINDABLE_WITH_VPC: '可绑定(VPC)',
+  AVAILABLE: '可用',
+  IN_USE: '使用中',
+  CREATE_FAILED: '创建失败',
+  CREATING: '创建中',
+  TERMINATING: '删除中',
+  TERMINATED: '已删除',
+};
+
+const BMC_STATUS_CN: Record<string, string> = {
+  BINDABLE: '可绑定',
+  BINDABLE_WITH_INSTANCE: '可绑定(实例)',
+  AVAILABLE: '可用',
+  IN_USE: '使用中',
+  CREATE_FAILED: '创建失败',
+  CREATING: '创建中',
+  TERMINATING: '删除中',
+  TERMINATED: '已删除',
+};
 
 const STATUS_COLOR: Record<string, string> = {
   BINDABLE: 'green',
@@ -41,6 +67,16 @@ const STATUS_COLOR: Record<string, string> = {
   CREATING: 'orange',
   TERMINATING: 'orange',
   TERMINATED: 'default',
+};
+
+const NETWORK_TYPE_CN: Record<string, string> = {
+  StandardBGP: '标准BGP',
+  PremiumBGP: '精品BGP',
+};
+
+const CHARGE_TYPE_CN: Record<string, string> = {
+  PREPAID: '预付费',
+  POSTPAID: '后付费',
 };
 
 function getStatusColor(status: string): string {
@@ -76,18 +112,23 @@ const ZecTab: React.FC = () => {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const regionOptions = useMemo(() => {
-    const set = new Set(data.map(r => r.regionId).filter(Boolean));
-    return [...set].sort().map(r => ({ label: r, value: r }));
+    const map = new Map<string, string>();
+    for (const r of data) {
+      if (r.regionId && !map.has(r.regionId)) {
+        map.set(r.regionId, r._regionLabel || r.regionId);
+      }
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([v, l]) => ({ label: `${l} (${v})`, value: v }));
   }, [data]);
 
   const statusOptions = useMemo(() => {
     const set = new Set(data.map(r => r.status).filter(Boolean));
-    return [...set].sort().map(s => ({ label: s, value: s }));
+    return [...set].sort().map(s => ({ label: ZEC_STATUS_CN[s] || s, value: s }));
   }, [data]);
 
   const networkOptions = useMemo(() => {
     const set = new Set(data.map(r => r.networkType).filter(Boolean));
-    return [...set].sort().map(s => ({ label: s, value: s }));
+    return [...set].sort().map(s => ({ label: NETWORK_TYPE_CN[s] || s, value: s }));
   }, [data]);
 
   const filtered = useMemo(() => {
@@ -103,18 +144,37 @@ const ZecTab: React.FC = () => {
 
   const columns = [
     { title: 'IP段', dataIndex: 'cidrBlock', key: 'cidrBlock', width: 160 },
-    { title: '区域', dataIndex: 'regionId', key: 'regionId', width: 140 },
-    { title: 'ASN', dataIndex: 'asn', key: 'asn', width: 80 },
-    { title: '网络类型', dataIndex: 'networkType', key: 'networkType', width: 130 },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 130,
-      render: (s: string) => <Tag color={getStatusColor(s)}>{s}</Tag>,
+      title: '区域', key: 'regionId', width: 180,
+      render: (_: any, r: ZecCidrRow) => {
+        const label = r._regionLabel || r.regionId;
+        return <span>{label}{label !== r.regionId ? <Text type="secondary" style={{ fontSize: 11 }}> ({r.regionId})</Text> : ''}</span>;
+      },
+    },
+    { title: 'ASN', dataIndex: 'asn', key: 'asn', width: 80 },
+    {
+      title: '网络类型', key: 'networkType', width: 100,
+      render: (_: any, r: ZecCidrRow) => NETWORK_TYPE_CN[r.networkType || ''] || r.networkType || '-',
+    },
+    {
+      title: '状态', dataIndex: 'status', key: 'status', width: 110,
+      render: (s: string) => <Tag color={getStatusColor(s)}>{ZEC_STATUS_CN[s] || s}</Tag>,
     },
     {
       title: '已用/总量', key: 'usage', width: 100,
-      render: (_: any, r: ZecCidrRow) => `${r.usedCount ?? '-'}/${r.totalCount ?? '-'}`,
+      render: (_: any, r: ZecCidrRow) => {
+        const used = r.usedCount ?? (r as any).used_count;
+        const total = r.totalCount ?? (r as any).total_count;
+        return `${used ?? '-'}/${total ?? '-'}`;
+      },
     },
-    { title: '计费模式', dataIndex: 'chargeType', key: 'chargeType', width: 100 },
+    {
+      title: '计费模式', key: 'chargeType', width: 90,
+      render: (_: any, r: ZecCidrRow) => {
+        const ct = r.chargeType || (r as any).charge_type || '';
+        return CHARGE_TYPE_CN[ct] || ct || '-';
+      },
+    },
     { title: '创建时间', dataIndex: 'createTime', key: 'createTime', width: 170 },
   ];
 
@@ -170,13 +230,18 @@ const VobTab: React.FC = () => {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const zoneOptions = useMemo(() => {
-    const set = new Set(data.map(r => r.zoneId).filter(Boolean));
-    return [...set].sort().map(z => ({ label: z, value: z }));
+    const map = new Map<string, string>();
+    for (const r of data) {
+      if (r.zoneId && !map.has(r.zoneId)) {
+        map.set(r.zoneId, r._zoneLabel || r.zoneId);
+      }
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([v, l]) => ({ label: `${l} (${v})`, value: v }));
   }, [data]);
 
   const statusOptions = useMemo(() => {
     const set = new Set(data.map(r => r.status).filter(Boolean));
-    return [...set].sort().map(s => ({ label: s, value: s }));
+    return [...set].sort().map(s => ({ label: BMC_STATUS_CN[s] || s, value: s }));
   }, [data]);
 
   const filtered = useMemo(() => {
@@ -195,10 +260,16 @@ const VobTab: React.FC = () => {
       render: (_: any, r: BmcCidrRow) => r.cidrBlock || r.cidrBlockName || '-',
     },
     { title: '名称', dataIndex: 'cidrBlockName', key: 'cidrBlockName', width: 160 },
-    { title: '区域', dataIndex: 'zoneId', key: 'zoneId', width: 120 },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 130,
-      render: (s: string) => <Tag color={getStatusColor(s)}>{s}</Tag>,
+      title: '区域', key: 'zoneId', width: 150,
+      render: (_: any, r: BmcCidrRow) => {
+        const label = r._zoneLabel || r.zoneId;
+        return <span>{label}{label !== r.zoneId ? <Text type="secondary" style={{ fontSize: 11 }}> ({r.zoneId})</Text> : ''}</span>;
+      },
+    },
+    {
+      title: '状态', dataIndex: 'status', key: 'status', width: 110,
+      render: (s: string) => <Tag color={getStatusColor(s)}>{BMC_STATUS_CN[s] || s}</Tag>,
     },
     {
       title: '关联实例', key: 'instances', width: 100,

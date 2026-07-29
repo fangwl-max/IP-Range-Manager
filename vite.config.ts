@@ -6294,19 +6294,45 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const { ak, sk } = getZenCreds();
       const { zecCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js');
       const ver = (await import('./src/lib/zen/credentials.js')).apiVersion();
-      const allRows: any[] = [];
-      let pageNum = 1;
-      while (true) {
-        const data = await zecCall('DescribeCidrs', { pageSize: 100, pageNum }, ak, sk, ver);
-        const inner = unwrapResponse(data);
-        const rows = (inner.dataSet as any[]) || [];
-        allRows.push(...rows);
-        const total = Number(inner.totalCount ?? 0);
-        if (pageNum * 100 >= total || rows.length < 100) break;
-        pageNum++;
+
+      // 1. 获取所有支持 BYOIP 的 region
+      const regData = await zecCall('DescribeByoipRegions', {}, ak, sk, ver);
+      const regInner = unwrapResponse(regData);
+      const regions: any[] = (regInner.regions || []).filter((r: any) => (r.ipType || 'IPv4').includes('4'));
+      const regionIds = [...new Set(regions.map((r: any) => r.regionId).filter(Boolean))];
+
+      // 2. 获取 region labels
+      const regionLabels: Record<string, string> = {};
+      if (regionIds.length > 0) {
+        try {
+          const labelData = await zecCall('DescribeSubnetRegions', { regionIds }, ak, sk, ver);
+          const labelInner = unwrapResponse(labelData);
+          for (const r of (labelInner.regionSet as any[]) || []) {
+            if (r.regionId) regionLabels[r.regionId] = r.regionTitle || r.regionName || r.regionId;
+          }
+        } catch { /* ignore */ }
       }
+
+      // 3. 对每个 region 分页查询 DescribeCidrs
+      const allRows: any[] = [];
+      for (const rid of regionIds) {
+        let pageNum = 1;
+        while (true) {
+          const data = await zecCall('DescribeCidrs', { regionId: rid, pageSize: 100, pageNum }, ak, sk, ver);
+          const inner = unwrapResponse(data);
+          const rows = (inner.dataSet as any[]) || [];
+          for (const row of rows) {
+            row._regionLabel = regionLabels[row.regionId] || row.regionId;
+          }
+          allRows.push(...rows);
+          const total = Number(inner.totalCount ?? 0);
+          if (pageNum * 100 >= total || rows.length < 100) break;
+          pageNum++;
+        }
+      }
+
       res.statusCode = 200;
-      res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length }));
+      res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length, regionLabels }));
     } catch (e: any) {
       res.statusCode = 500;
       res.end(JSON.stringify({ success: false, message: e.message }));
@@ -6322,19 +6348,33 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const { ak, sk } = getZenCreds();
       const { bmcCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js');
       const ver = '2024-09-01';
+
+      // 获取 zone labels
+      const zoneLabels: Record<string, string> = {};
+      try {
+        const zoneData = await bmcCall('DescribeZones', {}, ak, sk, ver);
+        const zoneInner = unwrapResponse(zoneData);
+        for (const z of (zoneInner.zoneSet as any[]) || []) {
+          if (z.zoneId) zoneLabels[z.zoneId] = z.cityName || z.zoneName || z.zoneId;
+        }
+      } catch { /* ignore */ }
+
       const allRows: any[] = [];
       let pageNum = 1;
       while (true) {
         const data = await bmcCall('DescribeCidrBlocks', { pageSize: 100, pageNum }, ak, sk, ver);
         const inner = unwrapResponse(data);
         const rows = (inner.dataSet as any[]) || [];
+        for (const row of rows) {
+          row._zoneLabel = zoneLabels[row.zoneId] || row.zoneId;
+        }
         allRows.push(...rows);
         const total = Number(inner.totalCount ?? 0);
         if (pageNum * 100 >= total || rows.length < 100) break;
         pageNum++;
       }
       res.statusCode = 200;
-      res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length }));
+      res.end(JSON.stringify({ success: true, data: allRows, total: allRows.length, zoneLabels }));
     } catch (e: any) {
       res.statusCode = 500;
       res.end(JSON.stringify({ success: false, message: e.message }));
