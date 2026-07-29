@@ -47,3 +47,7 @@ backups/
 exports/
 CDS-Auto-Announce/data/withdraw_users.json
 CDS-Auto-Announce/data/*.json
+
+# 本地脚本（含服务器密码等敏感信息）
+install.ps1
+sync-from-server.ps1
