@@ -1036,6 +1036,100 @@ async function refreshIpxoCache(): Promise<{ servicesCount: number; invoicesCoun
   return { servicesCount: allServices.length, invoicesCount: allInvoices.length };
 }
 
+/** 自动同步 IPXO 缓存中的新增/取消 IP 段到本地 ip-data.json */
+async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelledCount: number }> {
+  const cache = loadIpxoCache();
+  if (!cache?.services?.data?.length) return { addedCount: 0, cancelledCount: 0 };
+
+  let localData: any = { ipSegments: [] };
+  if (fs.existsSync(dataFilePath)) {
+    localData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
+  }
+  const localSegments: any[] = localData.ipSegments || [];
+  const nowIso = new Date().toISOString();
+
+  const localBySegment = new Map<string, any>();
+  const localByIpxoUuid = new Map<string, any>();
+  for (const s of localSegments) {
+    localBySegment.set(s.segment, s);
+    if (s.ipxoServiceUuid) localByIpxoUuid.set(s.ipxoServiceUuid, s);
+  }
+
+  const cacheActiveSet = new Set<string>();
+  for (const svc of cache.services.data) {
+    const bs = svc.billing_service;
+    if (bs?.address && bs.cidr != null && (bs.status || '').toLowerCase() === 'active') {
+      cacheActiveSet.add(`${bs.address}/${bs.cidr}`);
+    }
+  }
+
+  let addedCount = 0;
+  let cancelledCount = 0;
+
+  // 缓存有、本地无 → 新增
+  for (const svc of cache.services.data) {
+    const bs = svc.billing_service;
+    if (!bs?.address || bs.cidr == null) continue;
+    if ((bs.status || '').toLowerCase() !== 'active') continue;
+    const segStr = `${bs.address}/${bs.cidr}`;
+    const marketUuid = svc.market_service?.uuid || '';
+    const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+    if (!existing) {
+      const nextDueDate = bs.next_due_date ? new Date(bs.next_due_date * 1000).toISOString().slice(0, 10) : '';
+      localData.ipSegments.push({
+        id: `ip-${Date.now()}-${Math.random()}-ipxo`,
+        segment: segStr,
+        supplier: 'IPXO',
+        asn: '',
+        usageArea: '',
+        purchaseDate: '',
+        renewalDate: nextDueDate,
+        cancellationDate: '',
+        monthlyPrice: bs.recurring_amount ?? 0,
+        renewalStatus: 'not_renewed',
+        projectGroups: [],
+        serverLocations: [],
+        blockedCountries: [],
+        rateLimitedCountries: [],
+        detectedCountries: [],
+        history: [],
+        syncSource: 'ipxo_api',
+        ipxoServiceUuid: marketUuid,
+        ipxoLastSyncAt: nowIso,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+      addedCount++;
+    }
+  }
+
+  // 本地有（ipxo_api来源，非终态），缓存已无 active → 取消
+  for (const seg of localSegments) {
+    if (!seg.segment) continue;
+    if (seg.syncSource !== 'ipxo_api') continue;
+    if (['cancelled', 'refunded'].includes(seg.renewalStatus)) continue;
+    if (cacheActiveSet.has(seg.segment)) continue;
+    const idx = localData.ipSegments.findIndex((s: any) => s.id === seg.id);
+    if (idx === -1) continue;
+    localData.ipSegments[idx].renewalStatus = 'cancelled';
+    if (seg.renewalDate) {
+      const d = new Date(seg.renewalDate);
+      d.setDate(d.getDate() - 1);
+      localData.ipSegments[idx].cancellationDate = d.toISOString().slice(0, 10);
+    }
+    localData.ipSegments[idx].ipxoLastSyncAt = nowIso;
+    localData.ipSegments[idx].updatedAt = nowIso;
+    cancelledCount++;
+  }
+
+  if (addedCount > 0 || cancelledCount > 0) {
+    localData.exportTime = nowIso;
+    fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
+  }
+
+  return { addedCount, cancelledCount };
+}
+
 /**
  * 每周一 09:00 北京时间发送上周/上月购买和续费 IP 段汇总
  */
@@ -1508,39 +1602,48 @@ function startWeeklyReportScheduler(): void {
 }
 
 /**
- * 每天 00:00 北京时间自动刷新 IPXO 缓存
- * 确保当天续费后 next_due_date 更新为新周期，近期已续费能正确显示
+ * 每天 03:00 北京时间自动刷新 IPXO 缓存并同步新增 IP 段
  */
 function startIpxoCacheRefreshScheduler(): void {
-  console.log('[IpxoCache] 每日自动刷新任务已启动，将在每天 00:00 北京时间执行...');
+  console.log('[IpxoCache] 每日自动刷新任务已启动，将在每天 03:00 北京时间执行...');
 
   let lastRefreshDate = '';
 
   setInterval(async () => {
     try {
       const config = loadIpxoConfig();
-      if (!config) return; // IPXO 未配置，跳过
+      if (!config) return;
 
-      // 北京时间（UTC+8）
       const now = new Date();
       const bjOffset = 8 * 60 * 60 * 1000;
       const bjNow = new Date(now.getTime() + bjOffset);
-      const bjDate = bjNow.toISOString().slice(0, 10);   // YYYY-MM-DD
+      const bjDate = bjNow.toISOString().slice(0, 10);
       const bjHour = bjNow.getUTCHours();
       const bjMinute = bjNow.getUTCMinutes();
 
-      // 每天 00:00 ~ 00:05 之间执行一次（5 分钟窗口，避免秒级误差）
-      if (bjHour !== 0 || bjMinute > 4) return;
-      if (lastRefreshDate === bjDate) return; // 今天已刷新过
+      if (bjHour !== 3 || bjMinute > 4) return;
+      if (lastRefreshDate === bjDate) return;
 
-      console.log(`[IpxoCache] 开始每日自动刷新缓存（${bjDate} 00:00 北京时间）...`);
+      console.log(`[IpxoCache] 开始每日自动刷新缓存（${bjDate} 03:00 北京时间）...`);
       const { servicesCount, invoicesCount } = await refreshIpxoCache();
       lastRefreshDate = bjDate;
       console.log(`[IpxoCache] 缓存刷新完成：${servicesCount} 条服务，${invoicesCount} 条发票`);
+
+      // 自动同步新增 IP 段
+      try {
+        const syncResult = await autoSyncLeasedFromCache();
+        if (syncResult.addedCount > 0 || syncResult.cancelledCount > 0) {
+          console.log(`[IpxoCache] 自动同步完成：新增 ${syncResult.addedCount} 条，取消 ${syncResult.cancelledCount} 条`);
+        } else {
+          console.log('[IpxoCache] 自动同步完成：无新增或取消');
+        }
+      } catch (syncErr: any) {
+        console.error('[IpxoCache] 自动同步失败:', syncErr.message);
+      }
     } catch (e: any) {
       console.error('[IpxoCache] 每日缓存刷新失败:', e.message);
     }
-  }, 60_000); // 每 60 秒检查一次
+  }, 60_000);
 }
 
 /** 定时备份任务：每天 03:00 北京时间备份所有数据文件，文件名含前一天日期 */
