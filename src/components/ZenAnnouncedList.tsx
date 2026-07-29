@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Tabs, Table, Tag, Space, Input, Select, Button, message, Spin, Row, Col, Statistic, Card } from 'antd';
+import { Tabs, Table, Tag, Space, Input, Select, Button, message, Spin, Row, Col, Statistic, Card, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 
-const { Text } = require('antd').Typography;
+const { Text } = Typography;
 
 interface ZecCidrRow {
   cidrBlock: string;
