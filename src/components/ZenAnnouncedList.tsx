@@ -127,7 +127,7 @@ const ZecTab: React.FC = () => {
   }, [data]);
 
   const networkOptions = useMemo(() => {
-    const set = new Set(data.map(r => r.networkType).filter(Boolean));
+    const set = new Set(data.map(r => r.networkType).filter((x): x is string => !!x));
     return [...set].sort().map(s => ({ label: NETWORK_TYPE_CN[s] || s, value: s }));
   }, [data]);
 

@@ -34,6 +34,7 @@ import {
   CheckOutlined,
   CloseOutlined,
   CheckCircleOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { RENEWAL_STATUS_OPTIONS, RENEWAL_STATUS_DISPLAY } from '../types';
@@ -83,6 +84,22 @@ const IPXOBilling: React.FC = () => {
   const [servicesPage, setServicesPage] = useState(1);
   const [servicesPageSize, setServicesPageSize] = useState(15);
   const [servicesStatus, setServicesStatus] = useState<string>('active');
+  // 已租用IP - 搜索 / ASN筛选 / 行选择
+  const [servicesSearch, setServicesSearch] = useState('');
+  const [servicesAsnFilter, setServicesAsnFilter] = useState<'all' | 'no_asn' | 'specific'>('all');
+  const [servicesAsnValue, setServicesAsnValue] = useState('');
+  const [servicesSelectedKeys, setServicesSelectedKeys] = useState<string[]>([]);
+  // 设置 ASN 弹窗
+  const [setAsnVisible, setSetAsnVisible] = useState(false);
+  const [setAsnLoading, setSetAsnLoading] = useState(false);
+  const [setAsnNumber, setSetAsnNumber] = useState<number | null>(null);
+  const [setAsnCompany, setSetAsnCompany] = useState('');
+  // 取消续费弹窗
+  const [cancelVisible, setCancelVisible] = useState(false);
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelType, setCancelType] = useState<'end_of_period' | 'immediate'>('end_of_period');
+  const [cancelReason, setCancelReason] = useState('End of project');
+  const [cancelUseAgain, setCancelUseAgain] = useState(true);
 
   // 近期续费
   const [upcoming, setUpcoming] = useState<any[]>([]);
@@ -152,11 +169,12 @@ const IPXOBilling: React.FC = () => {
   }, []);
 
   // 加载活跃服务（服务端分页）
-  const loadServices = useCallback(async (page: number, pageSize: number, status: string) => {
+  const loadServices = useCallback(async (page: number, pageSize: number, status: string, search?: string) => {
     setServicesLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), per_page: String(pageSize) });
       if (status) params.set('status', status);
+      if (search) params.set('search', search);
       const res = await fetch(`/api/ipxo/services?${params}`);
       const json = await res.json();
       if (json.success) {
@@ -462,13 +480,110 @@ const IPXOBilling: React.FC = () => {
     const newSize = pagination.pageSize;
     setServicesPage(newPage);
     setServicesPageSize(newSize);
-    loadServices(newPage, newSize, servicesStatus);
+    loadServices(newPage, newSize, servicesStatus, servicesSearch);
   };
 
   const handleStatusChange = (val: string) => {
     setServicesStatus(val);
     setServicesPage(1);
-    loadServices(1, servicesPageSize, val);
+    loadServices(1, servicesPageSize, val, servicesSearch);
+  };
+
+  const handleServicesSearch = () => {
+    setServicesPage(1);
+    loadServices(1, servicesPageSize, servicesStatus, servicesSearch);
+  };
+
+  // ASN 前端过滤
+  const filteredServices = React.useMemo(() => {
+    if (servicesAsnFilter === 'all') return services;
+    if (servicesAsnFilter === 'no_asn') {
+      return services.filter(r => !r.loa || !Array.isArray(r.loa) || r.loa.length === 0);
+    }
+    if (servicesAsnFilter === 'specific' && servicesAsnValue) {
+      const target = servicesAsnValue.replace(/^AS/i, '').trim();
+      return services.filter(r => Array.isArray(r.loa) && r.loa.some((l: any) => String(l.asn) === target));
+    }
+    return services;
+  }, [services, servicesAsnFilter, servicesAsnValue]);
+
+  // 设置 ASN 提交
+  const handleSetAsnSubmit = async () => {
+    if (!setAsnNumber) { message.warning('请输入 ASN 号码'); return; }
+    const selected = filteredServices.filter(r => {
+      const key = r.market_service?.uuid || r.billing_service?.uuid;
+      return servicesSelectedKeys.includes(key);
+    });
+    const subnets = selected.map(r => {
+      const bs = r.billing_service || {};
+      return `${bs.address}/${bs.cidr}`;
+    }).filter(Boolean);
+    if (!subnets.length) { message.warning('无有效 IP 段'); return; }
+
+    setSetAsnLoading(true);
+    try {
+      const res = await fetch('/api/ipxo/loa/add-to-cart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asn: setAsnNumber, subnets, companyName: setAsnCompany }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        message.success(json.message || '已加入购物车，请前往 IPXO 平台完成支付');
+        setSetAsnVisible(false);
+        setServicesSelectedKeys([]);
+      } else {
+        message.error(json.message || '设置 ASN 失败');
+      }
+    } catch (e: any) {
+      message.error('请求失败: ' + e.message);
+    } finally {
+      setSetAsnLoading(false);
+    }
+  };
+
+  // 取消续费提交
+  const handleCancelSubmit = async () => {
+    const selected = filteredServices.filter(r => {
+      const key = r.market_service?.uuid || r.billing_service?.uuid;
+      return servicesSelectedKeys.includes(key);
+    });
+    const serviceList = selected.map(r => ({
+      billingUuid: r.billing_service?.uuid || '',
+      marketUuid: r.market_service?.uuid || '',
+      subnet: `${r.billing_service?.address || ''}/${r.billing_service?.cidr ?? ''}`,
+    }));
+    if (!serviceList.length) { message.warning('无有效服务'); return; }
+
+    setCancelLoading(true);
+    try {
+      const res = await fetch('/api/ipxo/services/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services: serviceList, type: cancelType, reason: cancelReason, useAgain: cancelUseAgain }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        const successCount = json.results?.filter((r: any) => r.ok).length || 0;
+        const failCount = json.results?.filter((r: any) => !r.ok).length || 0;
+        if (failCount === 0) {
+          message.success(`全部 ${successCount} 个 IP 段取消续费成功`);
+        } else {
+          message.warning(`${successCount} 个成功，${failCount} 个失败`);
+          const failMsgs = json.results?.filter((r: any) => !r.ok).map((r: any) => `${r.subnet}: ${r.message}`).join('\n');
+          if (failMsgs) Modal.error({ title: '部分取消失败', content: <pre style={{ fontSize: 12, maxHeight: 300, overflow: 'auto' }}>{failMsgs}</pre> });
+        }
+        setCancelVisible(false);
+        setServicesSelectedKeys([]);
+        loadServices(servicesPage, servicesPageSize, servicesStatus, servicesSearch);
+      } else {
+        message.error(json.message || '取消续费失败');
+      }
+    } catch (e: any) {
+      message.error('请求失败: ' + e.message);
+    } finally {
+      setCancelLoading(false);
+    }
   };
 
   // 发票列
@@ -1236,8 +1351,16 @@ const IPXOBilling: React.FC = () => {
                   </Row>
 
                   <div style={{ marginBottom: 12 }}>
-                    <Space>
-                      <span>状态筛选：</span>
+                    <Space wrap>
+                      <Input
+                        placeholder="搜索IP段，多个用逗号/空格分隔"
+                        value={servicesSearch}
+                        onChange={e => setServicesSearch(e.target.value)}
+                        onPressEnter={handleServicesSearch}
+                        style={{ width: 260 }}
+                        allowClear
+                        suffix={<SearchOutlined style={{ cursor: 'pointer', color: '#999' }} onClick={handleServicesSearch} />}
+                      />
                       <Select
                         value={servicesStatus}
                         onChange={handleStatusChange}
@@ -1250,6 +1373,42 @@ const IPXOBilling: React.FC = () => {
                           { label: 'Suspended', value: 'suspended' },
                         ]}
                       />
+                      <Select
+                        value={servicesAsnFilter}
+                        onChange={(v) => { setServicesAsnFilter(v); setServicesAsnValue(''); }}
+                        style={{ width: 120 }}
+                        options={[
+                          { label: 'ASN: 全部', value: 'all' },
+                          { label: '无 ASN', value: 'no_asn' },
+                          { label: '指定 ASN', value: 'specific' },
+                        ]}
+                      />
+                      {servicesAsnFilter === 'specific' && (
+                        <Input
+                          placeholder="输入ASN号"
+                          value={servicesAsnValue}
+                          onChange={e => setServicesAsnValue(e.target.value)}
+                          style={{ width: 110 }}
+                        />
+                      )}
+                    </Space>
+                  </div>
+                  <div style={{ marginBottom: 12 }}>
+                    <Space>
+                      <Button
+                        type="primary"
+                        disabled={servicesSelectedKeys.length === 0}
+                        onClick={() => { setSetAsnNumber(null); setSetAsnCompany(''); setSetAsnVisible(true); }}
+                      >
+                        设置 ASN ({servicesSelectedKeys.length})
+                      </Button>
+                      <Button
+                        danger
+                        disabled={servicesSelectedKeys.length === 0}
+                        onClick={() => { setCancelType('end_of_period'); setCancelReason('End of project'); setCancelUseAgain(true); setCancelVisible(true); }}
+                      >
+                        取消续费 ({servicesSelectedKeys.length})
+                      </Button>
                       <Button
                         icon={<SyncOutlined />}
                         onClick={handleLeasedSyncPreview}
@@ -1262,20 +1421,24 @@ const IPXOBilling: React.FC = () => {
 
                   <Table
                     loading={servicesLoading}
-                    dataSource={services}
+                    dataSource={filteredServices}
                     columns={serviceColumns}
                     rowKey={(r, i) => r.market_service?.uuid || r.billing_service?.uuid || `svc-${i}`}
+                    rowSelection={{
+                      selectedRowKeys: servicesSelectedKeys,
+                      onChange: (keys) => setServicesSelectedKeys(keys as string[]),
+                    }}
                     size="small"
                     scroll={{ x: 1100 }}
                     pagination={{
-                      current: servicesPage,
-                      pageSize: servicesPageSize,
-                      total: servicesMeta.total,
-                      showSizeChanger: true,
+                      current: servicesSearch ? 1 : servicesPage,
+                      pageSize: servicesSearch ? filteredServices.length || 50 : servicesPageSize,
+                      total: servicesSearch ? filteredServices.length : servicesMeta.total,
+                      showSizeChanger: !servicesSearch,
                       pageSizeOptions: ['15', '30', '50', '100'],
-                      showTotal: (t) => `共 ${t} 条 / 第 ${servicesMeta.current_page} 页，共 ${servicesMeta.last_page} 页`,
+                      showTotal: (t) => `共 ${t} 条`,
                     }}
-                    onChange={handleServicesTableChange}
+                    onChange={servicesSearch ? undefined : handleServicesTableChange}
                   />
                 </>
               ),
@@ -1475,6 +1638,105 @@ const IPXOBilling: React.FC = () => {
             )}
           </>
         ) : null}
+      </Modal>
+
+      {/* 设置 ASN 弹窗 */}
+      <Modal
+        title="设置 ASN"
+        open={setAsnVisible}
+        onCancel={() => setSetAsnVisible(false)}
+        onOk={handleSetAsnSubmit}
+        confirmLoading={setAsnLoading}
+        okText="加入购物车"
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="ASN 设置后需在 IPXO 平台手动完成支付"
+          style={{ marginBottom: 16 }}
+        />
+        <div style={{ marginBottom: 12 }}>
+          <span style={{ display: 'block', marginBottom: 4, fontWeight: 500 }}>已选 IP 段（{servicesSelectedKeys.length} 个）</span>
+          <div style={{ maxHeight: 120, overflow: 'auto', background: '#f5f5f5', padding: 8, borderRadius: 4, fontFamily: 'monospace', fontSize: 12 }}>
+            {filteredServices
+              .filter(r => servicesSelectedKeys.includes(r.market_service?.uuid || r.billing_service?.uuid))
+              .map(r => `${r.billing_service?.address || ''}/${r.billing_service?.cidr ?? ''}`)
+              .join('\n')}
+          </div>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <span style={{ display: 'block', marginBottom: 4 }}>ASN 号码 *</span>
+          <InputNumber
+            style={{ width: '100%' }}
+            placeholder="例如 13335"
+            value={setAsnNumber}
+            onChange={v => setSetAsnNumber(v)}
+            min={1}
+          />
+        </div>
+        <div>
+          <span style={{ display: 'block', marginBottom: 4 }}>公司名称（可选）</span>
+          <Input
+            placeholder="用于 LOA 文件上的公司名"
+            value={setAsnCompany}
+            onChange={e => setSetAsnCompany(e.target.value)}
+          />
+        </div>
+      </Modal>
+
+      {/* 取消续费弹窗 */}
+      <Modal
+        title="取消续费"
+        open={cancelVisible}
+        onCancel={() => setCancelVisible(false)}
+        onOk={handleCancelSubmit}
+        confirmLoading={cancelLoading}
+        okText="确认取消"
+        okButtonProps={{ danger: true }}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message={`即将取消 ${servicesSelectedKeys.length} 个 IP 段的续费`}
+          style={{ marginBottom: 16 }}
+        />
+        <div style={{ marginBottom: 16 }}>
+          <span style={{ display: 'block', marginBottom: 4, fontWeight: 500 }}>取消时机</span>
+          <Select
+            value={cancelType}
+            onChange={v => setCancelType(v)}
+            style={{ width: '100%' }}
+            options={[
+              { label: 'End of the billing cycle（当前计费周期结束后取消）', value: 'end_of_period' },
+              { label: 'Immediate（立即取消，不可撤销）', value: 'immediate' },
+            ]}
+          />
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <span style={{ display: 'block', marginBottom: 4, fontWeight: 500 }}>取消原因</span>
+          <Select
+            value={cancelReason}
+            onChange={v => setCancelReason(v)}
+            style={{ width: '100%' }}
+            options={[
+              { label: 'End of project', value: 'End of project' },
+              { label: 'Pricing', value: 'Pricing' },
+              { label: 'Other', value: 'Other' },
+            ]}
+          />
+        </div>
+        <div>
+          <span style={{ display: 'block', marginBottom: 4, fontWeight: 500 }}>是否还会使用 IPXO 服务</span>
+          <Select
+            value={cancelUseAgain}
+            onChange={v => setCancelUseAgain(v)}
+            style={{ width: '100%' }}
+            options={[
+              { label: 'Yes', value: true },
+              { label: 'No', value: false },
+            ]}
+          />
+        </div>
       </Modal>
     </div>
   );

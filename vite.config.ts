@@ -4408,7 +4408,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     });
     server.middlewares.use('/api/ipxo/services', async (req, res, _next) => {
       // 子路径交给后续中间件处理
-      if (req.url && (req.url.startsWith('/upcoming') || req.url.startsWith('/renewed') || req.url.startsWith('/sync-leased') || req.url === '-list' || req.url.startsWith('-list'))) { _next(); return; }
+      if (req.url && (req.url.startsWith('/upcoming') || req.url.startsWith('/renewed') || req.url.startsWith('/sync-leased') || req.url === '-list' || req.url.startsWith('-list') || req.url.startsWith('/cancel'))) { _next(); return; }
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -4421,6 +4421,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const page = parseInt(reqUrl.searchParams.get('page') || '1');
         const perPage = parseInt(reqUrl.searchParams.get('per_page') || '15');
         const status = reqUrl.searchParams.get('status') || '';
+        const search = (reqUrl.searchParams.get('search') || '').trim();
         const forceRefresh = reqUrl.searchParams.get('refresh') === '1';
 
         // 仅 active 且第一页时走缓存（缓存存全量 active 数据）
@@ -4429,8 +4430,31 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const cacheValid = cache && (Date.now() - new Date(cache.cachedAt).getTime()) < 6 * 3600 * 1000;
 
         if (cacheValid && cache.services?.data?.length) {
+          let allData: any[] = cache.services.data;
+
+          // 搜索过滤：多关键词 OR 匹配 IP 段
+          if (search) {
+            const keywords = search.split(/[\s,，;；]+/).filter(Boolean).map(k => k.toLowerCase());
+            allData = allData.filter((item: any) => {
+              const bs = item.billing_service || {};
+              const subnet = `${bs.address || ''}/${bs.cidr ?? ''}`.toLowerCase();
+              return keywords.some(k => subnet.includes(k));
+            });
+            // 搜索模式返回全部结果（不分页）
+            res.statusCode = 200;
+            res.end(JSON.stringify({
+              success: true,
+              fromCache: true,
+              cachedAt: cache.cachedAt,
+              data: {
+                data: allData,
+                meta: { current_page: 1, last_page: 1, per_page: allData.length, total: allData.length, from: 1, to: allData.length },
+              },
+            }));
+            return;
+          }
+
           // 从缓存中切页返回
-          const allData: any[] = cache.services.data;
           const start = (page - 1) * perPage;
           const end = start + perPage;
           const pageData = allData.slice(start, end);
@@ -4454,6 +4478,104 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const result = await callIpxoApi(apiPath);
         res.statusCode = result.status === 200 ? 200 : result.status ?? 500;
         res.end(JSON.stringify({ success: result.status === 200, data: result.body }));
+      } catch (e: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+    });
+
+    // ─── POST /api/ipxo/services/cancel ─── 取消续费（调用 IPXO terminate API）
+    server.middlewares.use('/api/ipxo/services/cancel', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' })); return; }
+      try {
+        const config = loadIpxoConfig();
+        if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
+
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
+          try {
+            const payload = JSON.parse(body);
+            const { services: serviceList, type = 'end_of_period', reason = 'End of project', useAgain = true } = payload;
+            // serviceList: [{ billingUuid, marketUuid, subnet }]
+            if (!Array.isArray(serviceList) || !serviceList.length) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '缺少 services 参数' }));
+              return;
+            }
+
+            const terminateBody = JSON.stringify({
+              type,
+              reason,
+              details: '',
+              meta: { use_again: useAgain },
+            });
+
+            const results: any[] = [];
+            for (const svc of serviceList) {
+              const { billingUuid, marketUuid, subnet } = svc;
+              let ok = false;
+              let msg = '';
+
+              // 先尝试 billingUuid
+              if (billingUuid) {
+                const r = await callIpxoApiPost(
+                  `/ecommerce/public/{tenant_uuid}/subscriptions/${billingUuid}/terminate`,
+                  terminateBody
+                );
+                if (r.status >= 200 && r.status < 300) {
+                  ok = true;
+                  msg = '取消成功';
+                } else if (r.status === 404 && marketUuid) {
+                  // fallback to marketUuid
+                  const r2 = await callIpxoApiPost(
+                    `/ecommerce/public/{tenant_uuid}/subscriptions/${marketUuid}/terminate`,
+                    terminateBody
+                  );
+                  if (r2.status >= 200 && r2.status < 300) {
+                    ok = true;
+                    msg = '取消成功 (via market UUID)';
+                  } else {
+                    msg = `失败: ${r2.body?.message || r2.body?.error || JSON.stringify(r2.body).slice(0, 200)}`;
+                  }
+                } else {
+                  msg = `失败: ${r.body?.message || r.body?.error || JSON.stringify(r.body).slice(0, 200)}`;
+                }
+              } else if (marketUuid) {
+                const r = await callIpxoApiPost(
+                  `/ecommerce/public/{tenant_uuid}/subscriptions/${marketUuid}/terminate`,
+                  terminateBody
+                );
+                if (r.status >= 200 && r.status < 300) {
+                  ok = true;
+                  msg = '取消成功';
+                } else {
+                  msg = `失败: ${r.body?.message || r.body?.error || JSON.stringify(r.body).slice(0, 200)}`;
+                }
+              } else {
+                msg = '缺少 UUID';
+              }
+
+              results.push({ subnet, billingUuid, marketUuid, ok, message: msg });
+            }
+
+            const successCount = results.filter(r => r.ok).length;
+            res.statusCode = 200;
+            res.end(JSON.stringify({
+              success: true,
+              message: `完成：${successCount}/${results.length} 个成功取消`,
+              results,
+            }));
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: e.message }));
+          }
+        });
       } catch (e: any) {
         res.statusCode = 500;
         res.end(JSON.stringify({ success: false, message: e.message }));
