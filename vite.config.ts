@@ -1777,6 +1777,32 @@ function saveIpxoCache(cache: IpxoCache): void {
   console.log(`[IPXO] 缓存已更新: ${cache.cachedAt}`);
 }
 
+/** 城市名英转中映射（ZEC/BMC region/zone 标签翻译共用） */
+const CITY_CN: Record<string, string> = {
+  'Frankfurt': '法兰克福', 'Los Angeles': '洛杉矶', 'Hong Kong': '香港',
+  'Singapore': '新加坡', 'Tokyo': '东京', 'Seoul': '首尔',
+  'Mumbai': '孟买', 'Jakarta': '雅加达', 'Bangkok': '曼谷',
+  'Manila': '马尼拉', 'Taipei': '台北', 'London': '伦敦',
+  'Amsterdam': '阿姆斯特丹', 'Paris': '巴黎', 'Dallas': '达拉斯',
+  'Washington': '华盛顿', 'Chicago': '芝加哥', 'Miami': '迈阿密',
+  'New York': '纽约', 'San Jose': '圣何塞', 'Seattle': '西雅图',
+  'São Paulo': '圣保罗', 'Sao Paulo': '圣保罗', 'Sydney': '悉尼',
+  'Johannesburg': '约翰内斯堡', 'Dubai': '迪拜', 'Istanbul': '伊斯坦布尔',
+  'Moscow': '莫斯科', 'Riyadh': '利雅得', 'Lagos': '拉各斯',
+  'Kuala Lumpur': '吉隆坡', 'Ho Chi Minh': '胡志明', 'Dhaka': '达卡',
+  'Guangzhou': '广州', 'Shanghai': '上海', 'Shenzhen': '深圳',
+  'Beijing': '北京', 'Osaka': '大阪', 'Chennai': '钦奈',
+  'Silicon Valley': '硅谷', 'Phoenix': '凤凰城',
+  'Helsinki': '赫尔辛基', 'Marseille': '马赛', 'Taipei City': '台北',
+};
+function toChinese(label: string): string {
+  if (!label) return label;
+  for (const [en, cn] of Object.entries(CITY_CN)) {
+    if (label.includes(en)) return label.replace(en, cn);
+  }
+  return label;
+}
+
 /** 缓存 IPXO OAuth2 access_token */
 let ipxoTokenCache: { token: string; expiresAt: number } | null = null;
 
@@ -6121,7 +6147,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           const inner = unwrapResponse(labelData);
           const set = (inner.regionSet as any[]) || [];
           for (const r of set) {
-            if (r.regionId) regionLabels[r.regionId] = r.regionTitle || r.regionName || r.regionId;
+            if (r.regionId) regionLabels[r.regionId] = toChinese(r.regionTitle || r.regionName || r.regionId);
           }
         } catch { /* ignore */ }
       }
@@ -6456,31 +6482,6 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const { zecCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js');
       const ver = (await import('./src/lib/zen/credentials.js')).apiVersion();
 
-      // 城市名中文映射
-      const CITY_CN: Record<string, string> = {
-        'Frankfurt': '法兰克福', 'Los Angeles': '洛杉矶', 'Hong Kong': '香港',
-        'Singapore': '新加坡', 'Tokyo': '东京', 'Seoul': '首尔',
-        'Mumbai': '孟买', 'Jakarta': '雅加达', 'Bangkok': '曼谷',
-        'Manila': '马尼拉', 'Taipei': '台北', 'London': '伦敦',
-        'Amsterdam': '阿姆斯特丹', 'Paris': '巴黎', 'Dallas': '达拉斯',
-        'Washington': '华盛顿', 'Chicago': '芝加哥', 'Miami': '迈阿密',
-        'New York': '纽约', 'San Jose': '圣何塞', 'Seattle': '西雅图',
-        'São Paulo': '圣保罗', 'Sao Paulo': '圣保罗', 'Sydney': '悉尼',
-        'Johannesburg': '约翰内斯堡', 'Dubai': '迪拜', 'Istanbul': '伊斯坦布尔',
-        'Moscow': '莫斯科', 'Riyadh': '利雅得', 'Lagos': '拉各斯',
-        'Kuala Lumpur': '吉隆坡', 'Ho Chi Minh': '胡志明', 'Dhaka': '达卡',
-        'Guangzhou': '广州', 'Shanghai': '上海', 'Shenzhen': '深圳',
-        'Beijing': '北京', 'Osaka': '大阪', 'Chennai': '钦奈',
-        'Silicon Valley': '硅谷', 'Phoenix': '凤凰城',
-      };
-      const toChinese = (label: string) => {
-        if (!label) return label;
-        for (const [en, cn] of Object.entries(CITY_CN)) {
-          if (label.includes(en)) return label.replace(en, cn);
-        }
-        return label;
-      };
-
       // 1. 获取所有支持 BYOIP 的 region
       const regData = await zecCall('DescribeByoipRegions', {}, ak, sk, ver);
       const regInner = unwrapResponse(regData);
@@ -6553,30 +6554,6 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const { ak, sk } = getZenCreds();
       const { bmcCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js');
       const ver = '2024-09-01';
-
-      const CITY_CN: Record<string, string> = {
-        'Frankfurt': '法兰克福', 'Los Angeles': '洛杉矶', 'Hong Kong': '香港',
-        'Singapore': '新加坡', 'Tokyo': '东京', 'Seoul': '首尔',
-        'Mumbai': '孟买', 'Jakarta': '雅加达', 'Bangkok': '曼谷',
-        'Manila': '马尼拉', 'Taipei': '台北', 'London': '伦敦',
-        'Amsterdam': '阿姆斯特丹', 'Paris': '巴黎', 'Dallas': '达拉斯',
-        'Washington': '华盛顿', 'Chicago': '芝加哥', 'Miami': '迈阿密',
-        'New York': '纽约', 'San Jose': '圣何塞', 'Seattle': '西雅图',
-        'São Paulo': '圣保罗', 'Sao Paulo': '圣保罗', 'Sydney': '悉尼',
-        'Johannesburg': '约翰内斯堡', 'Dubai': '迪拜', 'Istanbul': '伊斯坦布尔',
-        'Moscow': '莫斯科', 'Riyadh': '利雅得', 'Lagos': '拉各斯',
-        'Kuala Lumpur': '吉隆坡', 'Ho Chi Minh': '胡志明', 'Dhaka': '达卡',
-        'Guangzhou': '广州', 'Shanghai': '上海', 'Shenzhen': '深圳',
-        'Beijing': '北京', 'Osaka': '大阪', 'Chennai': '钦奈',
-        'Silicon Valley': '硅谷', 'Phoenix': '凤凰城',
-      };
-      const toChinese = (label: string) => {
-        if (!label) return label;
-        for (const [en, cn] of Object.entries(CITY_CN)) {
-          if (label.includes(en)) return label.replace(en, cn);
-        }
-        return label;
-      };
 
       // 获取 zone labels
       const zoneLabels: Record<string, string> = {};

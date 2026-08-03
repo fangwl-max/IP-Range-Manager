@@ -152,16 +152,18 @@ const PrePurchaseCheck: React.FC = () => {
 
   // 已有 IP 段的 A/B 段统计
   const [existingAbMap, setExistingAbMap] = useState<Map<string, number>>(new Map());
+  const [existingSegmentSet, setExistingSegmentSet] = useState<Set<string>>(new Set());
 
   // 选择
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
 
   // 智能筛选
   const [smartFilterModalVisible, setSmartFilterModalVisible] = useState(false);
-  const [sfDedupAb, setSfDedupAb] = useState(false);
+  const [sfDedupAb, setSfDedupAb] = useState(true);
   const [sfDedupKeepCount, setSfDedupKeepCount] = useState(1);
   const [sfDedupSortBy, setSfDedupSortBy] = useState<'price_asc' | 'price_desc'>('price_asc');
   const [sfExcludeExisting, setSfExcludeExisting] = useState(false);
+  const [sfExcludeExistingSegment, setSfExcludeExistingSegment] = useState(true);
   const [sfNoAbuse, setSfNoAbuse] = useState(false);
   const [sfPriceFilterMin, setSfPriceFilterMin] = useState<number | null>(null);
   const [sfPriceFilterMax, setSfPriceFilterMax] = useState<number | null>(null);
@@ -169,10 +171,11 @@ const PrePurchaseCheck: React.FC = () => {
     let c = 0;
     if (sfDedupAb) c++;
     if (sfExcludeExisting) c++;
+    if (sfExcludeExistingSegment) c++;
     if (sfNoAbuse) c++;
     if (sfPriceFilterMin != null || sfPriceFilterMax != null) c++;
     return c;
-  }, [sfDedupAb, sfExcludeExisting, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
+  }, [sfDedupAb, sfExcludeExisting, sfExcludeExistingSegment, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
 
   // 购物车状态
   const [cartVisible, setCartVisible] = useState(false);
@@ -209,9 +212,10 @@ const PrePurchaseCheck: React.FC = () => {
       const json = res.ok ? await res.json() : {};
       const segs: any[] = json?.ipSegments || [];
       const map = new Map<string, number>();
+      const segSet = new Set<string>();
       segs.forEach(s => {
         if (!s.segment) return;
-        // 包含所有历史购买段，不排除已取消的
+        segSet.add(s.segment.trim());
         const parts = s.segment.split('.');
         if (parts.length >= 2) {
           const abKey = `${parts[0]}.${parts[1]}`;
@@ -219,6 +223,7 @@ const PrePurchaseCheck: React.FC = () => {
         }
       });
       setExistingAbMap(map);
+      setExistingSegmentSet(segSet);
     } catch (e) {
       console.error('加载现有 IP 段失败:', e);
     }
@@ -396,6 +401,9 @@ const PrePurchaseCheck: React.FC = () => {
   const smartFilteredItems = useMemo(() => {
     if (smartFilterActiveCount === 0) return items;
     let result = [...items];
+    if (sfExcludeExistingSegment) {
+      result = result.filter(i => !existingSegmentSet.has(i.segment));
+    }
     if (sfExcludeExisting) {
       result = result.filter(i => (i.dupCount || 0) === 0);
     }
@@ -423,7 +431,7 @@ const PrePurchaseCheck: React.FC = () => {
       }
     }
     return result;
-  }, [items, smartFilterActiveCount, sfDedupAb, sfDedupKeepCount, sfDedupSortBy, sfExcludeExisting, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
+  }, [items, smartFilterActiveCount, sfDedupAb, sfDedupKeepCount, sfDedupSortBy, sfExcludeExisting, sfExcludeExistingSegment, existingSegmentSet, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
 
   // ── 添加到购物车 ────────────────────────────────────────────────────────
   const handleAddToCart = useCallback(async () => {
@@ -1173,6 +1181,9 @@ const PrePurchaseCheck: React.FC = () => {
               </Space>
             </div>
           )}
+          <Checkbox checked={sfExcludeExistingSegment} onChange={e => setSfExcludeExistingSegment(e.target.checked)}>
+            过滤已有 IP 段（隐藏 IP 段管理中已存在的段）
+          </Checkbox>
           <Checkbox checked={sfExcludeExisting} onChange={e => setSfExcludeExisting(e.target.checked)}>
             排除已有 AB 段（隐藏与现有 IP 重复的 AB 段）
           </Checkbox>
