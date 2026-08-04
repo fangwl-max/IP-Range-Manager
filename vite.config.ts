@@ -6671,10 +6671,11 @@ export default defineConfig({
   plugins: [react(), dataPersistencePlugin()],
   server: {
     port: Number(process.env.VITE_PORT) || 8081,
-    host: '0.0.0.0', // 允许外部访问，监听所有网络接口
-    open: false,      // 服务器上禁止自动打开浏览器
+    host: '0.0.0.0',
+    open: false,
     strictPort: true,
-    hmr: false,       // 禁用 HMR，避免外网访问时 WebSocket 连接失败导致页面空白
+    allowedHosts: ['ip-rm.dulvora.xyz'],
+    hmr: false,
     watch: {
       usePolling: false,
       ignored: ['**/*'],
