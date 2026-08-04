@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 InvalidateUpstreamFn = Optional[Callable[[str], None]]
@@ -217,6 +218,9 @@ def iter_announce_events(
             }
             results.append(result)
             yield json.dumps(result, ensure_ascii=False) + "\n"
+
+        if idx < total - 1:
+            time.sleep(2)
 
     yield json.dumps(
         {
