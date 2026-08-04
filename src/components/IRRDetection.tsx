@@ -793,25 +793,19 @@ const IRRDetection: React.FC = () => {
         title: (
           <Space size={4}>
             <span>ASN 号</span>
-            <Tooltip title="复制所有 IP 前缀及对应 ASN">
+            <Tooltip title="复制所有 ASN">
               <CopyOutlined style={{ fontSize: 12, color: '#1677ff', cursor: 'pointer' }} onClick={() => {
-                const lines = tableData.map((r: any) => {
-                  const prefix = r.resource || '';
+                const asns = tableData.map((r: any) => {
                   const activeAsns = (r.activeAsns || []) as any[];
                   const displayedAsns = (r.displayedAsns || []) as any[];
                   const allRoutes = (r.routes || []) as any[];
-                  let asn = '';
-                  if (activeAsns.length > 0) {
-                    asn = activeAsns[0].origin || '';
-                  } else if (displayedAsns.length > 0) {
-                    asn = displayedAsns[0].origin || '';
-                  } else if (allRoutes.length > 0) {
-                    asn = allRoutes[0].origin || '';
-                  }
-                  return prefix && asn ? `${prefix}\t${asn}` : null;
+                  if (activeAsns.length > 0) return activeAsns[0].origin || '';
+                  if (displayedAsns.length > 0) return displayedAsns[0].origin || '';
+                  if (allRoutes.length > 0) return allRoutes[0].origin || '';
+                  return '';
                 }).filter(Boolean);
-                if (lines.length === 0) { message.warning('没有可复制的数据'); return; }
-                copyToClipboard(lines.join('\n'), ` ${lines.length} 条 IP+ASN`);
+                if (asns.length === 0) { message.warning('没有可复制的数据'); return; }
+                copyToClipboard(asns.join('\n'), ` ${asns.length} 个 ASN`);
               }} />
             </Tooltip>
           </Space>
