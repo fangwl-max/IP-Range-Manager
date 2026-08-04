@@ -15,6 +15,7 @@ import {
   Modal,
   DatePicker,
   InputNumber,
+  Tooltip,
 } from 'antd';
 import {
   CheckCircleOutlined,
@@ -708,9 +709,35 @@ const IRRDetection: React.FC = () => {
         }
       });
 
+    const copyToClipboard = (text: string, label: string) => {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(() => message.success(`已复制${label}`)).catch(() => {
+          const ta = document.createElement('textarea');
+          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+          document.body.removeChild(ta); message.success(`已复制${label}`);
+        });
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+        document.body.removeChild(ta); message.success(`已复制${label}`);
+      }
+    };
+
     const columns = [
       {
-        title: 'IP 前缀',
+        title: (
+          <Space size={4}>
+            <span>IP 前缀</span>
+            <Tooltip title="复制所有 IP 前缀">
+              <CopyOutlined style={{ fontSize: 12, color: '#1677ff', cursor: 'pointer' }} onClick={() => {
+                const prefixes = tableData.map((r: any) => r.resource).filter(Boolean).join('\n');
+                copyToClipboard(prefixes, ` ${tableData.length} 个 IP 前缀`);
+              }} />
+            </Tooltip>
+          </Space>
+        ),
         dataIndex: 'resource',
         key: 'resource',
         width: 200,
@@ -763,7 +790,32 @@ const IRRDetection: React.FC = () => {
         ),
       },
       {
-        title: 'ASN 号',
+        title: (
+          <Space size={4}>
+            <span>ASN 号</span>
+            <Tooltip title="复制所有 IP 前缀及对应 ASN">
+              <CopyOutlined style={{ fontSize: 12, color: '#1677ff', cursor: 'pointer' }} onClick={() => {
+                const lines = tableData.map((r: any) => {
+                  const prefix = r.resource || '';
+                  const activeAsns = (r.activeAsns || []) as any[];
+                  const displayedAsns = (r.displayedAsns || []) as any[];
+                  const allRoutes = (r.routes || []) as any[];
+                  let asn = '';
+                  if (activeAsns.length > 0) {
+                    asn = activeAsns[0].origin || '';
+                  } else if (displayedAsns.length > 0) {
+                    asn = displayedAsns[0].origin || '';
+                  } else if (allRoutes.length > 0) {
+                    asn = allRoutes[0].origin || '';
+                  }
+                  return prefix && asn ? `${prefix}\t${asn}` : null;
+                }).filter(Boolean);
+                if (lines.length === 0) { message.warning('没有可复制的数据'); return; }
+                copyToClipboard(lines.join('\n'), ` ${lines.length} 条 IP+ASN`);
+              }} />
+            </Tooltip>
+          </Space>
+        ),
         key: 'asns',
         width: 350,
         render: (_: any, record: any) => {
