@@ -166,6 +166,7 @@ const PrePurchaseCheck: React.FC = () => {
   const [sfExcludeExisting, setSfExcludeExisting] = useState(false);
   const [sfExcludeExistingSegment, setSfExcludeExistingSegment] = useState(true);
   const [sfNoAbuse, setSfNoAbuse] = useState(false);
+  const [sfNoPurchaseMonths, setSfNoPurchaseMonths] = useState<number | null>(null);
   const [sfPriceFilterMin, setSfPriceFilterMin] = useState<number | null>(null);
   const [sfPriceFilterMax, setSfPriceFilterMax] = useState<number | null>(null);
   const smartFilterActiveCount = useMemo(() => {
@@ -174,9 +175,10 @@ const PrePurchaseCheck: React.FC = () => {
     if (sfExcludeExisting) c++;
     if (sfExcludeExistingSegment) c++;
     if (sfNoAbuse) c++;
+    if (sfNoPurchaseMonths != null) c++;
     if (sfPriceFilterMin != null || sfPriceFilterMax != null) c++;
     return c;
-  }, [sfDedupAb, sfExcludeExisting, sfExcludeExistingSegment, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
+  }, [sfDedupAb, sfExcludeExisting, sfExcludeExistingSegment, sfNoAbuse, sfNoPurchaseMonths, sfPriceFilterMin, sfPriceFilterMax]);
 
   // 购物车状态
   const [cartVisible, setCartVisible] = useState(false);
@@ -420,6 +422,16 @@ const PrePurchaseCheck: React.FC = () => {
     if (sfNoAbuse) {
       result = result.filter(i => i.abuseScore == null || i.abuseScore === 0);
     }
+    if (sfNoPurchaseMonths != null) {
+      const cutoff = new Date();
+      cutoff.setMonth(cutoff.getMonth() - sfNoPurchaseMonths);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+      result = result.filter(i => {
+        const records = existingAbHistory.get(i.abSegKey || '') || [];
+        if (records.length === 0) return true;
+        return records.every(rec => (rec.purchaseDate?.slice(0, 10) || '') < cutoffStr);
+      });
+    }
     if (sfPriceFilterMin != null) {
       result = result.filter(i => i.price >= sfPriceFilterMin);
     }
@@ -441,7 +453,7 @@ const PrePurchaseCheck: React.FC = () => {
       }
     }
     return result;
-  }, [items, smartFilterActiveCount, sfDedupAb, sfDedupKeepCount, sfDedupSortBy, sfExcludeExisting, sfExcludeExistingSegment, existingSegmentSet, sfNoAbuse, sfPriceFilterMin, sfPriceFilterMax]);
+  }, [items, smartFilterActiveCount, sfDedupAb, sfDedupKeepCount, sfDedupSortBy, sfExcludeExisting, sfExcludeExistingSegment, existingSegmentSet, sfNoAbuse, sfNoPurchaseMonths, existingAbHistory, sfPriceFilterMin, sfPriceFilterMax]);
 
   // ── 添加到购物车 ────────────────────────────────────────────────────────
   const handleAddToCart = useCallback(async () => {
@@ -632,15 +644,15 @@ const PrePurchaseCheck: React.FC = () => {
         const dup = r.dupCount || 0;
         const dupColor = dup === 0 ? 'green' : dup <= 7 ? 'blue' : dup <= 19 ? 'orange' : 'red';
         return (
-          <Space direction="vertical" size={2}>
-            <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{r.abSegKey}</Text>
+          <Space size={4}>
+            <Text style={{ fontFamily: 'monospace', fontSize: 13 }}>{r.abSegKey}</Text>
             {dup > 0 ? (
-              <Tag color={dupColor} style={{ fontSize: 11 }}>
-                <WarningOutlined /> 已有 {dup} 个
+              <Tag color={dupColor} style={{ fontSize: 11, margin: 0 }}>
+                {dup}
               </Tag>
             ) : (
-              <Tag color="green" style={{ fontSize: 11 }}>
-                <CheckCircleOutlined /> 无重复
+              <Tag color="green" style={{ fontSize: 11, margin: 0 }}>
+                <CheckCircleOutlined />
               </Tag>
             )}
           </Space>
@@ -650,29 +662,29 @@ const PrePurchaseCheck: React.FC = () => {
     {
       title: '同AB段购买记录',
       key: 'abHistory',
-      width: 180,
+      width: 200,
       render: (_: any, r: MarketItem) => {
         const records = existingAbHistory.get(r.abSegKey || '') || [];
-        if (records.length === 0) return <Text type="secondary" style={{ fontSize: 11 }}>无</Text>;
+        if (records.length === 0) return <Text type="secondary" style={{ fontSize: 12 }}>无</Text>;
         const show = records.slice(0, 2);
         const rest = records.slice(2);
         return (
-          <div style={{ fontSize: 11, lineHeight: '18px' }}>
+          <div style={{ lineHeight: '20px' }}>
             {show.map((rec, i) => (
-              <div key={i}>
-                <Text style={{ fontFamily: 'monospace', fontSize: 11 }}>{rec.segment}</Text>
-                <Text type="secondary" style={{ marginLeft: 4 }}>{rec.purchaseDate?.slice(0, 10) || '-'}</Text>
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 4 }}>
+                <Text style={{ fontFamily: 'monospace', fontSize: 13 }}>{rec.segment}</Text>
+                <Text type="secondary" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>{rec.purchaseDate?.slice(0, 10) || '-'}</Text>
               </div>
             ))}
             {rest.length > 0 && (
               <details style={{ margin: 0 }}>
-                <summary style={{ cursor: 'pointer', color: '#1677ff', fontSize: 11 }}>
-                  还有 {rest.length} 条记录
+                <summary style={{ cursor: 'pointer', color: '#1677ff', fontSize: 11, textAlign: 'right' }}>
+                  +{rest.length} 条
                 </summary>
                 {rest.map((rec, i) => (
-                  <div key={i}>
-                    <Text style={{ fontFamily: 'monospace', fontSize: 11 }}>{rec.segment}</Text>
-                    <Text type="secondary" style={{ marginLeft: 4 }}>{rec.purchaseDate?.slice(0, 10) || '-'}</Text>
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 4 }}>
+                    <Text style={{ fontFamily: 'monospace', fontSize: 13 }}>{rec.segment}</Text>
+                    <Text type="secondary" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>{rec.purchaseDate?.slice(0, 10) || '-'}</Text>
                   </div>
                 ))}
               </details>
@@ -1231,6 +1243,19 @@ const PrePurchaseCheck: React.FC = () => {
           <Checkbox checked={sfExcludeExisting} onChange={e => setSfExcludeExisting(e.target.checked)}>
             排除已有 AB 段（隐藏与现有 IP 重复的 AB 段）
           </Checkbox>
+          <div>
+            <Checkbox
+              checked={sfNoPurchaseMonths != null}
+              onChange={e => setSfNoPurchaseMonths(e.target.checked ? 6 : null)}
+            >
+              近期无同AB段购买记录
+            </Checkbox>
+            {sfNoPurchaseMonths != null && (
+              <div style={{ marginLeft: 24, marginTop: 4 }}>
+                <span>仅显示近 <InputNumber value={sfNoPurchaseMonths} onChange={v => setSfNoPurchaseMonths(v || 1)} min={1} max={120} style={{ width: 65 }} /> 个月内无购买记录的</span>
+              </div>
+            )}
+          </div>
           <Checkbox checked={sfNoAbuse} onChange={e => setSfNoAbuse(e.target.checked)}>
             仅显示无滥用记录（排除滥用评分 &gt; 0 的，需先检测）
           </Checkbox>
