@@ -627,7 +627,19 @@ const PrePurchaseCheck: React.FC = () => {
           <Text
             style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
             onClick={() => {
-              navigator.clipboard.writeText(v).then(() => message.success(`已复制: ${v}`));
+              if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(v).then(() => message.success(`已复制: ${v}`)).catch(() => {
+                  const ta = document.createElement('textarea');
+                  ta.value = v; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                  document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+                  document.body.removeChild(ta); message.success(`已复制: ${v}`);
+                });
+              } else {
+                const ta = document.createElement('textarea');
+                ta.value = v; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+                document.body.removeChild(ta); message.success(`已复制: ${v}`);
+              }
             }}
           >
             {v} <CopyOutlined style={{ fontSize: 11, color: '#999' }} />
