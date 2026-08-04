@@ -153,6 +153,7 @@ const PrePurchaseCheck: React.FC = () => {
   // 已有 IP 段的 A/B 段统计
   const [existingAbMap, setExistingAbMap] = useState<Map<string, number>>(new Map());
   const [existingSegmentSet, setExistingSegmentSet] = useState<Set<string>>(new Set());
+  const [existingAbHistory, setExistingAbHistory] = useState<Map<string, { segment: string; purchaseDate: string }[]>>(new Map());
 
   // 选择
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -213,6 +214,7 @@ const PrePurchaseCheck: React.FC = () => {
       const segs: any[] = json?.ipSegments || [];
       const map = new Map<string, number>();
       const segSet = new Set<string>();
+      const historyMap = new Map<string, { segment: string; purchaseDate: string }[]>();
       segs.forEach(s => {
         if (!s.segment) return;
         segSet.add(s.segment.trim());
@@ -220,10 +222,18 @@ const PrePurchaseCheck: React.FC = () => {
         if (parts.length >= 2) {
           const abKey = `${parts[0]}.${parts[1]}`;
           map.set(abKey, (map.get(abKey) || 0) + 1);
+          const arr = historyMap.get(abKey) || [];
+          arr.push({ segment: s.segment.trim(), purchaseDate: s.purchaseDate || s.createdAt || '' });
+          historyMap.set(abKey, arr);
         }
       });
+      // 按购买日期降序排列（最近的在前）
+      for (const [, arr] of historyMap) {
+        arr.sort((a, b) => (b.purchaseDate || '').localeCompare(a.purchaseDate || ''));
+      }
       setExistingAbMap(map);
       setExistingSegmentSet(segSet);
+      setExistingAbHistory(historyMap);
     } catch (e) {
       console.error('加载现有 IP 段失败:', e);
     }
@@ -634,6 +644,40 @@ const PrePurchaseCheck: React.FC = () => {
               </Tag>
             )}
           </Space>
+        );
+      },
+    },
+    {
+      title: '同AB段购买记录',
+      key: 'abHistory',
+      width: 180,
+      render: (_: any, r: MarketItem) => {
+        const records = existingAbHistory.get(r.abSegKey || '') || [];
+        if (records.length === 0) return <Text type="secondary" style={{ fontSize: 11 }}>无</Text>;
+        const show = records.slice(0, 2);
+        const rest = records.slice(2);
+        return (
+          <div style={{ fontSize: 11, lineHeight: '18px' }}>
+            {show.map((rec, i) => (
+              <div key={i}>
+                <Text style={{ fontFamily: 'monospace', fontSize: 11 }}>{rec.segment}</Text>
+                <Text type="secondary" style={{ marginLeft: 4 }}>{rec.purchaseDate?.slice(0, 10) || '-'}</Text>
+              </div>
+            ))}
+            {rest.length > 0 && (
+              <details style={{ margin: 0 }}>
+                <summary style={{ cursor: 'pointer', color: '#1677ff', fontSize: 11 }}>
+                  还有 {rest.length} 条记录
+                </summary>
+                {rest.map((rec, i) => (
+                  <div key={i}>
+                    <Text style={{ fontFamily: 'monospace', fontSize: 11 }}>{rec.segment}</Text>
+                    <Text type="secondary" style={{ marginLeft: 4 }}>{rec.purchaseDate?.slice(0, 10) || '-'}</Text>
+                  </div>
+                ))}
+              </details>
+            )}
+          </div>
         );
       },
     },
