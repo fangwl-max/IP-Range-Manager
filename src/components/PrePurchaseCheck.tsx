@@ -764,21 +764,21 @@ const PrePurchaseCheck: React.FC = () => {
                   color={r.abuseScore === 0 ? 'green' : r.abuseScore < 25 ? 'orange' : 'red'}
                   style={{ fontSize: 11, marginBottom: 0 }}
                 >
-                  {r.abuseScore === 0 ? '✓ 无滥用记录' : `⚠ 评分 ${r.abuseScore}`}
+                  {r.abuseScore === 0 ? '✓ 无滥用记录' : `⚠ 最高评分 ${r.abuseScore}`}
                 </Tag>
                 {abuseData && (
                   <Space direction="vertical" size={0}>
                     <Text style={{ fontSize: 10, color: '#888' }}>
-                      举报 {abuseData.totalReports} 次 / {abuseData.numDistinctUsers} 用户
+                      {abuseData.reportedIpCount != null
+                        ? `${abuseData.reportedIpCount} 个IP被举报 / 共 ${abuseData.totalReports} 次`
+                        : `举报 ${abuseData.totalReports} 次`}
                     </Text>
-                    {abuseData.isp && <Text style={{ fontSize: 10, color: '#888' }}>{abuseData.isp}</Text>}
-                    {abuseData.isWhitelisted && <Tag color="blue" style={{ fontSize: 10 }}>白名单</Tag>}
                   </Space>
                 )}
               </Space>
             )}
             <a
-              href={`https://www.abuseipdb.com/check/${r.address}`}
+              href={`https://www.abuseipdb.com/check-block/${r.segment}`}
               target="_blank"
               rel="noopener noreferrer"
               style={{ fontSize: 11 }}

@@ -4238,13 +4238,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const segment = reqUrl.searchParams.get('segment') || '';
         if (!segment) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 segment 参数' })); return; }
 
-        // 取 IP 段的网络地址（去掉 /cidr）
-        const ipAddress = segment.split('/')[0];
-        const cidr = segment.includes('/') ? segment.split('/')[1] : '24';
+        // 使用 /api/v2/check-block 查询整个网段
+        const network = segment.includes('/') ? segment : `${segment}/24`;
 
         const abuseResult = await new Promise<any>((resolve, reject) => {
-          // 免费账号用 /api/v2/check（单 IP），查询网段的网络地址
-          const path = `/api/v2/check?ipAddress=${encodeURIComponent(ipAddress)}&maxAgeInDays=90&verbose`;
+          const path = `/api/v2/check-block?network=${encodeURIComponent(network)}&maxAgeInDays=90`;
           const apiReq = https.request({
             hostname: 'api.abuseipdb.com',
             path,
@@ -4269,20 +4267,21 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
         if (abuseResult.status === 200) {
           const data = abuseResult.body?.data || {};
+          const reported: any[] = data.reportedAddress || [];
+          const totalReports = reported.reduce((sum: number, r: any) => sum + (r.numReports || 0), 0);
+          const maxScore = reported.reduce((max: number, r: any) => Math.max(max, r.abuseConfidenceScore || 0), 0);
+          const reportedCount = reported.length;
           res.statusCode = 200;
           res.end(JSON.stringify({
             success: true,
             data: {
-              networkAddress: data.ipAddress || segment,
-              // /api/v2/check 返回 abuseConfidenceScore（0-100）
-              abuseConfidenceScore: data.abuseConfidenceScore ?? 0,
-              numDistinctUsers: data.numDistinctUsers ?? 0,
-              totalReports: data.totalReports ?? 0,
-              countryCode: data.countryCode || '',
-              usageType: data.usageType || '',
-              isp: data.isp || '',
-              domain: data.domain || '',
-              isWhitelisted: data.isWhitelisted ?? false,
+              networkAddress: data.networkAddress || network,
+              abuseConfidenceScore: maxScore,
+              numPossibleHosts: data.numPossibleHosts ?? 0,
+              reportedIpCount: reportedCount,
+              totalReports,
+              addressSpaceDesc: data.addressSpaceDesc || '',
+              reportedAddress: reported.slice(0, 10),
             },
           }));
         } else {

@@ -14,9 +14,10 @@ const { Option } = Select;
 
 // ==================== 固定可用区 & VLAN 配置 ====================
 const FIXED_ZONES = [
-  { zoneId: "HEL-A", label: "HEL-A 赫尔辛基", publicVirtualInterfaceId: "1515609139647220845" },
-  { zoneId: "IAD-G", label: "IAD-G 华盛顿",   publicVirtualInterfaceId: "1694787346844887149" },
-  { zoneId: "MRS-B", label: "MRS-B 马赛",     publicVirtualInterfaceId: "1694787497261007981" },
+  { zoneId: "HEL-A", label: "HEL-A 赫尔辛基",   publicVirtualInterfaceId: "1515609139647220845" },
+  { zoneId: "IAD-G", label: "IAD-G 华盛顿",     publicVirtualInterfaceId: "1694787346844887149" },
+  { zoneId: "MRS-B", label: "MRS-B 马赛",       publicVirtualInterfaceId: "1694787497261007981" },
+  { zoneId: "AMS-A", label: "AMS-A 阿姆斯特丹",  publicVirtualInterfaceId: "1515609139647220845" },
 ] as const;
 
 type ZoneId = typeof FIXED_ZONES[number]["zoneId"];
@@ -25,7 +26,6 @@ const ENABLED_ZONE_IDS = new Set(FIXED_ZONES.map(z => z.zoneId));
 // 其他展示用（禁用）的可用区
 const DISABLED_ZONES = [
   { zoneId: "FRA-A", label: "FRA-A 法兰克福" },
-  { zoneId: "AMS-A", label: "AMS-A 阿姆斯特丹" },
   { zoneId: "LON-A", label: "LON-A 伦敦" },
   { zoneId: "SIN-A", label: "SIN-A 新加坡" },
   { zoneId: "TYO-A", label: "TYO-A 东京" },
