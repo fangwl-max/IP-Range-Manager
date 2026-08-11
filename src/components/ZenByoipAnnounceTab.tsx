@@ -18,28 +18,24 @@ const FIXED_ZONES = [
   { zoneId: "IAD-G", label: "IAD-G 华盛顿",     publicVirtualInterfaceId: "1694787346844887149" },
   { zoneId: "MRS-B", label: "MRS-B 马赛",       publicVirtualInterfaceId: "1694787497261007981" },
   { zoneId: "AMS-A", label: "AMS-A 阿姆斯特丹",  publicVirtualInterfaceId: "1515609139647220845" },
+  { zoneId: "FRA-A", label: "FRA-A 法兰克福",    publicVirtualInterfaceId: "" },
+  { zoneId: "LON-A", label: "LON-A 伦敦",       publicVirtualInterfaceId: "" },
+  { zoneId: "SIN-A", label: "SIN-A 新加坡",     publicVirtualInterfaceId: "" },
+  { zoneId: "TYO-A", label: "TYO-A 东京",       publicVirtualInterfaceId: "" },
+  { zoneId: "SEL-A", label: "SEL-A 首尔",       publicVirtualInterfaceId: "" },
+  { zoneId: "SYD-A", label: "SYD-A 悉尼",       publicVirtualInterfaceId: "" },
+  { zoneId: "LAX-A", label: "LAX-A 洛杉矶",     publicVirtualInterfaceId: "" },
+  { zoneId: "NYC-A", label: "NYC-A 纽约",       publicVirtualInterfaceId: "" },
+  { zoneId: "CHI-A", label: "CHI-A 芝加哥",     publicVirtualInterfaceId: "" },
+  { zoneId: "DFW-A", label: "DFW-A 达拉斯",     publicVirtualInterfaceId: "" },
+  { zoneId: "MIA-A", label: "MIA-A 迈阿密",     publicVirtualInterfaceId: "" },
+  { zoneId: "SEA-A", label: "SEA-A 西雅图",     publicVirtualInterfaceId: "" },
+  { zoneId: "AKL-A", label: "AKL-A 奥克兰",     publicVirtualInterfaceId: "" },
+  { zoneId: "GRU-A", label: "GRU-A 圣保罗",     publicVirtualInterfaceId: "" },
 ] as const;
 
 type ZoneId = typeof FIXED_ZONES[number]["zoneId"];
 const ENABLED_ZONE_IDS = new Set(FIXED_ZONES.map(z => z.zoneId));
-
-// 其他展示用（禁用）的可用区
-const DISABLED_ZONES = [
-  { zoneId: "FRA-A", label: "FRA-A 法兰克福" },
-  { zoneId: "LON-A", label: "LON-A 伦敦" },
-  { zoneId: "SIN-A", label: "SIN-A 新加坡" },
-  { zoneId: "TYO-A", label: "TYO-A 东京" },
-  { zoneId: "SEL-A", label: "SEL-A 首尔" },
-  { zoneId: "SYD-A", label: "SYD-A 悉尼" },
-  { zoneId: "LAX-A", label: "LAX-A 洛杉矶" },
-  { zoneId: "NYC-A", label: "NYC-A 纽约" },
-  { zoneId: "CHI-A", label: "CHI-A 芝加哥" },
-  { zoneId: "DFW-A", label: "DFW-A 达拉斯" },
-  { zoneId: "MIA-A", label: "MIA-A 迈阿密" },
-  { zoneId: "SEA-A", label: "SEA-A 西雅图" },
-  { zoneId: "AKL-A", label: "AKL-A 奥克兰" },
-  { zoneId: "GRU-A", label: "GRU-A 圣保罗" },
-];
 
 // ==================== 表单行 ====================
 interface FormRow {
@@ -234,14 +230,15 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
         type="info"
         showIcon
         message={
-          <Space size={16}>
-            {FIXED_ZONES.map(z => (
+          <Space size={16} wrap>
+            {FIXED_ZONES.filter(z => z.publicVirtualInterfaceId).map(z => (
               <span key={z.zoneId}>
                 <Tag color="blue">{z.zoneId}</Tag>
                 <Text style={{ fontSize: 13 }}>{z.label.split(" ")[1]}</Text>
                 <Text type="secondary" style={{ fontSize: 12, marginLeft: 4 }}>VLAN: {z.publicVirtualInterfaceId}</Text>
               </span>
             ))}
+            <Text type="secondary" style={{ fontSize: 12 }}>其他区域需手动填写公网 VLAN ID</Text>
           </Space>
         }
         style={{ padding: "6px 12px" }}
@@ -308,15 +305,8 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
               size="middle"
               style={{ width: "100%" }}
             >
-              {/* 启用的可用区 */}
               {FIXED_ZONES.map(z => (
                 <Option key={z.zoneId} value={z.zoneId}>{z.label}</Option>
-              ))}
-              {/* 禁用的可用区（变灰显示） */}
-              {DISABLED_ZONES.map(z => (
-                <Option key={z.zoneId} value={z.zoneId} disabled>
-                  <Text type="secondary">{z.label}</Text>
-                </Option>
               ))}
             </Select>
             <Input
