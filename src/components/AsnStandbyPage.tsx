@@ -595,6 +595,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
 
 
   const handleBatchSetUsageStatus = async (status: UsageStatus) => {
+    const nowIso = new Date().toISOString();
     const newItems = items.map(i => {
       if (!selectedAvailableKeys.includes(i.segment)) return i;
       return {
