@@ -17,7 +17,7 @@ const FIXED_ZONES = [
   { zoneId: "HEL-A", label: "HEL-A 赫尔辛基",   publicVirtualInterfaceId: "1515609139647220845" },
   { zoneId: "IAD-G", label: "IAD-G 华盛顿",     publicVirtualInterfaceId: "1694787346844887149" },
   { zoneId: "MRS-B", label: "MRS-B 马赛",       publicVirtualInterfaceId: "1694787497261007981" },
-  { zoneId: "AMS-A", label: "AMS-A 阿姆斯特丹",  publicVirtualInterfaceId: "1515609139647220845" },
+  { zoneId: "AMS-A", label: "AMS-A 阿姆斯特丹",  publicVirtualInterfaceId: "1750001871071878757" },
   { zoneId: "FRA-A", label: "FRA-A 法兰克福",    publicVirtualInterfaceId: "" },
   { zoneId: "LON-A", label: "LON-A 伦敦",       publicVirtualInterfaceId: "" },
   { zoneId: "SIN-A", label: "SIN-A 新加坡",     publicVirtualInterfaceId: "" },
