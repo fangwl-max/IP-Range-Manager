@@ -333,7 +333,10 @@ interface SshServerConfig {
 function loadSshServers(): SshServerConfig[] {
   try {
     if (fs.existsSync(sshServersPath)) {
-      return JSON.parse(fs.readFileSync(sshServersPath, 'utf-8'));
+      const raw = fs.readFileSync(sshServersPath, 'utf-8').trim();
+      if (!raw) return [];
+      const data = JSON.parse(raw);
+      return Array.isArray(data) ? data : [];
     }
   } catch (e) {
     console.error('[SSH] Load config error:', e);
