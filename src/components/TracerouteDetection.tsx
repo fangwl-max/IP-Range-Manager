@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Card, Input, Button, Space, Typography, Table, Tag, Collapse, Alert, message,
-  Select, Modal, Form, InputNumber, Popconfirm,
+  Card, Input, Button, Space, Typography, Tag, Collapse, Alert, message,
+  Select, Modal, Form, InputNumber, Popconfirm, Checkbox, Table, Tooltip,
 } from 'antd';
 import {
   PlayCircleOutlined, CheckCircleOutlined, CloseCircleOutlined,
   LoadingOutlined, NodeIndexOutlined, SettingOutlined,
   PlusOutlined, DeleteOutlined, EditOutlined,
-  CloudServerOutlined, DesktopOutlined,
+  CloudServerOutlined, DesktopOutlined, CopyOutlined,
 } from '@ant-design/icons';
 import { deriveGatewayIPv4 } from './GatewayPingDetection';
 
@@ -60,24 +60,13 @@ function parseInputs(text: string): Array<{ raw: string; targetIp: string }> {
   return out;
 }
 
-const hopColumns = [
-  {
-    title: '跳数', dataIndex: 'hop', key: 'hop', width: 65,
-    render: (v: number) => <Text strong>{v}</Text>,
-  },
-  {
-    title: 'IP 地址', dataIndex: 'ip', key: 'ip', width: 180,
-    render: (v: string) => v === '*' ? <Text type="secondary">*</Text> : <Text code>{v}</Text>,
-  },
-  { title: 'RTT1', dataIndex: 'rtt1', key: 'rtt1', width: 100 },
-  { title: 'RTT2', dataIndex: 'rtt2', key: 'rtt2', width: 100 },
-  { title: 'RTT3', dataIndex: 'rtt3', key: 'rtt3', width: 100 },
-];
-
 const TracerouteDetection: React.FC<Props> = () => {
   const [inputText, setInputText] = useState('');
   const [results, setResults] = useState<TracerouteResult[]>([]);
   const [running, setRunning] = useState(false);
+
+  // 勾选
+  const [checkedSet, setCheckedSet] = useState<Set<number>>(new Set());
 
   // 服务器选择
   const [servers, setServers] = useState<SshServer[]>([]);
@@ -196,6 +185,7 @@ const TracerouteDetection: React.FC<Props> = () => {
       serverName: serverLabel,
     }));
     setResults(initResults);
+    setCheckedSet(new Set());
     setRunning(true);
 
     for (let i = 0; i < targets.length; i++) {
@@ -235,6 +225,52 @@ const TracerouteDetection: React.FC<Props> = () => {
     setRunning(false);
   };
 
+  // ── 勾选逻辑 ──
+  const doneResults = results.filter(r => r.status === 'done' || r.status === 'error');
+  const doneIndices = results.map((r, i) => (r.status === 'done' || r.status === 'error') ? i : -1).filter(i => i >= 0);
+  const allChecked = doneIndices.length > 0 && doneIndices.every(i => checkedSet.has(i));
+  const someChecked = doneIndices.some(i => checkedSet.has(i));
+
+  const toggleCheck = (idx: number) => {
+    setCheckedSet(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allChecked) {
+      setCheckedSet(new Set());
+    } else {
+      setCheckedSet(new Set(doneIndices));
+    }
+  };
+
+  const handleCopySelected = () => {
+    const rows = results
+      .map((r, i) => ({ r, i }))
+      .filter(({ i }) => checkedSet.has(i))
+      .map(({ r }) => {
+        const serverCol = r.serverName || '本机';
+        const resultCol = r.status === 'error' ? '失败' : (r.reachable ? '通' : '不通');
+        return `${r.raw}\t${serverCol}\t${resultCol}`;
+      });
+    if (rows.length === 0) {
+      message.warning('请先勾选要复制的项');
+      return;
+    }
+    const header = 'IP段\t检测服务器\t检测结果';
+    const text = [header, ...rows].join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => message.success(`已复制 ${rows.length} 条记录`),
+      () => message.error('复制失败'),
+    );
+  };
+
+  const reachableCount = doneResults.filter(r => r.reachable === true).length;
+  const unreachableCount = doneResults.filter(r => r.reachable === false).length;
+
   const statusTag = (r: TracerouteResult) => {
     switch (r.status) {
       case 'pending':
@@ -256,10 +292,6 @@ const TracerouteDetection: React.FC<Props> = () => {
         return <Tag color="error" icon={<CloseCircleOutlined />}>失败</Tag>;
     }
   };
-
-  const doneResults = results.filter(r => r.status === 'done');
-  const reachableCount = doneResults.filter(r => r.reachable === true).length;
-  const unreachableCount = doneResults.filter(r => r.reachable === false).length;
 
   return (
     <Card style={{ borderRadius: 6 }}>
@@ -398,73 +430,123 @@ const TracerouteDetection: React.FC<Props> = () => {
               style={{ marginBottom: 16 }}
             />
 
-            <Collapse
-              defaultActiveKey={results.map((_, i) => String(i))}
-              items={results.map((r, i) => ({
-                key: String(i),
-                label: (
-                  <Space>
-                    <NodeIndexOutlined />
-                    <Text code>{r.raw}</Text>
+            {/* 全选 + 复制工具栏 */}
+            {doneIndices.length > 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                marginBottom: 12, padding: '8px 12px',
+                background: '#fafafa', borderRadius: 6, border: '1px solid #f0f0f0',
+              }}>
+                <Checkbox
+                  checked={allChecked}
+                  indeterminate={someChecked && !allChecked}
+                  onChange={toggleSelectAll}
+                >
+                  全选
+                </Checkbox>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  已选 {checkedSet.size} / {doneIndices.length}
+                </Text>
+                <Tooltip title="复制选中项的 IP段、检测服务器、检测结果（Tab分隔，可直接粘贴到Excel）">
+                  <Button
+                    size="small"
+                    icon={<CopyOutlined />}
+                    disabled={checkedSet.size === 0}
+                    onClick={handleCopySelected}
+                  >
+                    复制选中结果
+                  </Button>
+                </Tooltip>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {results.map((r, i) => (
+                <div
+                  key={i}
+                  style={{
+                    border: '1px solid #f0f0f0',
+                    borderRadius: 6,
+                    overflow: 'hidden',
+                    background: checkedSet.has(i) ? '#e6f4ff' : '#fff',
+                  }}
+                >
+                  {/* 结果行 */}
+                  <div
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '10px 14px',
+                      cursor: (r.status === 'done' || r.status === 'error') ? 'pointer' : 'default',
+                    }}
+                    onClick={() => { if (r.status === 'done' || r.status === 'error') toggleCheck(i); }}
+                  >
+                    {(r.status === 'done' || r.status === 'error') ? (
+                      <Checkbox
+                        checked={checkedSet.has(i)}
+                        onClick={e => e.stopPropagation()}
+                        onChange={() => toggleCheck(i)}
+                      />
+                    ) : (
+                      <div style={{ width: 22 }} />
+                    )}
+                    <NodeIndexOutlined style={{ color: '#999' }} />
+                    <Text code style={{ fontSize: 13 }}>{r.raw}</Text>
                     <Text type="secondary">→</Text>
-                    <Text>traceroute {r.targetIp}</Text>
+                    <Text style={{ fontSize: 13 }}>traceroute {r.targetIp}</Text>
                     {r.serverName && <Tag color="blue" style={{ fontSize: 11 }}>{r.serverName}</Tag>}
+                    <div style={{ flex: 1 }} />
                     {statusTag(r)}
-                  </Space>
-                ),
-                children: (
-                  <div>
-                    {r.status === 'error' && (
-                      <Alert type="error" message={r.error || '执行失败'} style={{ marginBottom: 12 }} />
-                    )}
-                    {r.hops.length > 0 && (
-                      <Table
-                        dataSource={r.hops}
-                        columns={hopColumns}
-                        rowKey="hop"
-                        size="small"
-                        pagination={false}
-                        bordered
-                        style={{ marginBottom: 12 }}
-                      />
-                    )}
-                    {r.rawOutput && (
-                      <Collapse
-                        size="small"
-                        items={[{
-                          key: 'raw',
-                          label: <Text type="secondary" style={{ fontSize: 12 }}>原始输出</Text>,
-                          children: (
-                            <pre style={{
-                              background: '#1a1a2e',
-                              color: '#a8d8ea',
-                              padding: 12,
-                              borderRadius: 6,
-                              fontSize: 12,
-                              fontFamily: 'monospace',
-                              maxHeight: 300,
-                              overflow: 'auto',
-                              whiteSpace: 'pre-wrap',
-                              margin: 0,
-                            }}>
-                              {r.rawOutput}
-                            </pre>
-                          ),
-                        }]}
-                      />
-                    )}
-                    {r.status === 'running' && (
-                      <div style={{ textAlign: 'center', padding: 24 }}>
-                        <LoadingOutlined style={{ fontSize: 24, color: '#1677ff' }} />
-                        <div style={{ marginTop: 8 }}>
-                          <Text type="secondary">正在执行 traceroute，请稍候...</Text>
-                        </div>
-                      </div>
-                    )}
                   </div>
-                ),
-              }))}
-            />
+
+                  {/* 可展开的原始输出 */}
+                  {(r.rawOutput || r.error) && (
+                    <div style={{ borderTop: '1px solid #f0f0f0' }}>
+                      <Collapse
+                        ghost
+                        size="small"
+                        items={[
+                          ...(r.status === 'error' && r.error ? [{
+                            key: 'error',
+                            label: <Text type="danger" style={{ fontSize: 12 }}>错误信息</Text>,
+                            children: <Alert type="error" message={r.error} style={{ margin: '0 12px 12px' }} />,
+                          }] : []),
+                          ...(r.rawOutput ? [{
+                            key: 'raw',
+                            label: <Text type="secondary" style={{ fontSize: 12 }}>原始输出</Text>,
+                            children: (
+                              <pre style={{
+                                background: '#1a1a2e',
+                                color: '#a8d8ea',
+                                padding: 12,
+                                borderRadius: 6,
+                                fontSize: 12,
+                                fontFamily: 'monospace',
+                                maxHeight: 300,
+                                overflow: 'auto',
+                                whiteSpace: 'pre-wrap',
+                                margin: '0 12px 12px',
+                              }}>
+                                {r.rawOutput}
+                              </pre>
+                            ),
+                          }] : []),
+                        ]}
+                      />
+                    </div>
+                  )}
+
+                  {/* 执行中状态 */}
+                  {r.status === 'running' && (
+                    <div style={{ textAlign: 'center', padding: 16, borderTop: '1px solid #f0f0f0' }}>
+                      <LoadingOutlined style={{ fontSize: 20, color: '#1677ff' }} />
+                      <div style={{ marginTop: 6 }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>正在执行 traceroute，请稍候...</Text>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </Space>
