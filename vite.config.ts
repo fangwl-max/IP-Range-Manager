@@ -2829,21 +2829,49 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const lines = stdout.split('\n');
       const hops: Array<{ hop: number; ip: string; rtt1: string; rtt2: string; rtt3: string }> = [];
       for (const line of lines) {
-        // Linux traceroute -n 格式:  " 1  1.2.3.4  0.123 ms  0.456 ms  0.789 ms"
-        // 或 timeout:               " 2  * * *"
+        // Linux traceroute -n 格式:
+        //   -q3 (默认):  " 1  1.2.3.4  0.123 ms  0.456 ms  0.789 ms"
+        //   -q1:         " 3  172.24.1.166  17.612 ms"
+        //   timeout:     " 2  * * *"  或  " 2  *"
         // Windows tracert -d 格式:   " 1    <1 ms    1 ms    1 ms  1.2.3.4"
         const trimmed = line.trim();
         if (!trimmed || /^traceroute|^Tracing|^over a maximum/i.test(trimmed)) continue;
 
-        // Linux 格式
-        const linuxMatch = trimmed.match(/^(\d+)\s+([\d.]+|\*)\s+([\d.]+\s*ms|\*)\s+([\d.]+\s*ms|\*)\s+([\d.]+\s*ms|\*)/);
-        if (linuxMatch) {
+        // Linux 格式 -q3 (3个rtt): " 1  1.2.3.4  0.123 ms  0.456 ms  0.789 ms"
+        const linux3Match = trimmed.match(/^(\d+)\s+([\d.]+|\*)\s+([\d.]+\s*ms|\*)\s+([\d.]+\s*ms|\*)\s+([\d.]+\s*ms|\*)/);
+        if (linux3Match) {
           hops.push({
-            hop: parseInt(linuxMatch[1], 10),
-            ip: linuxMatch[2] === '*' ? '*' : linuxMatch[2],
-            rtt1: linuxMatch[3].replace(/\s+/g, ''),
-            rtt2: linuxMatch[4].replace(/\s+/g, ''),
-            rtt3: linuxMatch[5].replace(/\s+/g, ''),
+            hop: parseInt(linux3Match[1], 10),
+            ip: linux3Match[2] === '*' ? '*' : linux3Match[2],
+            rtt1: linux3Match[3].replace(/\s+/g, ''),
+            rtt2: linux3Match[4].replace(/\s+/g, ''),
+            rtt3: linux3Match[5].replace(/\s+/g, ''),
+          });
+          continue;
+        }
+
+        // Linux 格式 -q1 (1个rtt): " 3  172.24.1.166  17.612 ms"
+        const linux1Match = trimmed.match(/^(\d+)\s+([\d.]+)\s+([\d.]+\s*ms)/);
+        if (linux1Match) {
+          hops.push({
+            hop: parseInt(linux1Match[1], 10),
+            ip: linux1Match[2],
+            rtt1: linux1Match[3].replace(/\s+/g, ''),
+            rtt2: '',
+            rtt3: '',
+          });
+          continue;
+        }
+
+        // Linux 格式 -q2 (2个rtt): " 3  172.24.1.166  17.612 ms  18.123 ms"
+        const linux2Match = trimmed.match(/^(\d+)\s+([\d.]+|\*)\s+([\d.]+\s*ms|\*)\s+([\d.]+\s*ms|\*)\s*$/);
+        if (linux2Match) {
+          hops.push({
+            hop: parseInt(linux2Match[1], 10),
+            ip: linux2Match[2] === '*' ? '*' : linux2Match[2],
+            rtt1: linux2Match[3].replace(/\s+/g, ''),
+            rtt2: linux2Match[4].replace(/\s+/g, ''),
+            rtt3: '',
           });
           continue;
         }
@@ -2861,8 +2889,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           continue;
         }
 
-        // 全超时行: " 3  * * *"
-        const timeoutMatch = trimmed.match(/^(\d+)\s+\*\s+\*\s+\*/);
+        // 全超时行: " 3  * * *" 或 " 3  *"
+        const timeoutMatch = trimmed.match(/^(\d+)\s+\*[\s*]*$/);
         if (timeoutMatch) {
           hops.push({
             hop: parseInt(timeoutMatch[1], 10),
