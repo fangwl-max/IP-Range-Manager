@@ -2972,38 +2972,42 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         return;
       }
 
-      // ── /api/ssh-servers — POST 添加/更新
+      // ── /api/ssh-servers — POST 添加/更新（使用回调模式，兼容 Vite dev server）
       if (req.method === 'POST') {
-        try {
-          const body = await readRequestBody(req);
-          const data = JSON.parse(body);
-          const servers = loadSshServers();
-          const item: SshServerConfig = {
-            id: data.id || `srv_${Date.now()}`,
-            name: data.name || '',
-            host: data.host || '',
-            port: data.port || 22,
-            username: data.username || '',
-            password: data.password || '',
-          };
-          if (!item.name || !item.host || !item.username) {
+        const _chunks: Buffer[] = [];
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', () => {
+          try {
+            const body = Buffer.concat(_chunks).toString('utf-8');
+            const data = JSON.parse(body);
+            const servers = loadSshServers();
+            const item: SshServerConfig = {
+              id: data.id || `srv_${Date.now()}`,
+              name: data.name || '',
+              host: data.host || '',
+              port: data.port || 22,
+              username: data.username || '',
+              password: data.password || '',
+            };
+            if (!item.name || !item.host || !item.username) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '名称、地址、用户名不能为空' }));
+              return;
+            }
+            const idx = servers.findIndex(s => s.id === item.id);
+            if (idx >= 0) {
+              if (item.password === '******') item.password = servers[idx].password;
+              servers[idx] = item;
+            } else {
+              servers.push(item);
+            }
+            saveSshServers(servers);
+            res.end(JSON.stringify({ success: true, server: { ...item, password: '******' } }));
+          } catch (e: any) {
             res.statusCode = 400;
-            res.end(JSON.stringify({ success: false, message: '名称、地址、用户名不能为空' }));
-            return;
+            res.end(JSON.stringify({ success: false, message: e?.message || '请求解析失败' }));
           }
-          const idx = servers.findIndex(s => s.id === item.id);
-          if (idx >= 0) {
-            if (item.password === '******') item.password = servers[idx].password;
-            servers[idx] = item;
-          } else {
-            servers.push(item);
-          }
-          saveSshServers(servers);
-          res.end(JSON.stringify({ success: true, server: { ...item, password: '******' } }));
-        } catch (e: any) {
-          res.statusCode = 400;
-          res.end(JSON.stringify({ success: false, message: e.message }));
-        }
+        });
         return;
       }
 
