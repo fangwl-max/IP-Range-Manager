@@ -2974,39 +2974,36 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
       // ── /api/ssh-servers — POST 添加/更新
       if (req.method === 'POST') {
-        let body = '';
-        req.on('data', (c: any) => { body += c.toString(); });
-        req.on('end', () => {
-          try {
-            const data = JSON.parse(body);
-            const servers = loadSshServers();
-            const item: SshServerConfig = {
-              id: data.id || `srv_${Date.now()}`,
-              name: data.name || '',
-              host: data.host || '',
-              port: data.port || 22,
-              username: data.username || '',
-              password: data.password || '',
-            };
-            if (!item.name || !item.host || !item.username) {
-              res.statusCode = 400;
-              res.end(JSON.stringify({ success: false, message: '名称、地址、用户名不能为空' }));
-              return;
-            }
-            const idx = servers.findIndex(s => s.id === item.id);
-            if (idx >= 0) {
-              if (item.password === '******') item.password = servers[idx].password;
-              servers[idx] = item;
-            } else {
-              servers.push(item);
-            }
-            saveSshServers(servers);
-            res.end(JSON.stringify({ success: true, server: { ...item, password: '******' } }));
-          } catch (e: any) {
+        try {
+          const body = await readRequestBody(req);
+          const data = JSON.parse(body);
+          const servers = loadSshServers();
+          const item: SshServerConfig = {
+            id: data.id || `srv_${Date.now()}`,
+            name: data.name || '',
+            host: data.host || '',
+            port: data.port || 22,
+            username: data.username || '',
+            password: data.password || '',
+          };
+          if (!item.name || !item.host || !item.username) {
             res.statusCode = 400;
-            res.end(JSON.stringify({ success: false, message: e.message }));
+            res.end(JSON.stringify({ success: false, message: '名称、地址、用户名不能为空' }));
+            return;
           }
-        });
+          const idx = servers.findIndex(s => s.id === item.id);
+          if (idx >= 0) {
+            if (item.password === '******') item.password = servers[idx].password;
+            servers[idx] = item;
+          } else {
+            servers.push(item);
+          }
+          saveSshServers(servers);
+          res.end(JSON.stringify({ success: true, server: { ...item, password: '******' } }));
+        } catch (e: any) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: e.message }));
+        }
         return;
       }
 
