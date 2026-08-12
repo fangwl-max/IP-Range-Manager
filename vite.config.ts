@@ -12,6 +12,7 @@ import dns from 'node:dns/promises'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import nodemailer from 'nodemailer'
+import { Client as SSHClient } from 'ssh2'
 
 const _require = createRequire(import.meta.url)
 
@@ -317,6 +318,32 @@ const ipxoCachePath = path.resolve(__dirname, 'ipxo-cache.json');
 const notifyConfigPath = path.resolve(__dirname, 'notify-config.json');
 /** 近期续费页独立状态文件（续费状态+备注，不同步到IP段管理） */
 const upcomingStatusPath = path.resolve(__dirname, 'ipxo-upcoming-status.json');
+/** SSH 远程服务器配置文件 */
+const sshServersPath = path.resolve(__dirname, 'ssh-servers.json');
+
+interface SshServerConfig {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+}
+
+function loadSshServers(): SshServerConfig[] {
+  try {
+    if (fs.existsSync(sshServersPath)) {
+      return JSON.parse(fs.readFileSync(sshServersPath, 'utf-8'));
+    }
+  } catch (e) {
+    console.error('[SSH] Load config error:', e);
+  }
+  return [];
+}
+
+function saveSshServers(servers: SshServerConfig[]): void {
+  fs.writeFileSync(sshServersPath, JSON.stringify(servers, null, 2), 'utf-8');
+}
 
 /** 近期续费页独立状态：每个 IP 段的本地续费标记和备注 */
 interface UpcomingItemStatus {
@@ -2846,6 +2873,115 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       return hops;
     }
 
+    /** 判断 traceroute hops 是否经过公网 IP（连通性判断） */
+    function checkReachability(hops: Array<{ hop: number; ip: string }>): boolean {
+      const privateRe = /^(10\.|192\.168\.|127\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\.)/;
+      for (const h of hops) {
+        if (h.ip && h.ip !== '*' && !privateRe.test(h.ip)) return true;
+      }
+      return false;
+    }
+
+    /** 通过 SSH 在远程服务器执行 traceroute */
+    function sshExecTraceroute(cfg: SshServerConfig, ip: string): Promise<{ stdout: string; stderr: string }> {
+      return new Promise((resolve, reject) => {
+        const conn = new SSHClient();
+        const timer = setTimeout(() => { conn.end(); reject(new Error('SSH 执行超时 (65s)')); }, 65000);
+        conn.on('ready', () => {
+          conn.exec(`traceroute -n -q 1 -w 2 -m 30 ${ip}`, (err: any, stream: any) => {
+            if (err) { clearTimeout(timer); conn.end(); reject(err); return; }
+            let stdout = '', stderr = '';
+            stream.on('data', (d: any) => { stdout += d.toString(); });
+            stream.stderr.on('data', (d: any) => { stderr += d.toString(); });
+            stream.on('close', () => { clearTimeout(timer); conn.end(); resolve({ stdout, stderr }); });
+          });
+        });
+        conn.on('error', (err: any) => { clearTimeout(timer); reject(err); });
+        conn.connect({
+          host: cfg.host,
+          port: cfg.port || 22,
+          username: cfg.username,
+          password: cfg.password,
+          readyTimeout: 10000,
+          algorithms: { kex: ['diffie-hellman-group14-sha256','diffie-hellman-group14-sha1','ecdh-sha2-nistp256','ecdh-sha2-nistp384','ecdh-sha2-nistp521','diffie-hellman-group-exchange-sha256'] },
+        });
+      });
+    }
+
+    // ─── SSH 远程服务器管理 ──────────────────────────────────────────
+    server.middlewares.use('/api/ssh-servers', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+
+      const reqUrl = new URL(req.url || '/', 'http://localhost');
+
+      if (req.method === 'GET') {
+        const servers = loadSshServers();
+        // 密码脱敏
+        const masked = servers.map(s => ({ ...s, password: s.password ? '******' : '' }));
+        res.end(JSON.stringify({ success: true, servers: masked }));
+        return;
+      }
+
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (c: any) => { body += c.toString(); });
+        req.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            const servers = loadSshServers();
+            const item: SshServerConfig = {
+              id: data.id || `srv_${Date.now()}`,
+              name: data.name || '',
+              host: data.host || '',
+              port: data.port || 22,
+              username: data.username || '',
+              password: data.password || '',
+            };
+            if (!item.name || !item.host || !item.username) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '名称、地址、用户名不能为空' }));
+              return;
+            }
+            const idx = servers.findIndex(s => s.id === item.id);
+            if (idx >= 0) {
+              // 更新时如果密码是 '******' 则保留原密码
+              if (item.password === '******') item.password = servers[idx].password;
+              servers[idx] = item;
+            } else {
+              servers.push(item);
+            }
+            saveSshServers(servers);
+            res.end(JSON.stringify({ success: true, server: { ...item, password: '******' } }));
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: e.message }));
+          }
+        });
+        return;
+      }
+
+      if (req.method === 'DELETE') {
+        const deleteId = reqUrl.searchParams.get('id') || '';
+        if (!deleteId) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: '缺少 id 参数' }));
+          return;
+        }
+        const servers = loadSshServers();
+        const filtered = servers.filter(s => s.id !== deleteId);
+        saveSshServers(filtered);
+        res.end(JSON.stringify({ success: true }));
+        return;
+      }
+
+      res.statusCode = 405;
+      res.end();
+    });
+
     server.middlewares.use('/api/traceroute/run', async (req: any, res: any, _next: any) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -2855,6 +2991,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
       const urlObj = new URL(req.url || '', 'http://localhost');
       const ip = (urlObj.searchParams.get('ip') || '').trim();
+      const serverId = (urlObj.searchParams.get('server') || '').trim();
+
       if (!ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 400;
@@ -2862,6 +3000,31 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         return;
       }
 
+      // 远程 SSH 执行
+      if (serverId && serverId !== 'local') {
+        const servers = loadSshServers();
+        const srvCfg = servers.find(s => s.id === serverId);
+        if (!srvCfg) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, ip, message: `未找到服务器配置: ${serverId}` }));
+          return;
+        }
+        try {
+          const { stdout } = await sshExecTraceroute(srvCfg, ip);
+          const hops = parseTracerouteStdout(stdout || '');
+          const reachable = checkReachability(hops);
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, ip, hops, raw: stdout, reachable, serverName: srvCfg.name }));
+        } catch (e: any) {
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: false, ip, message: `SSH 连接失败: ${e?.message || '未知错误'}`, serverName: srvCfg.name }));
+        }
+        return;
+      }
+
+      // 本地执行
       try {
         const isWin = process.platform === 'win32';
         const cmd = isWin ? 'tracert' : 'traceroute';
@@ -2875,17 +3038,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           maxBuffer: 1024 * 1024,
         });
         const hops = parseTracerouteStdout(stdout || '');
+        const reachable = checkReachability(hops);
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 200;
-        res.end(JSON.stringify({ success: true, ip, hops, raw: stdout }));
+        res.end(JSON.stringify({ success: true, ip, hops, raw: stdout, reachable }));
       } catch (e: any) {
-        // traceroute 即使部分超时也可能有 stdout
         const stdout = typeof e?.stdout === 'string' ? e.stdout : '';
         if (stdout.length > 20) {
           const hops = parseTracerouteStdout(stdout);
+          const reachable = checkReachability(hops);
           res.setHeader('Content-Type', 'application/json');
           res.statusCode = 200;
-          res.end(JSON.stringify({ success: true, ip, hops, raw: stdout, partial: true }));
+          res.end(JSON.stringify({ success: true, ip, hops, raw: stdout, partial: true, reachable }));
           return;
         }
         res.setHeader('Content-Type', 'application/json');
