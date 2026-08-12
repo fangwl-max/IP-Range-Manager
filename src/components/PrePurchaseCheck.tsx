@@ -166,7 +166,7 @@ const PrePurchaseCheck: React.FC = () => {
   const [sfExcludeExisting, setSfExcludeExisting] = useState(false);
   const [sfExcludeExistingSegment, setSfExcludeExistingSegment] = useState(true);
   const [sfNoAbuse, setSfNoAbuse] = useState(false);
-  const [sfNoPurchaseMonths, setSfNoPurchaseMonths] = useState<number | null>(null);
+  const [sfNoPurchaseDays, setSfNoPurchaseDays] = useState<number | null>(null);
   const [sfPriceFilterMin, setSfPriceFilterMin] = useState<number | null>(null);
   const [sfPriceFilterMax, setSfPriceFilterMax] = useState<number | null>(null);
   const smartFilterActiveCount = useMemo(() => {
@@ -175,10 +175,10 @@ const PrePurchaseCheck: React.FC = () => {
     if (sfExcludeExisting) c++;
     if (sfExcludeExistingSegment) c++;
     if (sfNoAbuse) c++;
-    if (sfNoPurchaseMonths != null) c++;
+    if (sfNoPurchaseDays != null) c++;
     if (sfPriceFilterMin != null || sfPriceFilterMax != null) c++;
     return c;
-  }, [sfDedupAb, sfExcludeExisting, sfExcludeExistingSegment, sfNoAbuse, sfNoPurchaseMonths, sfPriceFilterMin, sfPriceFilterMax]);
+  }, [sfDedupAb, sfExcludeExisting, sfExcludeExistingSegment, sfNoAbuse, sfNoPurchaseDays, sfPriceFilterMin, sfPriceFilterMax]);
 
   // 购物车状态
   const [cartVisible, setCartVisible] = useState(false);
@@ -422,9 +422,9 @@ const PrePurchaseCheck: React.FC = () => {
     if (sfNoAbuse) {
       result = result.filter(i => i.abuseScore == null || i.abuseScore === 0);
     }
-    if (sfNoPurchaseMonths != null) {
+    if (sfNoPurchaseDays != null) {
       const cutoff = new Date();
-      cutoff.setMonth(cutoff.getMonth() - sfNoPurchaseMonths);
+      cutoff.setDate(cutoff.getDate() - sfNoPurchaseDays);
       const cutoffStr = cutoff.toISOString().slice(0, 10);
       result = result.filter(i => {
         const records = existingAbHistory.get(i.abSegKey || '') || [];
@@ -453,7 +453,7 @@ const PrePurchaseCheck: React.FC = () => {
       }
     }
     return result;
-  }, [items, smartFilterActiveCount, sfDedupAb, sfDedupKeepCount, sfDedupSortBy, sfExcludeExisting, sfExcludeExistingSegment, existingSegmentSet, sfNoAbuse, sfNoPurchaseMonths, existingAbHistory, sfPriceFilterMin, sfPriceFilterMax]);
+  }, [items, smartFilterActiveCount, sfDedupAb, sfDedupKeepCount, sfDedupSortBy, sfExcludeExisting, sfExcludeExistingSegment, existingSegmentSet, sfNoAbuse, sfNoPurchaseDays, existingAbHistory, sfPriceFilterMin, sfPriceFilterMax]);
 
   // ── 添加到购物车 ────────────────────────────────────────────────────────
   const handleAddToCart = useCallback(async () => {
@@ -1257,14 +1257,14 @@ const PrePurchaseCheck: React.FC = () => {
           </Checkbox>
           <div>
             <Checkbox
-              checked={sfNoPurchaseMonths != null}
-              onChange={e => setSfNoPurchaseMonths(e.target.checked ? 6 : null)}
+              checked={sfNoPurchaseDays != null}
+              onChange={e => setSfNoPurchaseDays(e.target.checked ? 180 : null)}
             >
               近期无同AB段购买记录
             </Checkbox>
-            {sfNoPurchaseMonths != null && (
+            {sfNoPurchaseDays != null && (
               <div style={{ marginLeft: 24, marginTop: 4 }}>
-                <span>仅显示近 <InputNumber value={sfNoPurchaseMonths} onChange={v => setSfNoPurchaseMonths(v || 1)} min={1} max={120} style={{ width: 65 }} /> 个月内无购买记录的</span>
+                <span>仅显示近 <InputNumber value={sfNoPurchaseDays} onChange={v => setSfNoPurchaseDays(v || 1)} min={1} max={3650} style={{ width: 75 }} /> 天内无购买记录的</span>
               </div>
             )}
           </div>
