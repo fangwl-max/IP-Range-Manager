@@ -89,6 +89,10 @@ const TracerouteDetection: React.FC<Props> = () => {
   const [serverForm] = Form.useForm();
   const [savingServer, setSavingServer] = useState(false);
 
+  // 服务器验证
+  const [testingServer, setTestingServer] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; output?: string; message?: string; serverName?: string } | null>(null);
+
   const loadServers = useCallback(async () => {
     try {
       const res = await fetch('/api/ssh-servers');
@@ -144,6 +148,30 @@ const TracerouteDetection: React.FC<Props> = () => {
       }
     } catch (e: any) {
       message.error(e.message);
+    }
+  };
+
+  const handleTestServer = async () => {
+    if (selectedServer === 'local') {
+      message.info('本机无需验证');
+      return;
+    }
+    setTestingServer(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`/api/ssh-servers/test?id=${encodeURIComponent(selectedServer)}`);
+      const data = await res.json();
+      setTestResult(data);
+      if (data.success) {
+        message.success('验证成功');
+      } else {
+        message.error(data.message || '验证失败');
+      }
+    } catch (e: any) {
+      setTestResult({ success: false, message: e.message });
+      message.error(e.message);
+    } finally {
+      setTestingServer(false);
     }
   };
 
@@ -277,7 +305,7 @@ const TracerouteDetection: React.FC<Props> = () => {
           <Text strong style={{ fontSize: 13 }}>执行服务器：</Text>
           <Select
             value={selectedServer}
-            onChange={setSelectedServer}
+            onChange={v => { setSelectedServer(v); setTestResult(null); }}
             style={{ minWidth: 200 }}
           >
             <Select.Option value="local">
@@ -297,11 +325,49 @@ const TracerouteDetection: React.FC<Props> = () => {
             管理服务器
           </Button>
           {selectedServer !== 'local' && (
+            <Button
+              size="small"
+              loading={testingServer}
+              onClick={handleTestServer}
+              icon={<CheckCircleOutlined />}
+            >
+              验证连接
+            </Button>
+          )}
+          {selectedServer !== 'local' && !testResult && (
             <Tag color="blue" icon={<CloudServerOutlined />}>
               将通过 SSH 在远程服务器执行 traceroute
             </Tag>
           )}
         </div>
+
+        {/* 服务器验证结果 */}
+        {testResult && (
+          <Alert
+            type={testResult.success ? 'success' : 'error'}
+            showIcon
+            closable
+            onClose={() => setTestResult(null)}
+            message={testResult.success
+              ? `${testResult.serverName || '远程服务器'} 连接正常`
+              : `${testResult.serverName || '远程服务器'} 连接失败: ${testResult.message}`
+            }
+            description={testResult.success && testResult.output ? (
+              <pre style={{
+                background: '#f6f8fa',
+                padding: 10,
+                borderRadius: 6,
+                fontSize: 12,
+                fontFamily: 'monospace',
+                margin: '8px 0 0',
+                whiteSpace: 'pre-wrap',
+              }}>
+                {testResult.output}
+              </pre>
+            ) : undefined}
+            style={{ borderRadius: 6 }}
+          />
+        )}
 
         <Button
           type="primary"

@@ -2982,6 +2982,59 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.end();
     });
 
+    // ─── SSH 服务器测试：在远程执行 curl cip.cc ───────────────────────────
+    server.middlewares.use('/api/ssh-servers/test', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'GET') { res.statusCode = 405; res.end(); return; }
+
+      const urlObj = new URL(req.url || '', 'http://localhost');
+      const serverId = (urlObj.searchParams.get('id') || '').trim();
+      if (!serverId) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ success: false, message: '缺少 id 参数' }));
+        return;
+      }
+
+      const servers = loadSshServers();
+      const srvCfg = servers.find(s => s.id === serverId);
+      if (!srvCfg) {
+        res.end(JSON.stringify({ success: false, message: `未找到服务器配置: ${serverId}` }));
+        return;
+      }
+
+      try {
+        const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          const conn = new SSHClient();
+          const timer = setTimeout(() => { conn.end(); reject(new Error('SSH 连接超时 (15s)')); }, 15000);
+          conn.on('ready', () => {
+            conn.exec('curl -s cip.cc', (err: any, stream: any) => {
+              if (err) { clearTimeout(timer); conn.end(); reject(err); return; }
+              let stdout = '', stderr = '';
+              stream.on('data', (d: any) => { stdout += d.toString(); });
+              stream.stderr.on('data', (d: any) => { stderr += d.toString(); });
+              stream.on('close', () => { clearTimeout(timer); conn.end(); resolve({ stdout, stderr }); });
+            });
+          });
+          conn.on('error', (err: any) => { clearTimeout(timer); reject(err); });
+          conn.connect({
+            host: srvCfg.host,
+            port: srvCfg.port || 22,
+            username: srvCfg.username,
+            password: srvCfg.password,
+            readyTimeout: 10000,
+            algorithms: { kex: ['diffie-hellman-group14-sha256','diffie-hellman-group14-sha1','ecdh-sha2-nistp256','ecdh-sha2-nistp384','ecdh-sha2-nistp521','diffie-hellman-group-exchange-sha256'] },
+          });
+        });
+        res.end(JSON.stringify({ success: true, output: result.stdout, stderr: result.stderr, serverName: srvCfg.name }));
+      } catch (e: any) {
+        res.end(JSON.stringify({ success: false, message: `SSH 连接失败: ${e?.message || '未知错误'}`, serverName: srvCfg.name }));
+      }
+    });
+
     server.middlewares.use('/api/traceroute/run', async (req: any, res: any, _next: any) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
