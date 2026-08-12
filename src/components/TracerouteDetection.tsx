@@ -137,6 +137,26 @@ const TracerouteDetection: React.FC<Props> = () => {
   return (
     <Card style={{ borderRadius: 6 }}>
       <Space direction="vertical" style={{ width: '100%' }} size={16}>
+        <Alert
+          type="info"
+          showIcon
+          message="使用说明"
+          description={
+            <div style={{ fontSize: 13 }}>
+              <div style={{ marginBottom: 6 }}>
+                <Text strong>1、</Text>
+                <Text code>curl cip.cc</Text>
+                <Text type="secondary" style={{ marginLeft: 8 }}>查看是否是当地网络 / 有无开启VPN / 是否存在网络故障</Text>
+              </div>
+              <div>
+                <Text strong>2、</Text>
+                <Text code>traceroute x.x.x.1</Text>
+                <Text type="secondary" style={{ marginLeft: 8 }}>查看最后一跳是否是公网IP</Text>
+              </div>
+            </div>
+          }
+          style={{ borderRadius: 6 }}
+        />
         <div>
           <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
             IP 段（每行一个，或用空格/逗号分隔）
