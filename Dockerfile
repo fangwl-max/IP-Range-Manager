@@ -2,9 +2,9 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# ── 安装 Python 和 pip（用于 CDS-Auto-Announce Flask 服务）────────────────
+# ── 安装 Python、pip 和网络工具（traceroute 用于 Traceroute 检测）────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv \
+    python3 python3-pip python3-venv traceroute \
     && rm -rf /var/lib/apt/lists/*
 
 # ── 安装 Node.js 依赖 ─────────────────────────────────────────────────────

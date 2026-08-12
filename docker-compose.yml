@@ -15,6 +15,7 @@ services:
       - ./data/ipxo-config.json:/app/ipxo-config.json
       - ./data/notify-config.json:/app/notify-config.json
       - ./data/cds-config.json:/app/cds-config.json
+      - ./data/ssh-servers.json:/app/ssh-servers.json
       - ./data/cds-app-config.yaml:/app/CDS-Auto-Announce/config.yaml
 
       # ── 数据文件（线上动态更新）─────────────────────────────────────────
