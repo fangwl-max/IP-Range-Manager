@@ -33,6 +33,7 @@ import GatewayPingDetection from './GatewayPingDetection';
 import CheburcheckRussiaPanel from './CheburcheckRussiaPanel';
 import BgpUpstreamReceptionPanel from './BgpUpstreamReceptionPanel';
 import BgpHeDetectionPanel from './BgpHeDetectionPanel';
+import TracerouteDetection from './TracerouteDetection';
 
 const { TextArea } = Input;
 const { Text, Title } = Typography;
@@ -1360,6 +1361,7 @@ const IRRDetection: React.FC = () => {
     { key: 'russia-chebur', label: '俄罗斯检测' },
     { key: 'upstream-tier1', label: '上游接收(Tier1)' },
     { key: 'bgp-he', label: 'BGP.HE检测' },
+    { key: 'traceroute', label: 'Traceroute检测' },
     { key: 'turkmen', label: '土库曼AB段对比' },
   ];
 
@@ -1516,6 +1518,9 @@ const IRRDetection: React.FC = () => {
 
         {/* BGP.HE 检测 */}
         {activeTab === 'bgp-he' ? <BgpHeDetectionPanel embedded /> : null}
+
+        {/* Traceroute 检测 */}
+        {activeTab === 'traceroute' ? <TracerouteDetection embedded /> : null}
 
         {/* 土库曼AB段对比 */}
         {activeTab === 'turkmen' ? (

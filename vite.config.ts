@@ -2794,6 +2794,106 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
     });
 
+    // ─── Traceroute 检测：对单个 IPv4 执行 traceroute，返回结构化跳数 ──────
+    function parseTracerouteStdout(stdout: string): Array<{ hop: number; ip: string; rtt1: string; rtt2: string; rtt3: string }> {
+      const lines = stdout.split('\n');
+      const hops: Array<{ hop: number; ip: string; rtt1: string; rtt2: string; rtt3: string }> = [];
+      for (const line of lines) {
+        // Linux traceroute -n 格式:  " 1  1.2.3.4  0.123 ms  0.456 ms  0.789 ms"
+        // 或 timeout:               " 2  * * *"
+        // Windows tracert -d 格式:   " 1    <1 ms    1 ms    1 ms  1.2.3.4"
+        const trimmed = line.trim();
+        if (!trimmed || /^traceroute|^Tracing|^over a maximum/i.test(trimmed)) continue;
+
+        // Linux 格式
+        const linuxMatch = trimmed.match(/^(\d+)\s+([\d.]+|\*)\s+([\d.]+\s*ms|\*)\s+([\d.]+\s*ms|\*)\s+([\d.]+\s*ms|\*)/);
+        if (linuxMatch) {
+          hops.push({
+            hop: parseInt(linuxMatch[1], 10),
+            ip: linuxMatch[2] === '*' ? '*' : linuxMatch[2],
+            rtt1: linuxMatch[3].replace(/\s+/g, ''),
+            rtt2: linuxMatch[4].replace(/\s+/g, ''),
+            rtt3: linuxMatch[5].replace(/\s+/g, ''),
+          });
+          continue;
+        }
+
+        // Windows 格式:  " 1    <1 ms    1 ms    1 ms  1.2.3.4"
+        const winMatch = trimmed.match(/^(\d+)\s+(<?\d+\s*ms|\*)\s+(<?\d+\s*ms|\*)\s+(<?\d+\s*ms|\*)\s+([\d.]+|\S+)/);
+        if (winMatch) {
+          hops.push({
+            hop: parseInt(winMatch[1], 10),
+            ip: winMatch[5],
+            rtt1: winMatch[2].replace(/\s+/g, ''),
+            rtt2: winMatch[3].replace(/\s+/g, ''),
+            rtt3: winMatch[4].replace(/\s+/g, ''),
+          });
+          continue;
+        }
+
+        // 全超时行: " 3  * * *"
+        const timeoutMatch = trimmed.match(/^(\d+)\s+\*\s+\*\s+\*/);
+        if (timeoutMatch) {
+          hops.push({
+            hop: parseInt(timeoutMatch[1], 10),
+            ip: '*',
+            rtt1: '*',
+            rtt2: '*',
+            rtt3: '*',
+          });
+        }
+      }
+      return hops;
+    }
+
+    server.middlewares.use('/api/traceroute/run', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'GET') { res.statusCode = 405; res.end(); return; }
+
+      const urlObj = new URL(req.url || '', 'http://localhost');
+      const ip = (urlObj.searchParams.get('ip') || '').trim();
+      if (!ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 400;
+        res.end(JSON.stringify({ success: false, message: '请提供合法 IPv4 地址' }));
+        return;
+      }
+
+      try {
+        const isWin = process.platform === 'win32';
+        const cmd = isWin ? 'tracert' : 'traceroute';
+        const args = isWin
+          ? ['-d', '-h', '30', '-w', '3000', ip]
+          : ['-n', '-m', '30', '-w', '3', ip];
+        const { stdout } = await execFileAsync(cmd, args, {
+          timeout: 65000,
+          windowsHide: true,
+          encoding: 'utf8',
+          maxBuffer: 1024 * 1024,
+        });
+        const hops = parseTracerouteStdout(stdout || '');
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, ip, hops, raw: stdout }));
+      } catch (e: any) {
+        // traceroute 即使部分超时也可能有 stdout
+        const stdout = typeof e?.stdout === 'string' ? e.stdout : '';
+        if (stdout.length > 20) {
+          const hops = parseTracerouteStdout(stdout);
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, ip, hops, raw: stdout, partial: true }));
+          return;
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: false, ip, message: e?.message || 'traceroute 执行失败（请确认系统已安装 traceroute）' }));
+      }
+    });
+
     // IP → ASN：优先 Team Cymru DNS，可选合并 BGPView（在 api.bgpview.io 不可解析时仍可用 Cymru）
     server.middlewares.use('/api/bgp/lookup-ip', async (req, res, next) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
