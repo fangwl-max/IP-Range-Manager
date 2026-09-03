@@ -198,16 +198,44 @@ function normalizeSegmentHistoryAndRepurchaseSegment(
       : { segment, changed: false };
   }
 
-  let cancellationDate = '';
+  // 清除旧取消信息，重置续费状态
   const renewalStatus: RenewalStatus =
     segment.renewalStatus === 'cancelled' ? 'not_renewed' : segment.renewalStatus;
+
+  // 从历程 startDate 中收集曾经的购买日（早于当前 purchaseDate 的），补入 previousPurchaseDates
+  const newPurchaseDate = segment.purchaseDate || '';
+  const existingPrev = segment.previousPurchaseDates || [];
+  const historicalStarts = sorted
+    .map(h => h.startDate)
+    .filter(d => d && d < newPurchaseDate && !existingPrev.includes(d));
+  const updatedPrev = [...new Set([...existingPrev, ...historicalStarts])].sort();
+
+  // 若当前周期尚无对应的开放历程条目，自动新增
+  const projectGroup = sorted[sorted.length - 1]?.projectGroup
+    || (segment.projectGroups && segment.projectGroups.length > 0 ? segment.projectGroups[0] : '');
+  const hasNewEntry = history.some(h => h.startDate === newPurchaseDate && !h.endDate);
+  const updatedHistory = (newPurchaseDate && projectGroup && !hasNewEntry)
+    ? [
+        ...history,
+        {
+          id: `history-${segment.id}-repurchase-${Date.now()}`,
+          projectGroup,
+          startDate: newPurchaseDate,
+          endDate: undefined,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]
+    : history;
 
   return {
     segment: {
       ...segment,
-      cancellationDate,
+      cancellationDate: '',
       renewalStatus,
-      history,
+      multiPurchaseMarked: true,
+      previousPurchaseDates: updatedPrev.length > 0 ? updatedPrev : undefined,
+      history: updatedHistory,
       updatedAt: new Date().toISOString(),
     },
     changed: true,
