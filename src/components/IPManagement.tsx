@@ -1225,6 +1225,8 @@ const IPManagement: React.FC = () => {
     // 加载历程记录，如果没有则自动初始化
     const history = initializeHistoryIfNeeded(record);
     setSegmentHistory(history);
+    const blockedSet = new Set(record.blockedCountries || []);
+    const rateLimitedSet = new Set(record.rateLimitedCountries || []);
     form.setFieldsValue({
       ...record,
       asn: normalizeAsnDigitsOnly(record.asn),
@@ -1237,6 +1239,9 @@ const IPManagement: React.FC = () => {
         .map((d) => dayjs(d))
         .filter((d) => d.isValid()),
       serverLocations: (record.serverLocations || []).map(l => l.region).filter(Boolean),
+      availableCountries: (record.detectedCountries || []).filter(
+        c => !blockedSet.has(c) && !rateLimitedSet.has(c)
+      ),
     });
     setIsModalVisible(true);
   };
@@ -1350,15 +1355,16 @@ const IPManagement: React.FC = () => {
           ? values.postUseBlockedCountries
           : undefined;
       }
+      const previewAvailableCountries: BlockedCountry[] = values.availableCountries || [];
 
       // 检查是否有任何字段需要更新
-      if (Object.keys(updateData).length === 0) {
+      if (Object.keys(updateData).length === 0 && previewAvailableCountries.length === 0) {
         message.warning('请至少填写一个要修改的字段');
         return;
       }
 
       // 更新预览数据
-      const needDetectedSyncPreview = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined;
+      const needDetectedSyncPreview = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined || previewAvailableCountries.length > 0;
       const updatedData = batchTableData.map((item, index) => {
         if (previewSelectedRowKeys.includes(index)) {
           const merged = { ...item, ...updateData };
@@ -1366,6 +1372,7 @@ const IPManagement: React.FC = () => {
             merged.detectedCountries = [...new Set([
               ...(updateData.blockedCountries ?? (item.blockedCountries || [])),
               ...(updateData.rateLimitedCountries ?? (item.rateLimitedCountries || [])),
+              ...previewAvailableCountries,
             ])];
           }
           return merged;
@@ -1494,9 +1501,10 @@ const IPManagement: React.FC = () => {
       if (Array.isArray(values.serverLocations) && values.serverLocations.length > 0) {
         updateData.serverLocations = (values.serverLocations as string[]).map(r => ({ supplier: '', region: r }));
       }
+      const textAvailableCountries: BlockedCountry[] = values.availableCountries || [];
 
       // 检查是否有任何字段需要更新
-      if (Object.keys(updateData).length === 0) {
+      if (Object.keys(updateData).length === 0 && textAvailableCountries.length === 0) {
         message.warning('请至少填写一个要修改的字段');
         return;
       }
@@ -1507,12 +1515,13 @@ const IPManagement: React.FC = () => {
       foundIds.forEach(id => {
         try {
           const existing = allSegsSnapshot.find(s => s.id === id);
-          const needDetectedSync = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined;
+          const needDetectedSync = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined || textAvailableCountries.length > 0;
           const finalData = needDetectedSync ? {
             ...updateData,
             detectedCountries: [...new Set([
               ...(updateData.blockedCountries ?? existing?.blockedCountries ?? []),
               ...(updateData.rateLimitedCountries ?? existing?.rateLimitedCountries ?? []),
+              ...textAvailableCountries,
             ])],
           } : updateData;
           ipSegmentStorage.update(id, finalData);
@@ -1600,15 +1609,16 @@ const IPManagement: React.FC = () => {
           updateData.remark = remarkVal;
         }
       }
+      const batchAvailableCountries: BlockedCountry[] = values.availableCountries || [];
 
       // 检查是否有任何字段需要更新
-      if (Object.keys(updateData).length === 0) {
+      if (Object.keys(updateData).length === 0 && remarkVal === '' && batchAvailableCountries.length === 0) {
         message.warning('请至少填写一个要修改的字段');
         return;
       }
 
       const allSegsSnapshot2 = ipSegmentStorage.getAll();
-      const needDetectedSync2 = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined;
+      const needDetectedSync2 = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined || batchAvailableCountries.length > 0;
       let successCount = 0;
       currentSelectedKeys.forEach(key => {
         try {
@@ -1618,6 +1628,7 @@ const IPManagement: React.FC = () => {
             detectedCountries: [...new Set([
               ...(updateData.blockedCountries ?? existing?.blockedCountries ?? []),
               ...(updateData.rateLimitedCountries ?? existing?.rateLimitedCountries ?? []),
+              ...batchAvailableCountries,
             ])],
           } : updateData;
           // 追加模式：先读取现有备注再拼接
@@ -1862,7 +1873,8 @@ const IPManagement: React.FC = () => {
       
       const blockedCountries = values.blockedCountries || [];
       const rateLimitedCountries = values.rateLimitedCountries || [];
-      const detectedCountries = [...new Set([...blockedCountries, ...rateLimitedCountries])];
+      const availableCountries = values.availableCountries || [];
+      const detectedCountries = [...new Set([...blockedCountries, ...rateLimitedCountries, ...availableCountries])];
 
       const purchaseStr = values.purchaseDate?.isValid() ? values.purchaseDate.format('YYYY-MM-DD') : '';
       const rawPrevList = (values.previousPurchaseDates || []) as unknown[];
@@ -4117,6 +4129,19 @@ const IPManagement: React.FC = () => {
                 />
               </Form.Item>
             </Col>
+            <Col span={12}>
+              <Form.Item
+                name="availableCountries"
+                label="可用国家"
+                tooltip="已检测且可正常访问的国家（不在被墙/限速列表）"
+              >
+                <Select
+                  mode="multiple"
+                  placeholder="选择可用国家"
+                  options={[...BLOCKED_COUNTRY_OPTIONS]}
+                />
+              </Form.Item>
+            </Col>
           </Row>
 
           <Row gutter={16}>
@@ -5391,6 +5416,19 @@ const IPManagement: React.FC = () => {
           </Form.Item>
 
           <Form.Item
+            name="availableCountries"
+            label="可用国家"
+            tooltip="已检测且可正常访问的国家，留空则不修改"
+          >
+            <Select
+              mode="multiple"
+              placeholder="留空则不修改"
+              allowClear
+              options={[...BLOCKED_COUNTRY_OPTIONS]}
+            />
+          </Form.Item>
+
+          <Form.Item
             name="postUseBlockedCountries"
             label="被墙信息（使用后）"
             tooltip="IP段停止使用后记录的被墙国家，不影响当前检测统计"
@@ -5860,6 +5898,19 @@ const IPManagement: React.FC = () => {
           <Form.Item
             name="blockedCountries"
             label="被墙信息"
+          >
+            <Select
+              mode="multiple"
+              placeholder="留空则不修改"
+              allowClear
+              options={[...BLOCKED_COUNTRY_OPTIONS]}
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="availableCountries"
+            label="可用国家"
+            tooltip="已检测且可正常访问的国家，留空则不修改"
           >
             <Select
               mode="multiple"
