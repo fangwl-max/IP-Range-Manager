@@ -13,7 +13,7 @@ const { Text } = Typography;
 
 const ProjectGroupConfigPage: React.FC = () => {
   const { hasPermission } = useAuth();
-  const canManageConfig = hasPermission('manage_config');
+  const canManageConfig = hasPermission('config-project-groups.edit');
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
   const [projectGroupForm] = Form.useForm();
 

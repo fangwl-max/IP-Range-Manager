@@ -1700,10 +1700,10 @@ const IRRDetection: React.FC = () => {
             </Select>
           </Form.Item>
           <Form.Item
-            label="使用地区"
+            label="宣告地区"
             name="usageArea"
           >
-            <Select placeholder="选择使用地区（新增IP段时使用）" allowClear>
+            <Select placeholder="选择宣告地区（新增IP段时使用）" allowClear>
               {usageAreaStorage.getAll().map(a => (
                 <Select.Option key={a.id} value={a.name}>{a.name}</Select.Option>
               ))}

@@ -16,6 +16,7 @@ import {
   SafetyCertificateOutlined,
   StarOutlined,
   SoundOutlined,
+  CloudDownloadOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import './App.css';
@@ -36,6 +37,7 @@ import IPSegmentStats from './components/IPSegmentStats';
 import PrePurchaseCheck from './components/PrePurchaseCheck';
 import ZenAnnounce from './components/ZenAnnounce';
 import CapitalOnlineAnnounce from './components/CapitalOnlineAnnounce';
+import RemoteDataSync from './components/RemoteDataSync';
 
 const { Sider, Content } = Layout;
 
@@ -72,6 +74,7 @@ const VALID_MENU_KEYS = [
   'user-management',
   'notify-config',
   'pre-purchase-check',
+  'remote-sync',
 ] as const;
 const isConfigSubKey = (k: string) => CONFIG_SUB_KEYS.includes(k as (typeof CONFIG_SUB_KEYS)[number]);
 const isAsnSubKey = (k: string) => ASN_SUB_KEYS.includes(k as (typeof ASN_SUB_KEYS)[number]);
@@ -138,7 +141,7 @@ const AppContent: React.FC = () => {
   // 上次选中的「用户与权限」在降权或无权限时会导致主内容区无任何页面，表现为白屏
   useEffect(() => {
     if (!user) return;
-    if (selectedMenu === 'user-management' && !hasPermission('manage_users')) {
+    if (selectedMenu === 'user-management' && !hasPermission('user-management')) {
       setSelectedMenu('ip-management');
     }
   }, [user, selectedMenu, hasPermission]);
@@ -165,7 +168,7 @@ const AppContent: React.FC = () => {
       label: 'IP段检测',
       children: [
         { key: 'irr-detection', label: '综合检测' },
-        ...(user?.role === 'admin' ? [{ key: 'pre-purchase-check', label: '购前检测' }] : []),
+        ...(hasPermission('pre-purchase-check') ? [{ key: 'pre-purchase-check', label: '购前检测' }] : []),
       ],
     },
     { key: 'cost-analysis', icon: <BarChartOutlined />, label: '费用统计',
@@ -182,7 +185,7 @@ const AppContent: React.FC = () => {
       children: [
         { key: 'config-project-groups', icon: <TeamOutlined />, label: '项目组' },
         { key: 'config-suppliers', icon: <ShopOutlined />, label: '供应商' },
-        { key: 'config-usage-areas', icon: <GlobalOutlined />, label: '使用地区' },
+        { key: 'config-usage-areas', icon: <GlobalOutlined />, label: '宣告地区' },
       ],
     },
     {
@@ -195,8 +198,9 @@ const AppContent: React.FC = () => {
         { key: 'asn-standby-b', icon: <StarOutlined />, label: 'B 组备用 AS' },
       ],
     },
-    ...(hasPermission('manage_users') ? [{ key: 'user-management', icon: <UserOutlined />, label: '用户与权限' }] : []),
+    ...(hasPermission('user-management') ? [{ key: 'user-management', icon: <UserOutlined />, label: '用户与权限' }] : []),
     { key: 'notify-config', icon: <MailOutlined />, label: '通知配置' },
+    { key: 'remote-sync', icon: <CloudDownloadOutlined />, label: '远程数据同步' },
     {
       key: 'announce',
       icon: <SoundOutlined />,
@@ -341,6 +345,7 @@ const AppContent: React.FC = () => {
           {selectedMenu === 'notify-config' && <NotifyConfig />}
           {selectedMenu === 'announce-zen' && <ZenAnnounce />}
           {selectedMenu === 'announce-capital-online' && <CapitalOnlineAnnounce />}
+          {selectedMenu === 'remote-sync' && <RemoteDataSync />}
         </Content>
       </Layout>
     </Layout>

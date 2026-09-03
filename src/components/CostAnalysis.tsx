@@ -419,7 +419,7 @@ const CostAnalysis: React.FC = () => {
           stats.bySupplier[key].count += 1;
         }
 
-        // 按使用地区统计（包含费用和数量）
+        // 按宣告地区统计（包含费用和数量）
         if (segment.usageArea) {
           const key = labelResolvers.usageArea(segment.usageArea);
           if (!stats.byUsageArea[key]) {
@@ -1388,7 +1388,7 @@ const CostAnalysis: React.FC = () => {
       viewKind === 'supplier'
         ? '供应商'
         : viewKind === 'usageArea'
-          ? '使用地区'
+          ? '宣告地区'
           : viewKind === 'chargeKind'
             ? '费用类型'
             : '项目组';
@@ -1441,7 +1441,7 @@ const CostAnalysis: React.FC = () => {
       width: 150,
     },
     {
-      title: '使用地区',
+      title: '宣告地区',
       dataIndex: 'usageArea',
       key: 'usageArea',
       width: 120,
@@ -1532,7 +1532,7 @@ const CostAnalysis: React.FC = () => {
   // 导出数据
   const handleExport = () => {
     try {
-      const headers = ['IP段', '使用地区', '供应商', '项目组', '费用($)', '状态'];
+      const headers = ['IP段', '宣告地区', '供应商', '项目组', '费用($)', '状态'];
       const rows = detailTableData.map(item => [
         item.segment,
         item.usageArea || '',
@@ -1674,7 +1674,7 @@ const CostAnalysis: React.FC = () => {
                   style={{ width: 128 }}
                   options={[
                     { label: '按供应商', value: 'supplier' },
-                    { label: '按使用地区', value: 'usageArea' },
+                    { label: '按宣告地区', value: 'usageArea' },
                     { label: '按项目组', value: 'projectGroup' },
                     { label: '按费用类型', value: 'chargeKind' },
                   ]}
@@ -2088,7 +2088,7 @@ const CostAnalysis: React.FC = () => {
                   style={{ width: 128 }}
                   options={[
                     { label: '按供应商', value: 'supplier' },
-                    { label: '按使用地区', value: 'usageArea' },
+                    { label: '按宣告地区', value: 'usageArea' },
                     { label: '按项目组', value: 'projectGroup' },
                     { label: '按费用类型', value: 'chargeKind' },
                   ]}

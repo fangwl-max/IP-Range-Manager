@@ -171,7 +171,7 @@ function mapAsnsFromResponse(json: { success?: boolean; data?: unknown; message?
 
 const GatewayPingDetection: React.FC<GatewayPingDetectionProps> = ({ embedded = false }) => {
   const { hasPermission } = useAuth();
-  const canView = hasPermission('view_irr');
+  const canView = hasPermission('irr-detection');
 
   const [inputsText, setInputsText] = useState('');
   const [probes, setProbes] = useState<Array<{ raw: string; gateway: string }>>([]);

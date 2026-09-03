@@ -59,13 +59,17 @@ function startCdsFlask() {
   const configPath = cfg.configPath || path.join(cdsDir, 'config.yaml');
 
   // 优先用虚拟环境的 python
-  const pythonCandidates = [
-    path.join(cdsDir, '.venv', 'Scripts', 'python.exe'), // Windows
-    path.join(cdsDir, '.venv', 'bin', 'python3'),         // Linux
-    path.join(cdsDir, '.venv', 'bin', 'python'),
-    'python3',
-    'python',
-  ];
+  const pythonCandidates = process.platform === 'win32'
+    ? [
+        path.join(cdsDir, '.venv', 'Scripts', 'python.exe'),
+        'python',
+      ]
+    : [
+        path.join(cdsDir, '.venv', 'bin', 'python3'),
+        path.join(cdsDir, '.venv', 'bin', 'python'),
+        'python3',
+        'python',
+      ];
   const pythonExe = pythonCandidates.find(p => {
     try { return p.includes(path.sep) ? fs.existsSync(p) : true; } catch { return false; }
   }) || 'python';
@@ -1384,7 +1388,7 @@ async function sendWeeklyReport(): Promise<void> {
   // Sheet1：上周新购（按购买日升序）
   const sortedWeekPurchased = sortByDate(weekPurchased, 'purchaseDate');
   const sheetWeekPurchased = [
-    ['IP 段', '购买日', '供应商', '月费 (USD)', '项目组', '使用地区', '续费状态', '备注'],
+    ['IP 段', '购买日', '供应商', '月费 (USD)', '项目组', '宣告地区', '续费状态', '备注'],
     ...sortedWeekPurchased.map((s: any) => [
       s.segment || '',
       s.purchaseDate || '',
@@ -1417,7 +1421,7 @@ async function sendWeeklyReport(): Promise<void> {
   // Sheet3：上月新购（按购买日升序）
   const sortedMonthPurchased = sortByDate(monthPurchased, 'purchaseDate');
   const sheetMonthPurchased = [
-    ['IP 段', '购买日', '供应商', '月费 (USD)', '项目组', '使用地区', '续费状态', '备注'],
+    ['IP 段', '购买日', '供应商', '月费 (USD)', '项目组', '宣告地区', '续费状态', '备注'],
     ...sortedMonthPurchased.map((s: any) => [
       s.segment || '',
       s.purchaseDate || '',
@@ -2067,12 +2071,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         req.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf-8');
           try {
-            fs.writeFileSync(dataFilePath, body, 'utf-8');
+            // 解析后再美化写入，保证文件可读性；同时允许前端发送紧凑 JSON 减小传输体积
+            const savedData = JSON.parse(body);
+            fs.writeFileSync(dataFilePath, JSON.stringify(savedData, null, 2), 'utf-8');
 
             // ── 同步备注到 ipxo-upcoming-status.json ──────────────────────────
             // ip-data.json 中有备注的 IPXO 段，同步写入 upcomingStatus（以 ip-data 为准）
             try {
-              const savedData = JSON.parse(body);
               const segments: any[] = savedData?.ipSegments || [];
               const upcomingStore = loadUpcomingStatus();
               let changed = false;
@@ -2236,7 +2241,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         res.end(JSON.stringify({ success: false, user: null }));
         return;
       }
-      const userInfo = { id: user.id, username: user.username, displayName: user.displayName, role: user.role, createdAt: user.createdAt, updatedAt: user.updatedAt };
+      const userInfo = { id: user.id, username: user.username, displayName: user.displayName, role: user.role, permissions: user.permissions, createdAt: user.createdAt, updatedAt: user.updatedAt };
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, user: userInfo, token }));
@@ -2282,7 +2287,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         return;
       }
       if (req.method === 'GET') {
-        const users = loadUsers().map((u: any) => ({ id: u.id, username: u.username, displayName: u.displayName, role: u.role, createdAt: u.createdAt, updatedAt: u.updatedAt }));
+        const users = loadUsers().map((u: any) => ({ id: u.id, username: u.username, displayName: u.displayName, role: u.role, permissions: u.permissions, createdAt: u.createdAt, updatedAt: u.updatedAt }));
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true, users }));
@@ -2294,7 +2299,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         req.on('end', () => { body = Buffer.concat(_chunks).toString('utf-8');
           try {
             const data = JSON.parse(body);
-            const { action, id, username, password, displayName, role } = data;
+            const { action, id, username, password, displayName, role, permissions } = data;
             let users = loadUsers();
             if (action === 'add') {
               if (!username || !password) {
@@ -2331,6 +2336,26 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true, user: { id: users[idx].id, username: users[idx].username, displayName: users[idx].displayName, role: users[idx].role, createdAt: users[idx].createdAt, updatedAt: users[idx].updatedAt } }));
+            } else if (action === 'set-permissions') {
+              const idx = users.findIndex((u: any) => u.id === id);
+              if (idx < 0) {
+                res.setHeader('Content-Type', 'application/json');
+                res.statusCode = 404;
+                res.end(JSON.stringify({ success: false, message: '用户不存在' }));
+                return;
+              }
+              if (users[idx].role === 'admin') {
+                res.setHeader('Content-Type', 'application/json');
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, message: '不能修改管理员权限' }));
+                return;
+              }
+              users[idx].permissions = Array.isArray(permissions) ? permissions : null;
+              users[idx].updatedAt = new Date().toISOString();
+              saveUsers(users);
+              res.setHeader('Content-Type', 'application/json');
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true }));
             } else if (action === 'delete') {
               if (id === users.find((u: any) => u.username === 'admin')?.id) {
                 res.setHeader('Content-Type', 'application/json');
@@ -2979,11 +3004,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               });
             });
             conn.on('error', (err: any) => { clearTimeout(timer); reject(err); });
+            conn.on('keyboard-interactive', (_n: any, _i: any, _l: any, _p: any, finish: any) => { finish([srvCfg.password]); });
             conn.connect({
               host: srvCfg.host,
               port: srvCfg.port || 22,
               username: srvCfg.username,
               password: srvCfg.password,
+              tryKeyboard: true,
               readyTimeout: 10000,
               algorithms: { kex: ['diffie-hellman-group14-sha256','diffie-hellman-group14-sha1','ecdh-sha2-nistp256','ecdh-sha2-nistp384','ecdh-sha2-nistp521','diffie-hellman-group-exchange-sha256'] },
             });
@@ -3134,6 +3161,144 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 200;
         res.end(JSON.stringify({ success: false, ip, message: e?.message || 'traceroute 执行失败（请确认系统已安装 traceroute）' }));
+      }
+    });
+
+    // ─── 远程数据同步：从已配置的 SSH 服务器拉取 ip-data.json 等文件 ────────
+    server.middlewares.use('/api/remote-sync/pull', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(); return; }
+      res.setHeader('Content-Type', 'application/json');
+
+      try {
+        const body = JSON.parse(await readRequestBody(req));
+        const serverId: string = body.serverId || '';
+        const remotePath: string = (body.remotePath || '/app').replace(/\/+$/, '');
+        const files: string[] = Array.isArray(body.files) ? body.files : ['ip-data.json'];
+        const dryRun: boolean = !!body.dryRun;
+
+        if (!serverId) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: '缺少 serverId' }));
+          return;
+        }
+
+        const servers = loadSshServers();
+        const srvCfg = servers.find(s => s.id === serverId);
+        if (!srvCfg) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ success: false, message: `未找到服务器配置: ${serverId}` }));
+          return;
+        }
+
+        const allowedFiles: Record<string, string> = {
+          'ip-data.json': dataFilePath,
+          'ipxo-cache.json': ipxoCachePath,
+          'users.json': usersFilePath,
+          'notify-config.json': notifyConfigPath,
+          'ipxo-config.json': ipxoConfigPath,
+          'asn-standby-groups.json': asnStandbyFilePath,
+          'ipxo-upcoming-status.json': upcomingStatusPath,
+        };
+        const filesToSync = files.filter(f => allowedFiles[f]);
+        if (filesToSync.length === 0) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: '没有合法的同步文件' }));
+          return;
+        }
+
+        function sshCatFile(cfg: SshServerConfig, remoteFile: string): Promise<string> {
+          return new Promise((resolve, reject) => {
+            const conn = new SSHClient();
+            const timer = setTimeout(() => { conn.end(); reject(new Error(`读取超时: ${remoteFile}`)); }, 30000);
+            conn.on('ready', () => {
+              conn.exec(`cat "${remoteFile}"`, (err: any, stream: any) => {
+                if (err) { clearTimeout(timer); conn.end(); reject(err); return; }
+                let out = '', errout = '';
+                stream.on('data', (d: any) => { out += d.toString(); });
+                stream.stderr.on('data', (d: any) => { errout += d.toString(); });
+                stream.on('close', (code: number) => {
+                  clearTimeout(timer);
+                  conn.end();
+                  if (code !== 0) reject(new Error(`cat 失败 (exit ${code}): ${errout.slice(0, 200)}`));
+                  else resolve(out);
+                });
+              });
+            });
+            conn.on('error', (err: any) => { clearTimeout(timer); reject(err); });
+            conn.on('keyboard-interactive', (_n: any, _i: any, _l: any, _p: any, finish: any) => { finish([cfg.password]); });
+            conn.connect({
+              host: cfg.host, port: cfg.port || 22,
+              username: cfg.username, password: cfg.password,
+              tryKeyboard: true,
+              readyTimeout: 10000,
+              algorithms: { kex: ['diffie-hellman-group14-sha256', 'diffie-hellman-group14-sha1', 'ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521', 'diffie-hellman-group-exchange-sha256'] },
+            });
+          });
+        }
+
+        const resultMap: Record<string, any> = {};
+
+        for (const filename of filesToSync) {
+          const remoteFile = `${remotePath}/${filename}`;
+          const localPath = allowedFiles[filename];
+
+          let content: string;
+          try {
+            content = await sshCatFile(srvCfg, remoteFile);
+          } catch (e: any) {
+            resultMap[filename] = { success: false, message: e?.message || 'SSH 读取失败' };
+            continue;
+          }
+
+          let parsed: any;
+          try {
+            parsed = JSON.parse(content);
+          } catch {
+            resultMap[filename] = { success: false, message: '远程文件 JSON 解析失败' };
+            continue;
+          }
+
+          const info: any = { success: true, size: content.length, dryRun };
+          if (filename === 'ip-data.json') {
+            info.segments = Array.isArray(parsed.ipSegments) ? parsed.ipSegments.length : 0;
+            info.asns = Array.isArray(parsed.asns) ? parsed.asns.length : 0;
+            info.suppliers = Array.isArray(parsed.suppliers) ? parsed.suppliers.length : 0;
+            info.projectGroups = Array.isArray(parsed.projectGroups) ? parsed.projectGroups.length : 0;
+          } else if (filename === 'ipxo-cache.json') {
+            info.cachedAt = parsed.cachedAt || null;
+            info.count = Array.isArray(parsed.services) ? parsed.services.length : 0;
+          } else if (filename === 'users.json') {
+            info.userCount = Array.isArray(parsed.users) ? parsed.users.length : 0;
+          } else if (filename === 'asn-standby-groups.json') {
+            info.groupACount = Array.isArray(parsed.A?.items) ? parsed.A.items.length : 0;
+            info.groupBCount = Array.isArray(parsed.B?.items) ? parsed.B.items.length : 0;
+          } else if (filename === 'ipxo-upcoming-status.json') {
+            info.upcomingCount = typeof parsed === 'object' && parsed !== null ? Object.keys(parsed).length : 0;
+          }
+
+          if (!dryRun) {
+            if (fs.existsSync(localPath)) {
+              const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+              const backupPath = `${localPath}.bak.${ts}`;
+              fs.copyFileSync(localPath, backupPath);
+              info.backupPath = backupPath;
+            }
+            fs.writeFileSync(localPath, JSON.stringify(parsed, null, 2), 'utf-8');
+            info.written = true;
+          }
+
+          resultMap[filename] = info;
+        }
+
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, server: srvCfg.name, dryRun, results: resultMap }));
+      } catch (e: any) {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: false, message: e?.message || '同步操作失败' }));
       }
     });
 
@@ -6170,6 +6335,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             projectGroups: localSeg?.projectGroups || [],
             monthlyPrice: localSeg?.monthlyPrice ?? bs?.recurring_amount ?? null,
             supplier: localSeg?.supplier || '',
+            serverLocations: localSeg?.serverLocations || [],
           };
         });
         res.statusCode = 200;

@@ -145,8 +145,9 @@ function groupByAsn(
 // ─── 主组件 ──────────────────────────────────────────────────────────────────
 
 const AsnStandbyPage: React.FC<Props> = ({ group }) => {
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const { user, hasPermission } = useAuth();
+  const editPermKey = group === 'A' ? 'asn-standby-a.edit' : 'asn-standby-b.edit';
+  const isAdmin = hasPermission(editPermKey);
   const [items, setItems] = useState<AsnStandbyItem[]>([]);
   const [allSegments, setAllSegments] = useState<IPSegment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -733,7 +734,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
   /** 单分组导出 Excel */
   const handleExportGroupExcel = (asn: string, grpItems: AsnStandbyItem[]) => {
     const sheetRows: (string | number)[][] = [
-      ['IP 段', '月费($)', '供应商', '使用地区', '购买时间', '续费日', '续费状态', '被墙国家', '可用国家', '被墙时间', '备注', '使用状态', '收录时间'],
+      ['IP 段', '月费($)', '供应商', '宣告地区', '购买时间', '续费日', '续费状态', '被墙国家', '可用国家', '被墙时间', '备注', '使用状态', '收录时间'],
     ];
     for (const item of grpItems) {
       const seg = getSegInfo(item.segment);
@@ -865,7 +866,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
       },
     },
     {
-      title: '使用地区',
+      title: '宣告地区',
       key: 'usageArea',
       width: 100,
       render: (_: any, record: AsnStandbyItem) => {
@@ -1074,7 +1075,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
 
   const renderGroupedTable = (sourceItems: AsnStandbyItem[], tabType: 'list' | 'available' | 'used') => {
     const isAvailableTab = tabType === 'available';
-    const isViewer = user?.role === 'viewer';
+    const isViewer = !isAdmin;
     const groups = groupByAsn(sourceItems, getSegInfo, groupMeta);
 
     // 所有 ASN（不含"未设置"），用于上下移动
@@ -1334,7 +1335,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
     const groups = groupByAsn(exportItems, getSegInfo);
     const wb = XLSX.utils.book_new();
     const allRows: (string | number)[][] = [
-      ['ASN', 'IP 段', '月费($)', '供应商', '使用地区', '续费日', '续费状态', '被墙国家', '可用国家', '被墙时间', '备注', '使用状态', '收录时间'],
+      ['ASN', 'IP 段', '月费($)', '供应商', '宣告地区', '续费日', '续费状态', '被墙国家', '可用国家', '被墙时间', '备注', '使用状态', '收录时间'],
     ];
 
     for (const { asn, items: grpItems } of groups) {
@@ -1360,7 +1361,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
       }
 
       const sheetRows: (string | number)[][] = [
-        ['IP 段', '月费($)', '供应商', '使用地区', '续费日', '续费状态', '被墙国家', '可用国家', '被墙时间', '备注', '使用状态', '收录时间'],
+        ['IP 段', '月费($)', '供应商', '宣告地区', '续费日', '续费状态', '被墙国家', '可用国家', '被墙时间', '备注', '使用状态', '收录时间'],
       ];
       for (const item of grpItems) {
         const seg = getSegInfo(item.segment);
@@ -1492,7 +1493,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
               showIcon
               style={{ flex: 1, marginRight: 12 }}
             />
-            {user?.role !== 'viewer' && (
+            {isAdmin && (
               <Button
                 icon={<DownloadOutlined />}
                 type="primary"
@@ -1525,7 +1526,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
             <Alert
               type="info"
               message="已使用 ASN 及 IP 段"
-              description={user?.role === 'viewer'
+              description={!isAdmin
                 ? '此列表展示已启用的 IP 段（只读）。'
                 : '此列表展示已启用的 IP 段。可点击操作列中的「恢复可用」按钮将其移回检测可用列表。'}
               showIcon

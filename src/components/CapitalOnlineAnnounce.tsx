@@ -18,8 +18,8 @@ const CDS_PAGES = [
  * 顶部导航由本组件提供，Flask 自身导航栏会被隐藏。
  */
 const CapitalOnlineAnnounce: React.FC = () => {
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const { hasPermission } = useAuth();
+  const canWithdraw = hasPermission('announce-capital-online.withdraw');
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [errMsg, setErrMsg] = useState('');
@@ -115,12 +115,12 @@ const CapitalOnlineAnnounce: React.FC = () => {
       )}
 
       {status === 'ok' && (
-        currentPage.adminOnly && !isAdmin ? (
+        currentPage.adminOnly && !canWithdraw ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Result
               icon={<LockOutlined style={{ color: '#faad14' }} />}
               title="权限不足"
-              subTitle="批量撤播仅限管理员账号操作"
+              subTitle="您没有批量撤播权限"
             />
           </div>
         ) : (

@@ -36,7 +36,7 @@ function getUnusedColor(): string {
 
 const UsageAreaConfigPage: React.FC = () => {
   const { hasPermission } = useAuth();
-  const canManageConfig = hasPermission('manage_config');
+  const canManageConfig = hasPermission('config-usage-areas.edit');
   const [usageAreas, setUsageAreas] = useState<UsageAreaOption[]>([]);
   const [usageAreaForm] = Form.useForm();
 
@@ -63,7 +63,7 @@ const UsageAreaConfigPage: React.FC = () => {
       const trimmedName = values.name.trim();
       const existingAreas = usageAreaStorage.getAll();
       if (existingAreas.find((a) => a.name === trimmedName)) {
-        message.warning(`使用地区 "${trimmedName}" 已存在`);
+        message.warning(`宣告地区 "${trimmedName}" 已存在`);
         return;
       }
       const assignedColor =
@@ -77,7 +77,7 @@ const UsageAreaConfigPage: React.FC = () => {
       setUsageAreas(usageAreaStorage.getAll());
       usageAreaForm.resetFields();
       await saveConfigDataToFile();
-      message.success('使用地区添加成功');
+      message.success('宣告地区添加成功');
     } catch (error) {
       console.error('添加失败:', error);
     }
@@ -88,15 +88,15 @@ const UsageAreaConfigPage: React.FC = () => {
       Modal.warning({
         title: '无法删除',
         icon: <ExclamationCircleOutlined />,
-        content: `使用地区 "${areaName}" 正在被使用，无法删除。请先修改相关IP段的使用地区设置。`,
+        content: `宣告地区 "${areaName}" 正在被使用，无法删除。请先修改相关IP段的宣告地区设置。`,
         okText: '知道了',
       });
       return;
     }
     Modal.confirm({
-      title: '确认删除使用地区',
+      title: '确认删除宣告地区',
       icon: <ExclamationCircleOutlined />,
-      content: `确定要删除使用地区 "${areaName}" 吗？此操作不可恢复。`,
+      content: `确定要删除宣告地区 "${areaName}" 吗？此操作不可恢复。`,
       okText: '确定删除',
       okType: 'danger',
       cancelText: '取消',
@@ -104,7 +104,7 @@ const UsageAreaConfigPage: React.FC = () => {
         usageAreaStorage.delete(areaId);
         setUsageAreas(usageAreaStorage.getAll());
         void saveConfigDataToFile();
-        message.success('使用地区删除成功');
+        message.success('宣告地区删除成功');
       },
     });
   };
@@ -113,17 +113,17 @@ const UsageAreaConfigPage: React.FC = () => {
     let newName = oldArea.name;
     let newColor = oldArea.color;
     Modal.confirm({
-      title: '编辑使用地区',
+      title: '编辑宣告地区',
       icon: <EditOutlined />,
       width: 500,
       content: (
         <div>
           <div style={{ marginBottom: 12 }}>
             <Text strong style={{ display: 'block', marginBottom: 4 }}>
-              使用地区名称：
+              宣告地区名称：
             </Text>
             <Input
-              placeholder="输入新的使用地区名称"
+              placeholder="输入新的宣告地区名称"
               defaultValue={oldArea.name}
               onChange={(e) => {
                 newName = e.target.value.trim();
@@ -151,7 +151,7 @@ const UsageAreaConfigPage: React.FC = () => {
       cancelText: '取消',
       onOk: () => {
         if (!newName) {
-          message.error('使用地区名称不能为空');
+          message.error('宣告地区名称不能为空');
           return Promise.reject();
         }
         if (newName === oldArea.name && newColor === oldArea.color) {
@@ -159,7 +159,7 @@ const UsageAreaConfigPage: React.FC = () => {
         }
         const existingAreas = usageAreaStorage.getAll();
         if (existingAreas.find((a) => a.name === newName && a.id !== areaId)) {
-          message.error(`使用地区 "${newName}" 已存在`);
+          message.error(`宣告地区 "${newName}" 已存在`);
           return Promise.reject();
         }
         const area = existingAreas.find((a) => a.id === areaId);
@@ -175,7 +175,7 @@ const UsageAreaConfigPage: React.FC = () => {
           ipSegmentStorage.save(updatedSegments);
           setUsageAreas(usageAreaStorage.getAll());
           void saveConfigDataToFile();
-          message.success('使用地区编辑成功');
+          message.success('宣告地区编辑成功');
         }
         return Promise.resolve();
       },
@@ -184,8 +184,8 @@ const UsageAreaConfigPage: React.FC = () => {
 
   return (
     <ConfigPageShell
-      title="使用地区"
-      subtitle="管理使用地区与标签颜色；在 IP 段与列表高亮中展示。删除前请确保无 IP 段仍引用该地区。"
+      title="宣告地区"
+      subtitle="管理宣告地区与标签颜色；在 IP 段与列表高亮中展示。删除前请确保无 IP 段仍引用该地区。"
     >
       <Row justify="center">
         <Col xs={24} md={22} lg={16} xl={12}>
@@ -193,7 +193,7 @@ const UsageAreaConfigPage: React.FC = () => {
             title={
               <Space>
                 <CheckCircleOutlined style={{ color: '#722ed1', fontSize: 16 }} />
-                <span style={{ fontSize: 16, fontWeight: 600 }}>使用地区列表</span>
+                <span style={{ fontSize: 16, fontWeight: 600 }}>宣告地区列表</span>
                 <Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal', color: '#8c8c8c' }}>
                   ({usageAreas.length})
                 </Text>
@@ -208,14 +208,14 @@ const UsageAreaConfigPage: React.FC = () => {
                   name="name"
                   label="名称"
                   rules={[
-                    { required: true, message: '请输入使用地区名称' },
+                    { required: true, message: '请输入宣告地区名称' },
                     {
                       validator: (_, value) => {
                         if (value && value.trim()) {
                           const trimmed = value.trim();
                           const existingAreas = usageAreaStorage.getAll();
                           if (existingAreas.find((a) => a.name === trimmed)) {
-                            return Promise.reject(new Error(`使用地区 "${trimmed}" 已存在`));
+                            return Promise.reject(new Error(`宣告地区 "${trimmed}" 已存在`));
                           }
                         }
                         return Promise.resolve();
@@ -223,7 +223,7 @@ const UsageAreaConfigPage: React.FC = () => {
                     },
                   ]}
                 >
-                  <Input placeholder="输入使用地区名称" prefix={<PlusOutlined />} allowClear />
+                  <Input placeholder="输入宣告地区名称" prefix={<PlusOutlined />} allowClear />
                 </Form.Item>
                 <Form.Item
                   name="color"
@@ -236,7 +236,7 @@ const UsageAreaConfigPage: React.FC = () => {
                 </Form.Item>
                 <Form.Item style={{ marginBottom: 16 }}>
                   <Button type="primary" block icon={<PlusOutlined />} htmlType="submit">
-                    添加使用地区
+                    添加宣告地区
                   </Button>
                 </Form.Item>
               </Form>
@@ -255,7 +255,7 @@ const UsageAreaConfigPage: React.FC = () => {
                   )
                 )
               ) : (
-                <Empty description="暂无使用地区" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                <Empty description="暂无宣告地区" image={Empty.PRESENTED_IMAGE_SIMPLE} />
               )}
             </div>
           </Card>

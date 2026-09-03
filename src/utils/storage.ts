@@ -38,7 +38,7 @@ export const ipSegmentStorage = {
 };
 
 /**
- * 以下「配置」存储（项目组、供应商、使用地区、ASN）的新增应仅在配置管理页由用户手动操作；
+ * 以下「配置」存储（项目组、供应商、宣告地区、ASN）的新增应仅在配置管理页由用户手动操作；
  * 业务模块（如 IP 段导入）不得调用 add 写入配置项；确需批量替换整表时使用 save。
  */
 // 项目组存储
@@ -97,7 +97,7 @@ export const supplierStorage = {
   },
 };
 
-// 使用地区选项存储
+// 宣告地区选项存储
 export const usageAreaStorage = {
   getAll: (): UsageAreaOption[] => {
     const data = localStorage.getItem(STORAGE_KEYS.USAGE_AREAS);
@@ -172,7 +172,7 @@ export const asnStorage = {
     const index = asns.findIndex(a => a.id === id);
     if (index !== -1) {
       const merged: ASN = { ...asns[index], ...asn };
-      // 配置页保存新版「使用地区多选」时，去掉旧单选字段与已废弃的 supplier 字段
+      // 配置页保存新版「宣告地区多选」时，去掉旧单选字段与已废弃的 supplier 字段
       if (Object.prototype.hasOwnProperty.call(asn, 'usageAreaIds')) {
         delete merged.usageAreaId;
         delete merged.usageAreaName;

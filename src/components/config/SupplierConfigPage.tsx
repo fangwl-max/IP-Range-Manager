@@ -13,7 +13,7 @@ const { Text } = Typography;
 
 const SupplierConfigPage: React.FC = () => {
   const { hasPermission } = useAuth();
-  const canManageConfig = hasPermission('manage_config');
+  const canManageConfig = hasPermission('config-suppliers.edit');
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierForm] = Form.useForm();
 

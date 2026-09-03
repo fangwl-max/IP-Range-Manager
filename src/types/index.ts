@@ -27,17 +27,19 @@ export interface IPSegment {
   primaryAsnInBgp?: boolean;
   /** 同前缀下其它 ASN（由路由检测同步；主列表仅点开后查看） */
   additionalAsns?: string[];
-  usageArea: string; // 使用地区
+  usageArea: string; // 宣告地区
   purchaseDate: string; // 购买时间（YYYY-MM-DD）
   renewalDate: string; // 续费时间（YYYY-MM-DD）
   cancellationDate: string; // 取消时间（YYYY-MM-DD）
   monthlyPrice: number; // 价格/月（$）
   renewalStatus: RenewalStatus; // 是否续费
   projectGroups: string[]; // 使用的项目组列表（当前使用的项目组，用于兼容旧数据）
-  serverLocations: ServerLocation[]; // 服务器位置列表
+  serverLocations: ServerLocation[]; // 计费地区列表
   blockedCountries: BlockedCountry[]; // 被墙国家列表
   rateLimitedCountries?: BlockedCountry[]; // 限速国家列表
   detectedCountries?: BlockedCountry[]; // 已检测的国家列表（用于区分"未检测"和"可用"）
+  /** 使用后被墙信息：IP段停止使用后记录的被墙国家，不影响当前检测状态 */
+  postUseBlockedCountries?: BlockedCountry[];
   history?: IPSegmentHistory[]; // 使用历程记录（按时间顺序）
   /** 人工标记：多次购买同一 IP 段；费用统计以 purchaseDate（最近一期购买日）为计费起点，并结合历程拆分项目组 */
   multiPurchaseMarked?: boolean;
@@ -70,7 +72,7 @@ export const RENEWAL_STATUS_DISPLAY: Record<RenewalStatus, { text: string; bgCol
   refunded: { text: '已退款', bgColor: '#bae7ff' },
 };
 
-// 服务器位置接口
+// 计费地区接口
 export interface ServerLocation {
   supplier: string; // 供应商
   region: string; // 地区
@@ -129,7 +131,7 @@ export interface ASN {
   status?: AsnStatus;
   /** 所属 ASN 分组（id 与「配置 → ASN 分组」中维护的一致，可选；未设表示未分组） */
   asnGroupId?: string;
-  /** 关联使用地区（可多选，ID 与「使用地区」配置一致） */
+  /** 关联宣告地区（可多选，ID 与「宣告地区」配置一致） */
   usageAreaIds?: string[];
   /**
    * 四国分栏，键与名称对应：`iran` 伊朗 · `myanmar` 缅甸 · `turkmenistan` 土库曼 · `russia` 俄罗斯
@@ -155,14 +157,14 @@ export interface ASN {
    */
   datacenter?: string[];
   /**
-   * 旧版单选使用地区，仅用于兼容已存数据；保存时应写入 usageAreaIds
+   * 旧版单选宣告地区，仅用于兼容已存数据；保存时应写入 usageAreaIds
    * @deprecated
    */
   usageAreaId?: string;
   usageAreaName?: string;
 }
 
-// 使用地区选项接口
+// 宣告地区选项接口
 export interface UsageAreaOption {
   id: string;
   name: string;
@@ -184,7 +186,7 @@ export const PRESET_COLORS = [
   '#1890ff', '#52c41a', '#faad14', '#f5222d', '#722ed1',
 ] as const;
 
-// 预设使用地区选项（根据图片中的配置）
+// 预设宣告地区选项（根据图片中的配置）
 export const DEFAULT_USAGE_AREA_OPTIONS: UsageAreaOption[] = [
   { id: 'zen-dallas', name: 'ZEN达拉斯', color: '#91D5FF' }, // 浅蓝色
   { id: 'zen-washington', name: 'ZEN华盛顿', color: '#FFFACD' }, // 浅黄色/米色

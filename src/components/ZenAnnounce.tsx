@@ -14,14 +14,14 @@ import { useAuth } from '../contexts/AuthContext';
 
 interface RegionOption { regionId: string; label: string; }
 
-const AdminOnly: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
-  if (user?.role !== 'admin') {
+const PermGate: React.FC<{ perm: string; children: React.ReactNode }> = ({ perm, children }) => {
+  const { hasPermission } = useAuth();
+  if (!hasPermission(perm)) {
     return (
       <Result
         icon={<LockOutlined style={{ color: '#faad14' }} />}
         title="权限不足"
-        subTitle="该功能仅限管理员账号操作"
+        subTitle="您没有访问此功能的权限"
       />
     );
   }
@@ -47,17 +47,17 @@ const ZenAnnounce: React.FC = () => {
                   {
                     key: 'zec-announce',
                     label: <span><SoundOutlined /> ZEC 宣告</span>,
-                    children: <ZenAnnounceTab onRegionsLoaded={setRegionOptions} />,
+                    children: <PermGate perm="announce-zen.announce"><ZenAnnounceTab onRegionsLoaded={setRegionOptions} /></PermGate>,
                   },
                   {
                     key: 'zec-eip-delete',
                     label: <span><DeleteOutlined /> ZEC 删除弹性IP</span>,
-                    children: <AdminOnly><ZenEipDelete regionOptions={regionOptions} /></AdminOnly>,
+                    children: <PermGate perm="announce-zen.withdraw"><ZenEipDelete regionOptions={regionOptions} /></PermGate>,
                   },
                   {
                     key: 'zec-cidr-delete',
                     label: <span><ScissorOutlined /> ZEC 取消宣告</span>,
-                    children: <AdminOnly><ZenCidrDeleteTab regionOptions={regionOptions} /></AdminOnly>,
+                    children: <PermGate perm="announce-zen.withdraw"><ZenCidrDeleteTab regionOptions={regionOptions} /></PermGate>,
                   },
                 ]}
               />

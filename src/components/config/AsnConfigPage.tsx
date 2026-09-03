@@ -431,7 +431,7 @@ function resolveBatchEditTargetIds(
 
 const AsnConfigPage: React.FC = () => {
   const { hasPermission } = useAuth();
-  const canManageConfig = hasPermission('manage_config');
+  const canManageConfig = hasPermission('asn-management.edit');
   const [asns, setAsns] = useState<ASN[]>([]);
   const [asnGroups, setAsnGroups] = useState<AsnGroup[]>([]);
   const [usageAreas, setUsageAreas] = useState<UsageAreaOption[]>([]);
@@ -1207,7 +1207,7 @@ const AsnConfigPage: React.FC = () => {
       },
     },
     {
-      title: '使用地区（可多）',
+      title: '宣告地区（可多）',
       key: 'usage',
       width: 228,
       render: (_, r) => {
@@ -1697,10 +1697,10 @@ const AsnConfigPage: React.FC = () => {
               options={asnGroups.map((g) => ({ label: g.name, value: g.id }))}
             />
           </Form.Item>
-          <Form.Item name="usageAreaIds" label="使用地区（可多选）">
+          <Form.Item name="usageAreaIds" label="宣告地区（可多选）">
             <Select
               mode="multiple"
-              placeholder="选择使用地区，需先在「配置管理 → 使用地区」中维护"
+              placeholder="选择宣告地区，需先在「配置管理 → 宣告地区」中维护"
               allowClear
               showSearch
               optionFilterProp="label"
@@ -1894,7 +1894,7 @@ const AsnConfigPage: React.FC = () => {
               options={asnGroups.map((g) => ({ label: g.name, value: g.id }))}
             />
           </Form.Item>
-          <Form.Item name="usageAreaIds" label="默认使用地区（可多选）">
+          <Form.Item name="usageAreaIds" label="默认宣告地区（可多选）">
             <Select
               mode="multiple"
               allowClear
@@ -1936,7 +1936,7 @@ const AsnConfigPage: React.FC = () => {
         cancelText="取消"
       >
         <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-          目标范围二选一：① 在下方填写 ASN 列表（有内容时以列表为准，与表格是否勾选无关）；② 不填列表时在表格中勾选。再勾选要改哪些字段，未勾选的项不变；使用地区/项目组为整项替换，留空即清空；月度费用留空则清空已填月度费用；购买日/到期日勾选后留空则清空对应字段。
+          目标范围二选一：① 在下方填写 ASN 列表（有内容时以列表为准，与表格是否勾选无关）；② 不填列表时在表格中勾选。再勾选要改哪些字段，未勾选的项不变；宣告地区/项目组为整项替换，留空即清空；月度费用留空则清空已填月度费用；购买日/到期日勾选后留空则清空对应字段。
         </Text>
         <Form
           form={batchEditForm}
@@ -1985,12 +1985,12 @@ const AsnConfigPage: React.FC = () => {
             </Form.Item>
           ) : null}
           <Form.Item name="applyUsage" valuePropName="checked" style={{ marginBottom: 8 }}>
-            <Checkbox>修改使用地区</Checkbox>
+            <Checkbox>修改宣告地区</Checkbox>
           </Form.Item>
           {batchApplyUsage ? (
             <Form.Item
               name="batchUsageAreaIds"
-              label="使用地区"
+              label="宣告地区"
               style={{ marginLeft: 24, marginBottom: 16 }}
             >
               <Select

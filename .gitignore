@@ -36,6 +36,8 @@ data/
 # 数据文件（线上为准，不用 git 管理）
 ip-data.json
 ip-data*.json
+ip-data.json.bak*
+ssh-servers.json
 ipxo-cache.json
 ipxo-upcoming-status.json
 ipxo-upcoming-status*.json

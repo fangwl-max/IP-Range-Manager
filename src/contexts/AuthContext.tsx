@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { User } from '../types/auth';
+import { ROLE_DEFAULTS } from '../lib/permissions';
 
 const AUTH_TOKEN_KEY = 'ip-management-auth-token';
 
@@ -13,12 +14,6 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
-
-const ROLE_PERMISSIONS: Record<string, string[]> = {
-  admin: ['view_ip', 'edit_ip', 'delete_ip', 'import_export', 'view_cost', 'view_irr', 'manage_config', 'manage_users'],
-  editor: ['view_ip', 'edit_ip', 'delete_ip', 'import_export', 'view_cost', 'view_irr', 'manage_config'],
-  viewer: ['view_ip', 'view_cost', 'view_irr'],
-};
 
 function getAuthHeader(): Record<string, string> {
   const token = localStorage.getItem(AUTH_TOKEN_KEY);
@@ -108,8 +103,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const hasPermission = useCallback((permission: string) => {
     if (!user) return false;
-    const perms = ROLE_PERMISSIONS[user.role];
-    return perms ? perms.includes(permission) : false;
+    if (user.role === 'admin') return true;
+    if (user.permissions) return user.permissions.includes(permission);
+    return ROLE_DEFAULTS[user.role]?.includes(permission) ?? false;
   }, [user]);
 
   return (

@@ -3,6 +3,7 @@ import {
   Card, Input, Button, Space, Typography, Tag, Collapse, Alert, message,
   Select, Modal, Form, InputNumber, Popconfirm, Checkbox, Table, Tooltip,
 } from 'antd';
+import { useAuth } from '../contexts/AuthContext';
 import {
   PlayCircleOutlined, CheckCircleOutlined, CloseCircleOutlined,
   LoadingOutlined, NodeIndexOutlined, SettingOutlined,
@@ -61,6 +62,8 @@ function parseInputs(text: string): Array<{ raw: string; targetIp: string }> {
 }
 
 const TracerouteDetection: React.FC<Props> = () => {
+  const { hasPermission } = useAuth();
+  const isAdmin = hasPermission('irr-detection.ssh-manage');
   const [inputText, setInputText] = useState('');
   const [results, setResults] = useState<TracerouteResult[]>([]);
   const [running, setRunning] = useState(false);
@@ -349,13 +352,19 @@ const TracerouteDetection: React.FC<Props> = () => {
               </Select.Option>
             ))}
           </Select>
-          <Button
-            icon={<SettingOutlined />}
-            size="small"
-            onClick={() => { setServerModalVisible(true); setEditingServer(null); serverForm.resetFields(); }}
-          >
-            管理服务器
-          </Button>
+          {isAdmin ? (
+            <Button
+              icon={<SettingOutlined />}
+              size="small"
+              onClick={() => { setServerModalVisible(true); setEditingServer(null); serverForm.resetFields(); }}
+            >
+              管理服务器
+            </Button>
+          ) : (
+            <Tooltip title="仅管理员可配置 SSH 服务器">
+              <Button icon={<SettingOutlined />} size="small" disabled>管理服务器</Button>
+            </Tooltip>
+          )}
           {selectedServer !== 'local' && (
             <Button
               size="small"

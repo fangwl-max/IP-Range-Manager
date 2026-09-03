@@ -89,7 +89,9 @@ function upcomingRenewalPriceTooltipTitle(record: IPSegment): string {
     : `月费（美元）: $${billed.toFixed(2)}`;
 }
 
-// 根据文本为未记录的使用地区生成稳定背景色（相同文本始终得到相同颜色）
+const SERVER_LOCATION_REGIONS = ['伊朗', '缅甸', '土库曼', '俄罗斯', '巴基斯坦'];
+
+// 根据文本为未记录的宣告地区生成稳定背景色（相同文本始终得到相同颜色）
 function getColorForUnknownUsageArea(areaName: string): string {
   let hash = 0;
   const str = String(areaName || '');
@@ -202,9 +204,10 @@ function normalizeSegmentHistoryAndRepurchaseSegment(
 
 const IPManagement: React.FC = () => {
   const { hasPermission } = useAuth();
-  const canEdit = hasPermission('edit_ip');
-  const canDelete = hasPermission('delete_ip');
-  const canImportExport = hasPermission('import_export');
+  const canEdit = hasPermission('ip-management.edit');
+  const canDelete = hasPermission('ip-management.delete');
+  const canImport = hasPermission('ip-management.import');
+  const canExport = hasPermission('ip-management.export');
   const [ipSegments, setIpSegments] = useState<IPSegment[]>([]);
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -229,10 +232,8 @@ const IPManagement: React.FC = () => {
   const [filteredSupplier, setFilteredSupplier] = useState<string | undefined>(undefined);
   const [filteredSegment, setFilteredSegment] = useState<string>('');
   const [sortBySearchOrder, setSortBySearchOrder] = useState(false);
-  const [filteredUpcomingProjectGroup, setFilteredUpcomingProjectGroup] = useState<string | undefined>(undefined);
   /** 仅显示至少两条历程在时间上重叠的 IP 段（与费用统计「历程天数重复累加」风险一致） */
   const [filterOverlappingHistoryOnly, setFilterOverlappingHistoryOnly] = useState(false);
-  const [upcomingRenewalViewMode, setUpcomingRenewalViewMode] = useState<'grouped' | 'list'>('grouped');
   const [segmentHistory, setSegmentHistory] = useState<IPSegmentHistory[]>([]);
   const [isHistoryModalVisible, setIsHistoryModalVisible] = useState(false);
   const [isHistoryViewModalVisible, setIsHistoryViewModalVisible] = useState(false);
@@ -248,7 +249,7 @@ const IPManagement: React.FC = () => {
   const { Text } = Typography;
 
   useEffect(() => {
-    // 初始化使用地区选项（如果存储中没有数据，则使用预设选项）
+    // 初始化宣告地区选项（如果存储中没有数据，则使用预设选项）
     let existingAreas = usageAreaStorage.getAll();
     // 移除已废弃的选项：准备取消、已取消
     existingAreas = existingAreas.filter(a => a.name !== '准备取消' && a.name !== '已取消');
@@ -489,7 +490,7 @@ const IPManagement: React.FC = () => {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(allData, null, 2),
+        body: JSON.stringify(allData),
       });
 
       if (response.ok) {
@@ -533,7 +534,7 @@ const IPManagement: React.FC = () => {
     return d ? d.format('YYYY-MM-DD') : '';
   };
 
-  /** 使用地区：与配置及数据中的规范名对齐，修复乱码展示（与费用统计一致） */
+  /** 宣告地区：与配置及数据中的规范名对齐，修复乱码展示（与费用统计一致） */
   const resolveUsageAreaName = useMemo(() => {
     const masters = buildUsageAreaMasters(usageAreas, ipSegments);
     return (raw: unknown) => {
@@ -553,19 +554,16 @@ const IPManagement: React.FC = () => {
       }
 
       // CSV表头（与表格列一致，含购买时间、续费时间、到期时间等）
-      const headers = ['IP段', '使用地区', '费用($)', '购买时间', '取消时间', '项目组', '供应商', 'ASN', '续费时间', '到期时间', '是否续费', '服务器位置', '被墙信息'];
-      
+      const headers = ['IP段', '宣告地区', '费用($)', '购买时间', '取消时间', '项目组', '供应商', 'ASN', '续费时间', '到期时间', '是否续费', '计费地区', '被墙信息', '被墙信息(使用后)'];
+
       // 转换数据为CSV行
       const rows = segments.map(seg => {
         // 处理数组和特殊字段
         const projectGroups = getEffectiveProjectGroups(seg).join(';');
-        const serverLocations = seg.serverLocations.map(loc => `${loc.supplier}-${loc.region}`).join(';');
-        const blockedCountries = seg.blockedCountries.map(c => {
-          const countryMap: Record<string, string> = {
-            'iran': '伊朗', 'myanmar': '缅甸', 'turkmenistan': '土库曼', 'russia': '俄罗斯'
-          };
-          return countryMap[c] || c;
-        }).join(';');
+        const serverLocations = seg.serverLocations.map(loc => loc.region).join(';');
+        const countryMap: Record<string, string> = { iran: '伊朗', myanmar: '缅甸', turkmenistan: '土库曼', russia: '俄罗斯' };
+        const blockedCountries = seg.blockedCountries.map(c => countryMap[c] || c).join(';');
+        const postUseBlockedCountries = (seg.postUseBlockedCountries || []).map(c => countryMap[c] || c).join(';');
         
         // 续费状态中文转换
         const renewalStatusMap: Record<string, string> = {
@@ -599,7 +597,8 @@ const IPManagement: React.FC = () => {
           escape(getExpiryDateForExport(seg)),
           escape(renewalStatus),
           escape(serverLocations),
-          escape(blockedCountries)
+          escape(blockedCountries),
+          escape(postUseBlockedCountries)
         ].join(',');
       });
 
@@ -653,24 +652,6 @@ const IPManagement: React.FC = () => {
           tabName = '已取消IP段';
           tabLabel = '已取消IP段';
           break;
-        case 'upcomingRenewal':
-          // 近期续费IP段需要特殊处理，导出所有近10天需要续费的IP段
-          const upcomingSegments: IPSegment[] = [];
-          const today = dayjs().startOf('day');
-          const tenDaysLater = today.add(10, 'day');
-          displayFilteredIpSegments.forEach(segment => {
-            if (segment.renewalDate) {
-              const renewalDate = dayjs(segment.renewalDate).startOf('day');
-              if ((renewalDate.isAfter(today) || renewalDate.isSame(today)) && 
-                  (renewalDate.isBefore(tenDaysLater) || renewalDate.isSame(tenDaysLater))) {
-                upcomingSegments.push(segment);
-              }
-            }
-          });
-          segmentsToExport = upcomingSegments;
-          tabName = '近期续费IP段';
-          tabLabel = '近期续费IP段';
-          break;
         default:
           segmentsToExport = [];
           break;
@@ -682,19 +663,16 @@ const IPManagement: React.FC = () => {
       }
 
       // CSV表头（与表格列一致，含购买时间、续费时间、到期时间等）
-      const headers = ['IP段', '使用地区', '费用($)', '购买时间', '取消时间', '项目组', '供应商', 'ASN', '续费时间', '到期时间', '是否续费', '服务器位置', '被墙信息'];
-      
+      const headers = ['IP段', '宣告地区', '费用($)', '购买时间', '取消时间', '项目组', '供应商', 'ASN', '续费时间', '到期时间', '是否续费', '计费地区', '被墙信息', '被墙信息(使用后)'];
+
       // 转换数据为CSV行
       const rows = segmentsToExport.map(seg => {
         // 处理数组和特殊字段
         const projectGroups = getEffectiveProjectGroups(seg).join(';');
-        const serverLocations = (seg.serverLocations || []).map(loc => `${loc.supplier}-${loc.region}`).join(';');
-        const blockedCountries = (seg.blockedCountries || []).map(c => {
-          const countryMap: Record<string, string> = {
-            'iran': '伊朗', 'myanmar': '缅甸', 'turkmenistan': '土库曼', 'russia': '俄罗斯'
-          };
-          return countryMap[c] || c;
-        }).join(';');
+        const serverLocations = (seg.serverLocations || []).map(loc => loc.region).join(';');
+        const countryMap2: Record<string, string> = { iran: '伊朗', myanmar: '缅甸', turkmenistan: '土库曼', russia: '俄罗斯' };
+        const blockedCountries = (seg.blockedCountries || []).map(c => countryMap2[c] || c).join(';');
+        const postUseBlockedCountries = (seg.postUseBlockedCountries || []).map(c => countryMap2[c] || c).join(';');
         
         // 续费状态中文转换
         const renewalStatusMap: Record<string, string> = {
@@ -728,7 +706,8 @@ const IPManagement: React.FC = () => {
           escape(getExpiryDateForExport(seg)),
           escape(renewalStatus),
           escape(serverLocations),
-          escape(blockedCountries)
+          escape(blockedCountries),
+          escape(postUseBlockedCountries)
         ].join(',');
       });
 
@@ -802,7 +781,7 @@ const IPManagement: React.FC = () => {
       }
 
       // CSV 表头（与 handleExportCurrentTab 保持一致）
-      const headers = ['IP段', '使用地区', '费用($)', '购买时间', '取消时间', '项目组', '供应商', 'ASN', '续费时间', '到期时间', '是否续费', '服务器位置', '被墙信息'];
+      const headers = ['IP段', '宣告地区', '费用($)', '购买时间', '取消时间', '项目组', '供应商', 'ASN', '续费时间', '到期时间', '是否续费', '计费地区', '被墙信息'];
 
       const escape = (val: string | number | undefined) => {
         const str = String(val || '');
@@ -821,7 +800,7 @@ const IPManagement: React.FC = () => {
 
       const rows = segmentsToExport.map(seg => {
         const projectGroups = getEffectiveProjectGroups(seg).join(';');
-        const serverLocations = (seg.serverLocations || []).map(loc => `${loc.supplier}-${loc.region}`).join(';');
+        const serverLocations = (seg.serverLocations || []).map(loc => loc.region).join(';');
         const blockedCountries = (seg.blockedCountries || []).map(c => {
           const countryMap: Record<string, string> = {
             'iran': '伊朗', 'myanmar': '缅甸', 'turkmenistan': '土库曼', 'russia': '俄罗斯'
@@ -936,58 +915,6 @@ const IPManagement: React.FC = () => {
   // 获取当前时间（用于判断是否到期）
   const now = dayjs();
 
-  // 计算近10天需要续费的IP段（按日期分组，支持项目组筛选）
-  const getUpcomingRenewalSegments = (projectGroupFilter?: string) => {
-    const upcomingSegments: IPSegment[] = [];
-    const today = dayjs().startOf('day');
-    const tenDaysLater = today.add(10, 'day');
-
-    // 筛选出近10天需要续费的正常IP段（支持项目组筛选）
-    filteredIpSegments.forEach(segment => {
-      // 项目组筛选：若选择了项目组，只显示该项目组下的IP段
-      if (projectGroupFilter && !getEffectiveProjectGroups(segment).includes(projectGroupFilter)) {
-        return;
-      }
-      if (segment.renewalDate) {
-        const renewalDate = dayjs(segment.renewalDate).startOf('day');
-        // 续费时间在今天到10天后之间（包含今天和10天后）
-        if ((renewalDate.isAfter(today) || renewalDate.isSame(today)) && 
-            (renewalDate.isBefore(tenDaysLater) || renewalDate.isSame(tenDaysLater))) {
-          upcomingSegments.push(segment);
-        }
-      }
-    });
-
-    // 按续费日期分组（仅 IPXO 加收 4%，Interlir 先欧元→美元）
-    const groupedByDate: { [key: string]: { segments: IPSegment[], totalCost: number } } = {};
-    upcomingSegments.forEach(segment => {
-      if (segment.renewalDate) {
-        const renewalDateStr = dayjs(segment.renewalDate).format('YYYY-MM-DD');
-        if (!groupedByDate[renewalDateStr]) {
-          groupedByDate[renewalDateStr] = { segments: [], totalCost: 0 };
-        }
-        groupedByDate[renewalDateStr].segments.push(segment);
-        groupedByDate[renewalDateStr].totalCost += getBillableMonthlyUsdForSegment(segment);
-      }
-    });
-
-    // 按续费日期降序排列（越早需续费的排在前面）
-    const sortedDates = Object.keys(groupedByDate).sort((a, b) => {
-      return dayjs(a).valueOf() - dayjs(b).valueOf();
-    });
-
-    // 每组内的IP段按续费时间向下排列（已按日期分组，组内保持原有顺序）
-    sortedDates.forEach(dateStr => {
-      groupedByDate[dateStr].segments.sort((a, b) => {
-        const ra = a.renewalDate ? dayjs(a.renewalDate).valueOf() : 0;
-        const rb = b.renewalDate ? dayjs(b.renewalDate).valueOf() : 0;
-        return ra - rb;
-      });
-    });
-
-    const totalCost = upcomingSegments.reduce((sum, seg) => sum + getBillableMonthlyUsdForSegment(seg), 0);
-    return { groupedByDate, sortedDates, totalSegments: upcomingSegments.length, totalCost };
-  };
 
   // 解析多个IP段搜索关键词（支持空格、逗号、换行分隔）
   const parseSegmentSearchKeywords = (searchText: string): string[] => {
@@ -1073,17 +1000,6 @@ const IPManagement: React.FC = () => {
     filterOverlappingHistoryOnly,
   ]);
 
-  // 计算近10天需要续费的IP段数据（必须在filteredIpSegments定义之后调用）
-  const upcomingRenewalData = getUpcomingRenewalSegments(filteredUpcomingProjectGroup);
-
-  // 近期续费列表视图的扁平化数据（按续费日期排序）
-  const upcomingRenewalListData = useMemo(() => {
-    const list: IPSegment[] = [];
-    upcomingRenewalData.sortedDates.forEach(dateStr => {
-      list.push(...upcomingRenewalData.groupedByDate[dateStr].segments);
-    });
-    return list;
-  }, [upcomingRenewalData]);
 
   // 所有IP段（应用筛选条件）；useMemo 同上
   const allIpSegments = useMemo(() => {
@@ -1312,6 +1228,7 @@ const IPManagement: React.FC = () => {
         .filter(Boolean)
         .map((d) => dayjs(d))
         .filter((d) => d.isValid()),
+      serverLocations: (record.serverLocations || []).map(l => l.region).filter(Boolean),
     });
     setIsModalVisible(true);
   };
@@ -1413,6 +1330,17 @@ const IPManagement: React.FC = () => {
       }
       if (values.projectGroups !== undefined && values.projectGroups !== null) {
         updateData.projectGroups = values.projectGroups;
+      }
+      if (Array.isArray(values.serverLocations) && values.serverLocations.length > 0) {
+        updateData.serverLocations = (values.serverLocations as string[]).map(r => ({ supplier: '', region: r }));
+      }
+      if (values.blockedCountries !== undefined && values.blockedCountries !== null) {
+        updateData.blockedCountries = values.blockedCountries;
+      }
+      if (values.postUseBlockedCountries !== undefined && values.postUseBlockedCountries !== null) {
+        updateData.postUseBlockedCountries = values.postUseBlockedCountries.length > 0
+          ? values.postUseBlockedCountries
+          : undefined;
       }
 
       // 检查是否有任何字段需要更新
@@ -1547,6 +1475,9 @@ const IPManagement: React.FC = () => {
       if (values.blockedCountries !== undefined && values.blockedCountries !== null) {
         updateData.blockedCountries = values.blockedCountries;
       }
+      if (Array.isArray(values.serverLocations) && values.serverLocations.length > 0) {
+        updateData.serverLocations = (values.serverLocations as string[]).map(r => ({ supplier: '', region: r }));
+      }
 
       // 检查是否有任何字段需要更新
       if (Object.keys(updateData).length === 0) {
@@ -1628,6 +1559,11 @@ const IPManagement: React.FC = () => {
       }
       if (values.blockedCountries !== undefined && values.blockedCountries !== null) {
         updateData.blockedCountries = values.blockedCountries;
+      }
+      if (values.postUseBlockedCountries !== undefined && values.postUseBlockedCountries !== null) {
+        updateData.postUseBlockedCountries = values.postUseBlockedCountries.length > 0
+          ? values.postUseBlockedCountries
+          : undefined;
       }
       // 备注：有值才更新
       const remarkVal = (values.remark || '').trim();
@@ -1920,10 +1856,11 @@ const IPManagement: React.FC = () => {
         monthlyPrice: values.monthlyPrice,
         renewalStatus: values.renewalStatus || 'not_renewed',
         projectGroups: values.projectGroups || [],
-        serverLocations: values.serverLocations || [],
+        serverLocations: (values.serverLocations || []).map((r: string) => ({ supplier: '', region: r })),
         blockedCountries,
         rateLimitedCountries,
         detectedCountries,
+        postUseBlockedCountries: values.postUseBlockedCountries?.length ? values.postUseBlockedCountries : undefined,
         history: finalHistory.length > 0 ? finalHistory : undefined,
         multiPurchaseMarked: !!values.multiPurchaseMarked,
         previousPurchaseDates: previousPurchaseDatesSorted.length > 0 ? previousPurchaseDatesSorted : undefined,
@@ -2196,9 +2133,9 @@ const IPManagement: React.FC = () => {
         
         // 支持多种格式：
         // 3个字段：IP段,费用,购买时间
-        // 4个字段：IP段,使用地区,费用,购买时间 或 IP段,费用,购买时间,取消时间
-        // 5个字段：IP段,使用地区,费用,购买时间,供应商 或 IP段,使用地区,费用,购买时间,取消时间
-        // 6个字段：IP段,使用地区,费用,购买时间,取消时间,供应商
+        // 4个字段：IP段,宣告地区,费用,购买时间 或 IP段,费用,购买时间,取消时间
+        // 5个字段：IP段,宣告地区,费用,购买时间,供应商 或 IP段,宣告地区,费用,购买时间,取消时间
+        // 6个字段：IP段,宣告地区,费用,购买时间,取消时间,供应商
         if (parts.length >= 3) {
           let segment = '';
           let usageArea = '';
@@ -2229,7 +2166,7 @@ const IPManagement: React.FC = () => {
               purchaseDate = parts[2] || '';
               cancellationDate = parts[3] || '';
             } else {
-              // 格式：IP段,使用地区,费用,购买时间
+              // 格式：IP段,宣告地区,费用,购买时间
               segment = parts[0] || '';
               usageArea = parts[1] || '';
               monthlyPrice = parts[2] || '0';
@@ -2237,14 +2174,14 @@ const IPManagement: React.FC = () => {
             }
           } else if (parts.length === 5) {
             if (dateIndices.length >= 2 && dateIndices[0] === 3 && dateIndices[1] === 4) {
-              // 格式：IP段,使用地区,费用,购买时间,取消时间
+              // 格式：IP段,宣告地区,费用,购买时间,取消时间
               segment = parts[0] || '';
               usageArea = parts[1] || '';
               monthlyPrice = parts[2] || '0';
               purchaseDate = parts[3] || '';
               cancellationDate = parts[4] || '';
             } else {
-              // 格式：IP段,使用地区,费用,购买时间,供应商
+              // 格式：IP段,宣告地区,费用,购买时间,供应商
               segment = parts[0] || '';
               usageArea = parts[1] || '';
               monthlyPrice = parts[2] || '0';
@@ -2255,7 +2192,7 @@ const IPManagement: React.FC = () => {
             const sixthField = parts[5] || '';
             const parsedRenewalStatus = parseRenewalStatusFromText(sixthField);
             if (parsedRenewalStatus !== null) {
-              // 格式：IP段,使用地区,费用,购买时间,取消时间,续费状态（取消续费/已退款）
+              // 格式：IP段,宣告地区,费用,购买时间,取消时间,续费状态（取消续费/已退款）
               segment = parts[0] || '';
               usageArea = parts[1] || '';
               monthlyPrice = parts[2] || '0';
@@ -2265,7 +2202,7 @@ const IPManagement: React.FC = () => {
               // 使用第6字段的续费状态，在下方 segments.push 时应用
               renewalStatusFromField = parsedRenewalStatus;
             } else {
-              // 格式：IP段,使用地区,费用,购买时间,取消时间,供应商
+              // 格式：IP段,宣告地区,费用,购买时间,取消时间,供应商
               segment = parts[0] || '';
               usageArea = parts[1] || '';
               monthlyPrice = parts[2] || '0';
@@ -2475,7 +2412,7 @@ const IPManagement: React.FC = () => {
       }
       
       if (segments.length === 0) {
-        message.error('未能解析出有效数据，请检查格式。支持格式：3个字段(IP段,费用,购买时间)、4个字段(IP段,使用地区,费用,购买时间)或5个字段(IP段,使用地区,费用,购买时间,供应商)（分隔符支持逗号或Tab键）。注意：购买时间为必填项！');
+        message.error('未能解析出有效数据，请检查格式。支持格式：3个字段(IP段,费用,购买时间)、4个字段(IP段,宣告地区,费用,购买时间)或5个字段(IP段,宣告地区,费用,购买时间,供应商)（分隔符支持逗号或Tab键）。注意：购买时间为必填项！');
         return;
       }
 
@@ -2716,6 +2653,7 @@ const IPManagement: React.FC = () => {
             rateLimitedCountries: newRateLimitedCountries,
             detectedCountries: newDetectedCountries,
             updatedAt: new Date().toISOString(),
+            // 被墙信息导入不覆盖使用后被墙字段
           });
           updateCount++;
           successCount++;
@@ -2786,6 +2724,9 @@ const IPManagement: React.FC = () => {
             if (detectedCountriesList && detectedCountriesList.length > 0) {
               updateData.detectedCountries = detectedCountriesList;
             }
+            if (Array.isArray((item as any).postUseBlockedCountries) && (item as any).postUseBlockedCountries.length > 0) {
+              updateData.postUseBlockedCountries = (item as any).postUseBlockedCountries;
+            }
             
             // 使用update方法进行部分更新
             ipSegmentStorage.update(existingData.id, updateData);
@@ -2813,6 +2754,9 @@ const IPManagement: React.FC = () => {
               blockedCountries: Array.isArray(item.blockedCountries) ? item.blockedCountries : [],
               rateLimitedCountries: Array.isArray(item.rateLimitedCountries) ? item.rateLimitedCountries : [],
               detectedCountries: detectedCountriesList,
+              postUseBlockedCountries: Array.isArray((item as any).postUseBlockedCountries) && (item as any).postUseBlockedCountries.length > 0
+                ? (item as any).postUseBlockedCountries
+                : undefined,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             };
@@ -2991,7 +2935,7 @@ const IPManagement: React.FC = () => {
       },
     },
     {
-      title: '使用地区',
+      title: '宣告地区',
       dataIndex: 'usageArea',
       key: 'usageArea',
       width: 124,
@@ -3330,14 +3274,14 @@ const IPManagement: React.FC = () => {
       },
     },
     {
-      title: '服务器位置',
+      title: '计费地区',
       dataIndex: 'serverLocations',
       key: 'serverLocations',
       width: 208,
       filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }: any) => (
         <div style={{ padding: 8 }}>
           <Input
-            placeholder="搜索服务器位置"
+            placeholder="搜索计费地区"
             value={selectedKeys[0]}
             onChange={(e) => setSelectedKeys(e.target.value ? [e.target.value] : [])}
             onPressEnter={() => confirm()}
@@ -3355,15 +3299,15 @@ const IPManagement: React.FC = () => {
       ),
       onFilter: (value, record) => {
         const searchValue = String(value).toLowerCase();
-        return (record.serverLocations || []).some(loc => 
-          `${loc.supplier} - ${loc.region}`.toLowerCase().includes(searchValue)
+        return (record.serverLocations || []).some(loc =>
+          loc.region.toLowerCase().includes(searchValue)
         );
       },
       render: (locations: ServerLocation[]) => (
         <Space wrap size={[8, 6]}>
-          {locations.map((loc, index) => (
+          {(locations || []).map((loc, index) => (
             <Tag key={index} color="green">
-              {loc.supplier} - {loc.region}
+              {loc.region}
             </Tag>
           ))}
         </Space>
@@ -3412,6 +3356,7 @@ const IPManagement: React.FC = () => {
         const isDetected = (c: BlockedCountry) => Array.isArray(detectedList) && detectedList.includes(c);
         
         return (
+          <div>
           <Space wrap size={[8, 6]}>
             {allCountries.map(({ key, label }) => {
               // 如果该地区未在 detectedCountries 中，显示"未检测"
@@ -3422,7 +3367,7 @@ const IPManagement: React.FC = () => {
                   </Tag>
                 );
               }
-              
+
               // 如果已检测，根据 blockedCountries / rateLimitedCountries 显示状态
               const isBlocked = (record.blockedCountries || []).includes(key);
               const isRateLimited = (record.rateLimitedCountries || []).includes(key);
@@ -3442,6 +3387,21 @@ const IPManagement: React.FC = () => {
               );
             })}
           </Space>
+          {(() => {
+            const postBlocked = record.postUseBlockedCountries || [];
+            if (postBlocked.length === 0) return null;
+            const postLabels = BLOCKED_COUNTRY_OPTIONS
+              .filter(o => postBlocked.includes(o.value as BlockedCountry))
+              .map(o => o.label);
+            return (
+              <div style={{ marginTop: 4 }}>
+                <Tag color="volcano" style={{ fontSize: 11 }}>
+                  使用后被墙：{postLabels.join('、')}
+                </Tag>
+              </div>
+            );
+          })()}
+          </div>
         );
       },
     },
@@ -3531,7 +3491,7 @@ const IPManagement: React.FC = () => {
                   添加IP段
                 </Button>
               )}
-              {canImportExport && (
+              {canImport && (
               <Button
                 icon={<UploadOutlined />}
                 onClick={() => {
@@ -3557,7 +3517,7 @@ const IPManagement: React.FC = () => {
                 批量导入
               </Button>
               )}
-              {canEdit && canImportExport && (
+              {canEdit && canImport && (
               <Button
                 icon={<EditOutlined />}
                 onClick={() => {
@@ -3572,7 +3532,7 @@ const IPManagement: React.FC = () => {
             </Space>
 
             {/* 配置与数据管理区 */}
-            {canImportExport && (
+            {canExport && (
             <Space>
               <Button
                 icon={<DownloadOutlined />}
@@ -3725,7 +3685,7 @@ const IPManagement: React.FC = () => {
               <Text type="secondary">IP段总数: <Text strong>{ipSegments.length}</Text></Text>
               <Text type="secondary">项目组: <Text strong>{projectGroups.length}</Text></Text>
               <Text type="secondary">供应商: <Text strong>{suppliers.length}</Text></Text>
-              <Text type="secondary">使用地区: <Text strong>{usageAreas.length}</Text></Text>
+              <Text type="secondary">宣告地区: <Text strong>{usageAreas.length}</Text></Text>
               {overlappingHistorySegmentCount > 0 && (
                 <Text type="secondary">
                   历程时间重叠: <Text strong style={{ color: '#d46b08' }}>{overlappingHistorySegmentCount}</Text> 条
@@ -3759,7 +3719,7 @@ const IPManagement: React.FC = () => {
               setAllSegmentsSelectedKeys([]);
             }}
             tabBarExtraContent={
-              canImportExport && (
+              canExport && (
                 <Button
                   type="primary"
                   icon={<DownloadOutlined />}
@@ -3769,8 +3729,7 @@ const IPManagement: React.FC = () => {
                   {activeTabKey === 'cancelledButNotExpired' && `导出已取消但未到期IP段 (${cancelledButNotExpiredSegments.length}条)`}
                   {activeTabKey === 'cancelled' && `导出已取消IP段 (${cancelledIpSegments.length}条)`}
                   {activeTabKey === 'all' && `导出所有IP段 (${allIpSegments.length}条)`}
-                  {activeTabKey === 'upcomingRenewal' && `导出近期续费IP段 (${upcomingRenewalData.totalSegments}条)`}
-                  {!['active', 'cancelledButNotExpired', 'cancelled', 'all', 'upcomingRenewal'].includes(activeTabKey) && '导出'}
+                  {!['active', 'cancelledButNotExpired', 'cancelled', 'all'].includes(activeTabKey) && '导出'}
                 </Button>
               )
             }
@@ -3867,154 +3826,6 @@ const IPManagement: React.FC = () => {
                   </div>
                 ),
               },
-              {
-                key: 'upcomingRenewal',
-                label: `近期续费IP段 (${upcomingRenewalData.totalSegments})`,
-                children: (
-                  <div>
-                    {/* 筛选 */}
-                    <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-                      <Space wrap>
-                        <Text>项目组筛选：</Text>
-                        <Select
-                          placeholder="全部项目组"
-                          allowClear
-                          style={{ minWidth: 160 }}
-                          value={filteredUpcomingProjectGroup}
-                          onChange={setFilteredUpcomingProjectGroup}
-                          options={[
-                            { value: undefined, label: '全部项目组' },
-                            ...projectGroups.map(g => ({ value: g.name, label: g.name })),
-                          ]}
-                        />
-                        {filteredUpcomingProjectGroup && (
-                          <Button size="small" onClick={() => setFilteredUpcomingProjectGroup(undefined)}>
-                            清除筛选
-                          </Button>
-                        )}
-                        <Divider type="vertical" />
-                        <Text>视图：</Text>
-                        <Segmented
-                          value={upcomingRenewalViewMode}
-                          onChange={(v) => setUpcomingRenewalViewMode(v as 'grouped' | 'list')}
-                          options={[
-                            { label: '分组视图', value: 'grouped' },
-                            { label: '列表视图', value: 'list' },
-                          ]}
-                        />
-                      </Space>
-                    </div>
-                    {/* 总体统计 */}
-                    <div style={{ marginBottom: 16, padding: '12px', background: '#e6f7ff', borderRadius: '4px', border: '1px solid #91d5ff' }}>
-                      <Row gutter={16}>
-                        <Col span={8}>
-                          <Text strong>近10天需要续费的IP段总数：</Text>
-                          <Text style={{ fontSize: '18px', color: '#1890ff', marginLeft: 8 }}>{upcomingRenewalData.totalSegments}</Text>
-                        </Col>
-                        <Col span={8}>
-                          <Text strong>总费用（美元，仅 IPXO 加收 4% 手续费）：</Text>
-                          <Text style={{ fontSize: '18px', color: '#f5222d', marginLeft: 8 }}>${upcomingRenewalData.totalCost.toFixed(2)}</Text>
-                        </Col>
-                        <Col span={8}>
-                          <Text strong>涉及天数：</Text>
-                          <Text style={{ fontSize: '18px', color: '#52c41a', marginLeft: 8 }}>{upcomingRenewalData.sortedDates.length}</Text>
-                        </Col>
-                      </Row>
-                    </div>
-
-                    {/* 分组视图 / 列表视图 */}
-                    {upcomingRenewalData.sortedDates.length > 0 ? (
-                      upcomingRenewalViewMode === 'grouped' ? (
-                        <Collapse
-                          items={upcomingRenewalData.sortedDates.map((dateStr) => {
-                            const dateData = upcomingRenewalData.groupedByDate[dateStr];
-                            const dateObj = dayjs(dateStr);
-                            const isToday = dateObj.isSame(now, 'day');
-                            const isTomorrow = dateObj.isSame(now.add(1, 'day'), 'day');
-                            let dateLabel = dateObj.format('YYYY-MM-DD');
-                            if (isToday) {
-                              dateLabel += ' (今天)';
-                            } else if (isTomorrow) {
-                              dateLabel += ' (明天)';
-                            } else {
-                              dateLabel += ` (${dateObj.diff(now, 'day')}天后)`;
-                            }
-
-                            return {
-                              key: dateStr,
-                              label: (
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                  <span style={{ fontSize: '16px', fontWeight: 'bold' }}>{dateLabel}</span>
-                                  <span style={{ marginLeft: 'auto', marginRight: 16 }}>
-                                    <Text type="secondary">共 {dateData.segments.length} 个IP段，</Text>
-                                    <Text strong style={{ color: '#f5222d' }}>费用（美元，仅 IPXO 含 4%）: ${dateData.totalCost.toFixed(2)}</Text>
-                                  </span>
-                                </div>
-                              ),
-                              children: (
-                                <Table
-                                  virtual
-                                  columns={columns.map(col => {
-                                    if (col.key === 'monthlyPrice' || ('dataIndex' in col && col.dataIndex === 'monthlyPrice')) {
-                                      return {
-                                        ...col,
-                                        render: (_value: number, record: IPSegment) => {
-                                          const billed = getBillableMonthlyUsdForSegment(record);
-                                          const tooltipContent = upcomingRenewalPriceTooltipTitle(record);
-                                          return (
-                                            <Tooltip title={tooltipContent}>
-                                              <span style={{ cursor: 'default' }}>${billed.toFixed(2)}</span>
-                                            </Tooltip>
-                                          );
-                                        },
-                                      };
-                                    }
-                                    return col;
-                                  })}
-                                  dataSource={dateData.segments}
-                                  rowKey="id"
-                                  scroll={IP_SEGMENT_TABLE_VIRTUAL_SCROLL}
-                                  pagination={false}
-                                />
-                              ),
-                            };
-                          })}
-                          defaultActiveKey={upcomingRenewalData.sortedDates.slice(0, 3)}
-                        />
-                      ) : (
-                        <Table
-                          virtual
-                          columns={columns.map(col => {
-                            if (col.key === 'monthlyPrice' || ('dataIndex' in col && col.dataIndex === 'monthlyPrice')) {
-                              return {
-                                ...col,
-                                render: (_value: number, record: IPSegment) => {
-                                  const billed = getBillableMonthlyUsdForSegment(record);
-                                  const tooltipContent = upcomingRenewalPriceTooltipTitle(record);
-                                  return (
-                                    <Tooltip title={tooltipContent}>
-                                      <span style={{ cursor: 'default' }}>${billed.toFixed(2)}</span>
-                                    </Tooltip>
-                                  );
-                                },
-                              };
-                            }
-                            return col;
-                          })}
-                          dataSource={upcomingRenewalListData}
-                          rowKey="id"
-                          scroll={IP_SEGMENT_TABLE_VIRTUAL_SCROLL}
-                          pagination={false}
-                        />
-                      )
-                    ) : (
-                      <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
-                        <Text type="secondary">近10天内没有需要续费的IP段</Text>
-                      </div>
-                    )}
-                  </div>
-                ),
-              },
             ]}
           />
         </Card>
@@ -4039,6 +3850,7 @@ const IPManagement: React.FC = () => {
             serverLocations: [],
             blockedCountries: [],
             rateLimitedCountries: [],
+            postUseBlockedCountries: [],
             multiPurchaseMarked: false,
             previousPurchaseDates: [],
           }}
@@ -4099,13 +3911,13 @@ const IPManagement: React.FC = () => {
             <Col span={12}>
               <Form.Item
                 name="usageArea"
-                label="使用地区"
-                tooltip="使用地区需在配置管理中添加，此处只能选择已有选项"
+                label="宣告地区"
+                tooltip="宣告地区需在配置管理中添加，此处只能选择已有选项"
               >
                 <Select
                   showSearch
                   allowClear
-                  placeholder="选择使用地区"
+                  placeholder="选择宣告地区"
                   options={usageAreas.map(area => ({
                     label: (
                       <span>
@@ -4117,7 +3929,7 @@ const IPManagement: React.FC = () => {
                   filterOption={(input, option) =>
                     (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                   }
-                  notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>未找到匹配的使用地区，请到配置管理中添加</span>}
+                  notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>未找到匹配的宣告地区，请到配置管理中添加</span>}
                 />
               </Form.Item>
             </Col>
@@ -4266,6 +4078,22 @@ const IPManagement: React.FC = () => {
                 <Select
                   mode="multiple"
                   placeholder="选择限速国家"
+                  options={[...BLOCKED_COUNTRY_OPTIONS]}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                name="postUseBlockedCountries"
+                label="被墙信息（使用后）"
+                tooltip="IP段停止使用后记录的被墙国家，不影响当前检测统计"
+              >
+                <Select
+                  mode="multiple"
+                  placeholder="选择停用后被墙的国家"
                   options={[...BLOCKED_COUNTRY_OPTIONS]}
                 />
               </Form.Item>
@@ -4499,38 +4327,14 @@ const IPManagement: React.FC = () => {
 
           <Form.Item
             name="serverLocations"
-            label="服务器位置"
+            label="计费地区"
           >
-            <Form.List name="serverLocations">
-              {(fields, { add, remove }) => (
-                <>
-                  {fields.map(({ key, name, ...restField }) => (
-                    <Space key={key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
-                      <Form.Item
-                        {...restField}
-                        name={[name, 'supplier']}
-                        rules={[{ required: true, message: '请输入供应商' }]}
-                      >
-                        <Input placeholder="供应商" style={{ width: 150 }} />
-                      </Form.Item>
-                      <Form.Item
-                        {...restField}
-                        name={[name, 'region']}
-                        rules={[{ required: true, message: '请输入地区' }]}
-                      >
-                        <Input placeholder="地区" style={{ width: 150 }} />
-                      </Form.Item>
-                      <Button onClick={() => remove(name)}>删除</Button>
-                    </Space>
-                  ))}
-                  <Form.Item>
-                    <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
-                      添加服务器位置
-                    </Button>
-                  </Form.Item>
-                </>
-              )}
-            </Form.List>
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="选择计费地区"
+              options={SERVER_LOCATION_REGIONS.map(r => ({ label: r, value: r }))}
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -4841,15 +4645,15 @@ const IPManagement: React.FC = () => {
                     格式说明：每行一条记录，字段用逗号或Tab键分隔
                   </Text>
                   <div style={{ marginBottom: 16, fontSize: 12, color: 'rgba(0, 0, 0, 0.45)' }}>
-                    <div>格式：IP段,使用地区(可选),费用($),购买时间(YYYY-MM-DD),取消时间(可选),供应商或续费状态(可选)</div>
+                    <div>格式：IP段,宣告地区(可选),费用($),购买时间(YYYY-MM-DD),取消时间(可选),供应商或续费状态(可选)</div>
                     <div style={{ marginTop: 8 }}>续费时间/到期时间计算规则：</div>
                     <div>- 续费时间：无取消时间=当前+1月；有取消时间=按购买日与取消日计算</div>
                     <div>- 到期时间：取消续费=续费时间或按取消时间计算；未续费=续费时间</div>
                     <div style={{ marginTop: 8 }}>支持格式：</div>
                     <div>- 3个字段：IP段,费用,购买时间</div>
-                    <div>- 4个字段：IP段,使用地区,费用,购买时间 或 IP段,费用,购买时间,取消时间</div>
-                    <div>- 5个字段：IP段,使用地区,费用,购买时间,供应商 或 IP段,使用地区,费用,购买时间,取消时间</div>
-                    <div>- 6个字段：IP段,使用地区,费用,购买时间,取消时间,供应商 或 IP段,使用地区,费用,购买时间,取消时间,续费状态</div>
+                    <div>- 4个字段：IP段,宣告地区,费用,购买时间 或 IP段,费用,购买时间,取消时间</div>
+                    <div>- 5个字段：IP段,宣告地区,费用,购买时间,供应商 或 IP段,宣告地区,费用,购买时间,取消时间</div>
+                    <div>- 6个字段：IP段,宣告地区,费用,购买时间,取消时间,供应商 或 IP段,宣告地区,费用,购买时间,取消时间,续费状态</div>
                     <div style={{ marginTop: 4 }}>&nbsp;&nbsp;续费状态可选值：无、取消续费、已退款（不填则保持为空）</div>
                     <div style={{ marginTop: 8 }}>分隔符支持：逗号（,）、Tab键或空格</div>
                     <div>注意：购买时间为必填项！取消时间必须大于购买时间</div>
@@ -4890,7 +4694,7 @@ const IPManagement: React.FC = () => {
                         )}
                       </Space>
                       <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-                        解析结果已按配置与现有 IP 段对齐名称；请通过下拉选择使用地区、供应商与项目组，勿依赖粘贴文本以免编码异常。
+                        解析结果已按配置与现有 IP 段对齐名称；请通过下拉选择宣告地区、供应商与项目组，勿依赖粘贴文本以免编码异常。
                       </Text>
                       <Table
                         dataSource={batchTableData.map((item, index) => ({ ...item, key: index }))}
@@ -4908,7 +4712,7 @@ const IPManagement: React.FC = () => {
                             ),
                           },
                           {
-                            title: '使用地区',
+                            title: '宣告地区',
                             dataIndex: 'usageArea',
                             width: 150,
                             render: (text: string | undefined, _record, index) => (
@@ -5192,7 +4996,7 @@ const IPManagement: React.FC = () => {
                         ),
                       },
                       {
-                        title: '使用地区',
+                        title: '宣告地区',
                         dataIndex: 'usageArea',
                         width: 150,
                         render: (text, record, index) => (
@@ -5302,30 +5106,22 @@ const IPManagement: React.FC = () => {
                         ),
                       },
                       {
-                        title: '服务器位置',
+                        title: '计费地区',
                         dataIndex: 'serverLocations',
                         width: 200,
-                        render: (locations, record, index) => {
-                          const locationStr = locations && locations.length > 0
-                            ? locations.map((loc: ServerLocation) => `${loc.supplier}-${loc.region}`).join(';')
-                            : '';
-                          return (
-                            <Input
-                              value={locationStr}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                const parsedLocations: ServerLocation[] = value
-                                  ? value.split(';').map(loc => {
-                                      const [supplier, region] = loc.split('-').map(s => s.trim());
-                                      return { supplier: supplier || '', region: region || '' };
-                                    }).filter(loc => loc.supplier && loc.region)
-                                  : [];
-                                handleTableDataChange(index, 'serverLocations', parsedLocations);
-                              }}
-                              placeholder="供应商-地区;供应商-地区"
-                            />
-                          );
-                        },
+                        render: (locations: ServerLocation[], _record, index) => (
+                          <Select
+                            mode="multiple"
+                            allowClear
+                            style={{ width: '100%' }}
+                            placeholder="选择计费地区"
+                            value={(locations || []).map(l => l.region).filter(Boolean)}
+                            options={SERVER_LOCATION_REGIONS.map(r => ({ label: r, value: r }))}
+                            onChange={(regions: string[]) =>
+                              handleTableDataChange(index, 'serverLocations', regions.map(r => ({ supplier: '', region: r })))
+                            }
+                          />
+                        ),
                       },
                       {
                         title: '被墙信息',
@@ -5336,6 +5132,21 @@ const IPManagement: React.FC = () => {
                             mode="multiple"
                             value={countries}
                             onChange={(value) => handleTableDataChange(index, 'blockedCountries', value)}
+                            style={{ width: '100%' }}
+                            placeholder="选择国家"
+                            options={[...BLOCKED_COUNTRY_OPTIONS]}
+                          />
+                        ),
+                      },
+                      {
+                        title: '被墙（使用后）',
+                        dataIndex: 'postUseBlockedCountries',
+                        width: 150,
+                        render: (countries, record, index) => (
+                          <Select
+                            mode="multiple"
+                            value={countries}
+                            onChange={(value) => handleTableDataChange(index, 'postUseBlockedCountries', value.length > 0 ? value : undefined)}
                             style={{ width: '100%' }}
                             placeholder="选择国家"
                             options={[...BLOCKED_COUNTRY_OPTIONS]}
@@ -5403,8 +5214,8 @@ const IPManagement: React.FC = () => {
             <Col span={12}>
               <Form.Item
                 name="usageArea"
-                label="使用地区"
-                tooltip="使用地区需在配置管理中添加，此处只能选择已有选项"
+                label="宣告地区"
+                tooltip="宣告地区需在配置管理中添加，此处只能选择已有选项"
               >
                 <Select
                   showSearch
@@ -5421,7 +5232,7 @@ const IPManagement: React.FC = () => {
                   filterOption={(input, option) =>
                     (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                   }
-                  notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>未找到匹配的使用地区，请到配置管理中添加</span>}
+                  notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>未找到匹配的宣告地区，请到配置管理中添加</span>}
                 />
               </Form.Item>
             </Col>
@@ -5545,6 +5356,19 @@ const IPManagement: React.FC = () => {
           </Form.Item>
 
           <Form.Item
+            name="postUseBlockedCountries"
+            label="被墙信息（使用后）"
+            tooltip="IP段停止使用后记录的被墙国家，不影响当前检测统计"
+          >
+            <Select
+              mode="multiple"
+              placeholder="留空则不修改"
+              allowClear
+              options={[...BLOCKED_COUNTRY_OPTIONS]}
+            />
+          </Form.Item>
+
+          <Form.Item
             name="remark"
             label={
               <Space>
@@ -5594,8 +5418,8 @@ const IPManagement: React.FC = () => {
             <Col span={12}>
               <Form.Item
                 name="usageArea"
-                label="使用地区"
-                tooltip="使用地区需在配置管理中添加，此处只能选择已有选项"
+                label="宣告地区"
+                tooltip="宣告地区需在配置管理中添加，此处只能选择已有选项"
               >
                 <Select
                   showSearch
@@ -5612,7 +5436,7 @@ const IPManagement: React.FC = () => {
                   filterOption={(input, option) =>
                     (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                   }
-                  notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>未找到匹配的使用地区，请到配置管理中添加</span>}
+                  notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>未找到匹配的宣告地区，请到配置管理中添加</span>}
                 />
               </Form.Item>
             </Col>
@@ -5699,6 +5523,19 @@ const IPManagement: React.FC = () => {
               </Form.Item>
             </Col>
           </Row>
+
+          <Form.Item
+            name="serverLocations"
+            label="计费地区"
+            tooltip="选择后将整项替换所选行的计费地区，留空则不修改"
+          >
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="留空则不修改"
+              options={SERVER_LOCATION_REGIONS.map(r => ({ label: r, value: r }))}
+            />
+          </Form.Item>
 
           <Form.Item
             name="projectGroups"
@@ -5827,7 +5664,7 @@ const IPManagement: React.FC = () => {
           格式说明：每行一个IP段，支持逗号或Tab键分隔（将提取第一个字段作为IP段）
         </Text>
         <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
-          可批量修改的字段：使用地区、供应商、ASN、费用、购买时间、取消时间、项目组、续费状态、被墙信息。续费状态可选：无、取消续费、已退款。到期时间会根据续费时间、取消时间、续费状态自动计算。
+          可批量修改的字段：宣告地区、供应商、ASN、费用、购买时间、取消时间、项目组、续费状态、计费地区、被墙信息。续费状态可选：无、取消续费、已退款。到期时间会根据续费时间、取消时间、续费状态自动计算。
         </Text>
         <TextArea
           rows={8}
@@ -5850,8 +5687,8 @@ const IPManagement: React.FC = () => {
             <Col span={12}>
               <Form.Item
                 name="usageArea"
-                label="使用地区"
-                tooltip="使用地区需在配置管理中添加，此处只能选择已有选项"
+                label="宣告地区"
+                tooltip="宣告地区需在配置管理中添加，此处只能选择已有选项"
               >
                 <Select
                   showSearch
@@ -5868,7 +5705,7 @@ const IPManagement: React.FC = () => {
                   filterOption={(input, option) =>
                     (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                   }
-                  notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>未找到匹配的使用地区，请到配置管理中添加</span>}
+                  notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>未找到匹配的宣告地区，请到配置管理中添加</span>}
                 />
               </Form.Item>
             </Col>
@@ -5957,6 +5794,20 @@ const IPManagement: React.FC = () => {
                 />
               </Form.Item>
             </Col>
+            <Col span={12}>
+              <Form.Item
+                name="serverLocations"
+                label="计费地区"
+                tooltip="选择后将整项替换所选行的计费地区，留空则不修改"
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  placeholder="留空则不修改"
+                  options={SERVER_LOCATION_REGIONS.map(r => ({ label: r, value: r }))}
+                />
+              </Form.Item>
+            </Col>
           </Row>
 
           <Form.Item
@@ -5974,6 +5825,19 @@ const IPManagement: React.FC = () => {
           <Form.Item
             name="blockedCountries"
             label="被墙信息"
+          >
+            <Select
+              mode="multiple"
+              placeholder="留空则不修改"
+              allowClear
+              options={[...BLOCKED_COUNTRY_OPTIONS]}
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="postUseBlockedCountries"
+            label="被墙信息（使用后）"
+            tooltip="IP段停止使用后记录的被墙国家，不影响当前检测统计"
           >
             <Select
               mode="multiple"

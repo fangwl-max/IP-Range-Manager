@@ -12,14 +12,14 @@ interface Props {
   onRegionsLoaded?: (options: RegionOption[]) => void;
 }
 
-const AdminOnly: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
-  if (user?.role !== 'admin') {
+const PermGate: React.FC<{ perm: string; children: React.ReactNode }> = ({ perm, children }) => {
+  const { hasPermission } = useAuth();
+  if (!hasPermission(perm)) {
     return (
       <Result
         icon={<LockOutlined style={{ color: '#faad14' }} />}
         title="权限不足"
-        subTitle="该功能仅限管理员账号操作"
+        subTitle="您没有访问此功能的权限"
       />
     );
   }
@@ -35,16 +35,18 @@ const ZenVobTab: React.FC<Props> = ({ regionOptions, onRegionsLoaded }) => (
         key: 'vob-announce',
         label: <span><GlobalOutlined /> VOB 宣告</span>,
         children: (
-          <ZenByoipAnnounceTab
-            regionOptions={regionOptions}
-            onRegionsLoaded={onRegionsLoaded}
-          />
+          <PermGate perm="announce-zen.announce">
+            <ZenByoipAnnounceTab
+              regionOptions={regionOptions}
+              onRegionsLoaded={onRegionsLoaded}
+            />
+          </PermGate>
         ),
       },
       {
         key: 'vob-withdraw',
         label: <span><StopOutlined /> VOB 取消宣告</span>,
-        children: <AdminOnly><ZenByoipWithdrawTab regionOptions={regionOptions} /></AdminOnly>,
+        children: <PermGate perm="announce-zen.withdraw"><ZenByoipWithdrawTab regionOptions={regionOptions} /></PermGate>,
       },
     ]}
   />

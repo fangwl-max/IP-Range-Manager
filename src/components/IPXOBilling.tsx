@@ -1555,7 +1555,7 @@ const IPXOBilling: React.FC = () => {
               showIcon
               style={{ marginTop: 12 }}
               message="同步说明"
-              description="新增的 IP 段将标记为 IPXO API 来源，使用地区、项目组等信息需同步后在 IP 管理中手动补充。同步操作不可撤销，建议确认后再执行。"
+              description="新增的 IP 段将标记为 IPXO API 来源，宣告地区、项目组等信息需同步后在 IP 管理中手动补充。同步操作不可撤销，建议确认后再执行。"
             />
           </div>
         ) : null}

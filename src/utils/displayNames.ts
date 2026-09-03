@@ -22,7 +22,7 @@ function asciiSkeleton(s: string): string {
 }
 
 /**
- * 使用地区专用匹配键：保留汉字，只去掉 � 与 UTF-8 误读产生的杂字节，避免「ZEN达拉斯」与「ZEN华盛顿」被错误合并。
+ * 宣告地区专用匹配键：保留汉字，只去掉 � 与 UTF-8 误读产生的杂字节，避免「ZEN达拉斯」与「ZEN华盛顿」被错误合并。
  */
 export function usageAreaMatchKey(s: string): string {
   return normalizeHyphens(s)
@@ -33,7 +33,7 @@ export function usageAreaMatchKey(s: string): string {
 
 /**
  * 将原始字符串与主数据列表对齐，修复乱码/替换字符/缺失汉字导致的展示问题。
- * @param matchKey 供应商/项目组用默认 asciiSkeleton；使用地区请传 usageAreaMatchKey。
+ * @param matchKey 供应商/项目组用默认 asciiSkeleton；宣告地区请传 usageAreaMatchKey。
  */
 export function resolveMasterLabel(
   raw: string | undefined,
