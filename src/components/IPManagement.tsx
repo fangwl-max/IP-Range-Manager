@@ -1366,7 +1366,6 @@ const IPManagement: React.FC = () => {
             merged.detectedCountries = [...new Set([
               ...(updateData.blockedCountries ?? (item.blockedCountries || [])),
               ...(updateData.rateLimitedCountries ?? (item.rateLimitedCountries || [])),
-              ...((item.detectedCountries || []) as BlockedCountry[]),
             ])];
           }
           return merged;
@@ -1514,7 +1513,6 @@ const IPManagement: React.FC = () => {
             detectedCountries: [...new Set([
               ...(updateData.blockedCountries ?? existing?.blockedCountries ?? []),
               ...(updateData.rateLimitedCountries ?? existing?.rateLimitedCountries ?? []),
-              ...(existing?.detectedCountries || []),
             ])],
           } : updateData;
           ipSegmentStorage.update(id, finalData);
@@ -1620,7 +1618,6 @@ const IPManagement: React.FC = () => {
             detectedCountries: [...new Set([
               ...(updateData.blockedCountries ?? existing?.blockedCountries ?? []),
               ...(updateData.rateLimitedCountries ?? existing?.rateLimitedCountries ?? []),
-              ...(existing?.detectedCountries || []),
             ])],
           } : updateData;
           // 追加模式：先读取现有备注再拼接
@@ -1865,7 +1862,7 @@ const IPManagement: React.FC = () => {
       
       const blockedCountries = values.blockedCountries || [];
       const rateLimitedCountries = values.rateLimitedCountries || [];
-      const detectedCountries = [...new Set([...blockedCountries, ...rateLimitedCountries, ...(editingSegment?.detectedCountries || [])])];
+      const detectedCountries = [...new Set([...blockedCountries, ...rateLimitedCountries])];
 
       const purchaseStr = values.purchaseDate?.isValid() ? values.purchaseDate.format('YYYY-MM-DD') : '';
       const rawPrevList = (values.previousPurchaseDates || []) as unknown[];
