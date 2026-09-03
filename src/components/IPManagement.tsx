@@ -177,9 +177,13 @@ function normalizeSegmentHistoryAndRepurchaseSegment(
   let repurchase = false;
   if (isCancelled) {
     const cancelDateObj = segment.cancellationDate ? dayjs(segment.cancellationDate) : null;
-    if (cancelDateObj && cancelDateObj.isValid()) {
-      // 取消日期早于最后历程开始日 → 是上一个购买周期的旧取消记录，触发重购逻辑清除
-      // 取消日期晚于（或等于）最后历程开始日 → 是当前购买周期新设的取消，保留
+    const purchaseDateObj = segment.purchaseDate ? dayjs(segment.purchaseDate) : null;
+    if (cancelDateObj && cancelDateObj.isValid() && purchaseDateObj && purchaseDateObj.isValid()) {
+      // 取消日期早于当前购买日 → 旧周期取消，新购已发生，清除旧取消信息
+      // 取消日期晚于（或等于）当前购买日 → 当前周期内的取消，保留
+      if (cancelDateObj.isBefore(purchaseDateObj, 'day')) repurchase = true;
+    } else if (cancelDateObj && cancelDateObj.isValid()) {
+      // 有取消日期但无购买日期，退而与最后历程开始日比较
       if (cancelDateObj.isBefore(lastStart, 'day')) repurchase = true;
     } else {
       // 无 cancellationDate（仅 renewalStatus=cancelled），退而以前段最大结束日 / 到期日判断
