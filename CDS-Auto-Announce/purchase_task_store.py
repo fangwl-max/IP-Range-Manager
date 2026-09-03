@@ -15,7 +15,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 # 看门狗：单个 item 无响应超时（超过此时长未收到任何进度事件，认为卡死）
-STALL_SECONDS = 600  # 10 分钟（AddPublicIp + wait_for_async_task 300s + vdc_wait 120s + 余量）
+STALL_SECONDS = 300  # 与 wait_for_async_task 默认超时一致；正常运行每 5s 有事件，超过此值必然卡死
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ class PurchaseTaskManager:
                 stall = time.time() - last
                 if stall > STALL_SECONDS:
                     cur.cancel()
-                    cur.current_hint = f"任务卡死（>{STALL_SECONDS}s 无进度），已自动取消"
+                    cur.current_hint = f"任务卡死（>{STALL_SECONDS}s 无任何进度事件），已自动取消"
 
 
 # ---------------------------------------------------------------------------
