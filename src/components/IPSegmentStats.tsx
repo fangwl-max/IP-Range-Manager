@@ -697,12 +697,8 @@ const IPSegmentStats: React.FC = () => {
     { key: 'month', label: '上个月' },
   ];
 
-  // 全量（IPXO API + 非IPXO本地），用于购买统计
-  // 注意：这里不套 gfActive 过滤，购买统计用原始全量数据
-  const allSegsForPurchase: any[] = [
-    ...servicesList.filter(s => !s.status || s.status === 'active'),
-    ...allLocalSegments.filter(s => String(s.supplier ?? '').trim() !== 'IPXO'),
-  ];
+  // 购买统计用本地全量数据（含 IPXO 已取消/退款段），purchaseDate 以本地记录为准
+  const allSegsForPurchase: any[] = allLocalSegments;
 
   const periodStats: (PeriodStat & { byProject: Map<string, any[]> })[] = PERIOD_DEFS.map(({ key, label }) => {
     const [from, to] = getPurchasePeriod(key);
@@ -1365,46 +1361,59 @@ const IPSegmentStats: React.FC = () => {
                         const pct = (n: number) => total > 0 ? `${((n / total) * 100).toFixed(1)}%` : '0%';
 
                         // 计费地区：去重统计每个段在哪些 region
-                        const regionStats: Record<string, { count: number; fee: number; segs: any[] }> = {};
-                        // 被墙：blockedCountries 包含该 countryKey
-                        const blockedStats: Record<string, { count: number; fee: number; segs: any[] }> = {};
-                        // 未检测：有 region 对应的 countryKey，但既不在 blockedCountries 也不在 detectedCountries
+                        // 统一按计费地区分组；无地区归入"未知地区"
+                        const regionStats:   Record<string, { count: number; fee: number; segs: any[] }> = {};
+                        const blockedStats:  Record<string, { count: number; fee: number; segs: any[] }> = {};
                         const untestedStats: Record<string, { count: number; fee: number; segs: any[] }> = {};
+
+                        const addTo = (
+                          map: Record<string, { count: number; fee: number; segs: any[] }>,
+                          key: string, seg: any, price: number,
+                        ) => {
+                          if (!map[key]) map[key] = { count: 0, fee: 0, segs: [] };
+                          map[key].count++;
+                          map[key].fee += price;
+                          map[key].segs.push(seg);
+                        };
 
                         pSegs.forEach(seg => {
                           const blocked: string[] = seg.blockedCountries || [];
                           const detected: string[] = seg.detectedCountries || [];
                           const price = seg.monthlyPrice || 0;
-                          const seenRegions = new Set<string>();
-                          (seg.serverLocations || []).forEach((l: any) => {
-                            if (!l.region || seenRegions.has(l.region)) return;
-                            seenRegions.add(l.region);
-                            if (!regionStats[l.region]) regionStats[l.region] = { count: 0, fee: 0, segs: [] };
-                            regionStats[l.region].count++;
-                            regionStats[l.region].fee += price;
-                            regionStats[l.region].segs.push(seg);
-                            const ck = REGION_KEY_MAP[l.region];
-                            if (ck && !blocked.includes(ck) && !detected.includes(ck)) {
-                              if (!untestedStats[l.region]) untestedStats[l.region] = { count: 0, fee: 0, segs: [] };
-                              untestedStats[l.region].count++;
-                              untestedStats[l.region].fee += price;
-                              untestedStats[l.region].segs.push(seg);
+                          const uniqueRegions = [
+                            ...new Set(
+                              (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean)
+                            ),
+                          ] as string[];
+
+                          if (uniqueRegions.length === 0) {
+                            // 未填写计费地区 → 归入「未知地区」
+                            addTo(regionStats, '未知地区', seg, price);
+                            if (blocked.length > 0) addTo(blockedStats, '未知地区', seg, price);
+                            if (blocked.length === 0 && detected.length === 0) addTo(untestedStats, '未知地区', seg, price);
+                            return;
+                          }
+
+                          uniqueRegions.forEach(region => {
+                            addTo(regionStats, region, seg, price);
+                            const ck = REGION_KEY_MAP[region];
+                            if (ck) {
+                              if (blocked.includes(ck)) addTo(blockedStats, region, seg, price);
+                              if (!blocked.includes(ck) && !detected.includes(ck)) addTo(untestedStats, region, seg, price);
                             }
-                          });
-                          const seenBlocked = new Set<string>();
-                          blocked.forEach(c => {
-                            if (seenBlocked.has(c)) return;
-                            seenBlocked.add(c);
-                            if (!blockedStats[c]) blockedStats[c] = { count: 0, fee: 0, segs: [] };
-                            blockedStats[c].count++;
-                            blockedStats[c].fee += price;
-                            blockedStats[c].segs.push(seg);
                           });
                         });
 
-                        const regionEntries = Object.entries(regionStats).sort((a, b) => b[1].count - a[1].count);
-                        const blockedEntries = Object.entries(blockedStats).sort((a, b) => b[1].count - a[1].count);
-                        const untestedEntries = Object.entries(untestedStats).sort((a, b) => b[1].count - a[1].count);
+                        const sortEntries = (entries: [string, { count: number; fee: number; segs: any[] }][]) =>
+                          entries.sort((a, b) => {
+                            if (a[0] === '未知地区') return 1;
+                            if (b[0] === '未知地区') return -1;
+                            return b[1].count - a[1].count;
+                          });
+
+                        const regionEntries  = sortEntries(Object.entries(regionStats));
+                        const blockedEntries = sortEntries(Object.entries(blockedStats));
+                        const untestedEntries = sortEntries(Object.entries(untestedStats));
 
                         const renderStatRow = (
                           label: string,
@@ -1465,9 +1474,9 @@ const IPSegmentStats: React.FC = () => {
                               </Space>
                             </div>
 
-                            {renderStatRow('计费地区：', regionEntries, 'green', k => k, k => `计费地区 ${k}`, '暂无标记')}
-                            {renderStatRow('被墙情况：', blockedEntries, 'red', k => COUNTRY_LABEL[k] || k, k => `被墙 ${COUNTRY_LABEL[k] || k}`, '无')}
-                            {renderStatRow('未检测：', untestedEntries, 'orange', k => k, k => `未检测 ${k}`, '无')}
+                            {renderStatRow('计费地区：', regionEntries,  'green',  k => k, k => `计费地区 ${k}`, '暂无标记')}
+                            {renderStatRow('被墙情况：', blockedEntries,  'red',    k => k, k => `被墙 ${k}`,    '无')}
+                            {renderStatRow('未检测：',   untestedEntries, 'orange', k => k, k => `未检测 ${k}`,  '无')}
                           </div>
                         );
                       })}
