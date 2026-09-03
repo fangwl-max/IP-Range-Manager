@@ -1358,9 +1358,18 @@ const IPManagement: React.FC = () => {
       }
 
       // 更新预览数据
+      const needDetectedSyncPreview = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined;
       const updatedData = batchTableData.map((item, index) => {
         if (previewSelectedRowKeys.includes(index)) {
-          return { ...item, ...updateData };
+          const merged = { ...item, ...updateData };
+          if (needDetectedSyncPreview) {
+            merged.detectedCountries = [...new Set([
+              ...(updateData.blockedCountries ?? (item.blockedCountries || [])),
+              ...(updateData.rateLimitedCountries ?? (item.rateLimitedCountries || [])),
+              ...((item.detectedCountries || []) as BlockedCountry[]),
+            ])];
+          }
+          return merged;
         }
         return item;
       });
@@ -1494,10 +1503,21 @@ const IPManagement: React.FC = () => {
       }
 
       // 批量更新
+      const allSegsSnapshot = ipSegmentStorage.getAll();
       let successCount = 0;
       foundIds.forEach(id => {
         try {
-          ipSegmentStorage.update(id, updateData);
+          const existing = allSegsSnapshot.find(s => s.id === id);
+          const needDetectedSync = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined;
+          const finalData = needDetectedSync ? {
+            ...updateData,
+            detectedCountries: [...new Set([
+              ...(updateData.blockedCountries ?? existing?.blockedCountries ?? []),
+              ...(updateData.rateLimitedCountries ?? existing?.rateLimitedCountries ?? []),
+              ...(existing?.detectedCountries || []),
+            ])],
+          } : updateData;
+          ipSegmentStorage.update(id, finalData);
           successCount++;
         } catch (error) {
           console.error(`更新失败:`, id, error);
@@ -1589,17 +1609,27 @@ const IPManagement: React.FC = () => {
         return;
       }
 
+      const allSegsSnapshot2 = ipSegmentStorage.getAll();
+      const needDetectedSync2 = updateData.blockedCountries !== undefined || updateData.rateLimitedCountries !== undefined;
       let successCount = 0;
       currentSelectedKeys.forEach(key => {
         try {
+          const existing = allSegsSnapshot2.find(s => s.id === key);
+          const baseData = needDetectedSync2 ? {
+            ...updateData,
+            detectedCountries: [...new Set([
+              ...(updateData.blockedCountries ?? existing?.blockedCountries ?? []),
+              ...(updateData.rateLimitedCountries ?? existing?.rateLimitedCountries ?? []),
+              ...(existing?.detectedCountries || []),
+            ])],
+          } : updateData;
           // 追加模式：先读取现有备注再拼接
           if (remarkVal !== '' && !remarkOverwrite) {
-            const existing = ipSegmentStorage.getAll().find(s => s.id === key);
             const existingRemark = (existing?.remark || '').trim();
             const newRemark = existingRemark ? `${existingRemark} ${remarkVal}` : remarkVal;
-            ipSegmentStorage.update(key as string, { ...updateData, remark: newRemark });
+            ipSegmentStorage.update(key as string, { ...baseData, remark: newRemark });
           } else {
-            ipSegmentStorage.update(key as string, updateData);
+            ipSegmentStorage.update(key as string, baseData);
           }
           successCount++;
         } catch (error) {
