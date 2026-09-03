@@ -4,6 +4,12 @@ export type BlockedCountry = 'iran' | 'myanmar' | 'turkmenistan' | 'russia';
 // 续费状态类型
 export type RenewalStatus = 'not_renewed' | 'renewed' | 'cancelled' | 'refunded';
 
+/** 历史购买记录（日期 + 当时月费） */
+export interface PreviousPurchaseRecord {
+  date: string;   // YYYY-MM-DD
+  fee?: number;   // 当时月费（USD），可选
+}
+
 // IP段使用历程记录接口
 export interface IPSegmentHistory {
   id: string; // 历程记录ID
@@ -45,6 +51,8 @@ export interface IPSegment {
   multiPurchaseMarked?: boolean;
   /** 早于当前 purchaseDate 的历次购买日（YYYY-MM-DD），用于列表悬浮提示，不参与自动续费日推算 */
   previousPurchaseDates?: string[];
+  /** 历史购买记录（日期 + 当时月费），优先于 previousPurchaseDates 使用 */
+  previousPurchaseRecords?: PreviousPurchaseRecord[];
   /** 数据来源标记：'ipxo_api' 表示由 IPXO API 同步写入，未设置表示手动录入 */
   syncSource?: 'ipxo_api' | 'manual';
   /** IPXO API 同步时对应的 market_service UUID，用于后续增量同步比对 */

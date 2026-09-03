@@ -36,7 +36,7 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
-import { IPSegment, IPSegmentHistory, ServerLocation, ProjectGroup, Supplier, BlockedCountry, BLOCKED_COUNTRY_OPTIONS, RenewalStatus, RENEWAL_STATUS_OPTIONS, RENEWAL_STATUS_DISPLAY, UsageAreaOption, DEFAULT_USAGE_AREA_OPTIONS, PRESET_COLORS } from '../types';
+import { IPSegment, IPSegmentHistory, PreviousPurchaseRecord, ServerLocation, ProjectGroup, Supplier, BlockedCountry, BLOCKED_COUNTRY_OPTIONS, RenewalStatus, RENEWAL_STATUS_OPTIONS, RENEWAL_STATUS_DISPLAY, UsageAreaOption, DEFAULT_USAGE_AREA_OPTIONS, PRESET_COLORS } from '../types';
 import { ipSegmentStorage, projectGroupStorage, supplierStorage, usageAreaStorage, asnStorage, asnGroupStorage } from '../utils/storage';
 import { buildUsageAreaMasters, resolveMasterLabel, usageAreaMatchKey } from '../utils/displayNames';
 import { normalizeBatchImportFields } from '../utils/batchImportNormalize';
@@ -105,17 +105,31 @@ function getColorForUnknownUsageArea(areaName: string): string {
 
 /** 购买时间列：悬浮展示历史购买日（多次购买） */
 function purchaseDateTooltipTitle(segment: IPSegment, displayDate: string): React.ReactNode {
-  const prev = [...(segment.previousPurchaseDates || [])]
-    .filter(Boolean)
-    .sort((a, b) => dayjs(a).valueOf() - dayjs(b).valueOf());
+  // 合并 previousPurchaseRecords 和 previousPurchaseDates，以 records 为准
+  const recordsMap = new Map<string, number | undefined>();
+  (segment.previousPurchaseRecords || []).forEach(r => {
+    if (r.date) recordsMap.set(r.date, r.fee);
+  });
+  (segment.previousPurchaseDates || []).forEach(d => {
+    if (d && !recordsMap.has(d)) recordsMap.set(d, undefined);
+  });
+  const prev = [...recordsMap.entries()]
+    .filter(([d]) => Boolean(d))
+    .sort(([a], [b]) => dayjs(a).valueOf() - dayjs(b).valueOf());
+
   if (prev.length > 0) {
     return (
-      <div style={{ maxWidth: 300 }}>
+      <div style={{ maxWidth: 320 }}>
         <div>当前（最近）购买：{displayDate}</div>
         <div style={{ marginTop: 8 }}>此前购买：</div>
         <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
-          {prev.map((p) => (
-            <li key={p}>{p}</li>
+          {prev.map(([d, fee]) => (
+            <li key={d}>
+              {d}
+              {fee !== undefined
+                ? <span style={{ color: '#faad14', marginLeft: 8 }}>${fee}/月</span>
+                : null}
+            </li>
           ))}
         </ul>
       </div>
@@ -202,13 +216,21 @@ function normalizeSegmentHistoryAndRepurchaseSegment(
   const renewalStatus: RenewalStatus =
     segment.renewalStatus === 'cancelled' ? 'not_renewed' : segment.renewalStatus;
 
-  // 从历程 startDate 中收集曾经的购买日（早于当前 purchaseDate 的），补入 previousPurchaseDates
+  // 从历程 startDate 中收集曾经的购买日（早于当前 purchaseDate 的），补入 previousPurchaseDates / previousPurchaseRecords
   const newPurchaseDate = segment.purchaseDate || '';
   const existingPrev = segment.previousPurchaseDates || [];
+  const existingRecords = segment.previousPurchaseRecords || [];
+  const existingRecordDates = new Set(existingRecords.map(r => r.date));
   const historicalStarts = sorted
     .map(h => h.startDate)
     .filter(d => d && d < newPurchaseDate && !existingPrev.includes(d));
   const updatedPrev = [...new Set([...existingPrev, ...historicalStarts])].sort();
+  // 为新增的历史日期补充记录（费用未知，留空）
+  const newRecords: PreviousPurchaseRecord[] = historicalStarts
+    .filter(d => !existingRecordDates.has(d))
+    .map(d => ({ date: d }));
+  const updatedRecords = [...existingRecords, ...newRecords]
+    .sort((a, b) => dayjs(a.date).valueOf() - dayjs(b.date).valueOf());
 
   // 若当前周期尚无对应的开放历程条目，自动新增
   const projectGroup = sorted[sorted.length - 1]?.projectGroup
@@ -235,6 +257,7 @@ function normalizeSegmentHistoryAndRepurchaseSegment(
       renewalStatus,
       multiPurchaseMarked: true,
       previousPurchaseDates: updatedPrev.length > 0 ? updatedPrev : undefined,
+      previousPurchaseRecords: updatedRecords.length > 0 ? updatedRecords : undefined,
       history: updatedHistory,
       updatedAt: new Date().toISOString(),
     },
@@ -1266,10 +1289,19 @@ const IPManagement: React.FC = () => {
       renewalDate: dayjs(record.renewalDate),
       cancellationDate: record.cancellationDate ? dayjs(record.cancellationDate) : null,
       multiPurchaseMarked: !!record.multiPurchaseMarked,
-      previousPurchaseDates: (record.previousPurchaseDates || [])
-        .filter(Boolean)
-        .map((d) => dayjs(d))
-        .filter((d) => d.isValid()),
+      previousPurchaseDates: (() => {
+        const recs = record.previousPurchaseRecords;
+        if (recs && recs.length > 0) {
+          return recs
+            .filter(r => r.date)
+            .map(r => ({ date: dayjs(r.date), fee: r.fee }))
+            .filter(r => r.date.isValid());
+        }
+        return (record.previousPurchaseDates || [])
+          .filter(Boolean)
+          .map(d => ({ date: dayjs(d), fee: undefined }))
+          .filter(r => r.date.isValid());
+      })(),
       serverLocations: (record.serverLocations || []).map(l => l.region).filter(Boolean),
       availableCountries: (record.detectedCountries || []).filter(
         c => !blockedSet.has(c) && !rateLimitedSet.has(c)
@@ -1909,19 +1941,32 @@ const IPManagement: React.FC = () => {
       const detectedCountries = [...new Set([...blockedCountries, ...rateLimitedCountries, ...availableCountries])];
 
       const purchaseStr = values.purchaseDate?.isValid() ? values.purchaseDate.format('YYYY-MM-DD') : '';
-      const rawPrevList = (values.previousPurchaseDates || []) as unknown[];
-      const previousPurchaseDatesSorted = Array.from(
-        new Set(
-          rawPrevList
-            .map((d) => (d && dayjs.isDayjs(d) && d.isValid() ? d.format('YYYY-MM-DD') : ''))
-            .filter((s) => {
-              if (!s) return false;
-              if (s === purchaseStr) return false;
-              if (purchaseStr && !dayjs(s).isBefore(dayjs(purchaseStr), 'day')) return false;
-              return true;
-            })
-        )
-      ).sort((a, b) => dayjs(a).valueOf() - dayjs(b).valueOf());
+      const rawPrevList = (values.previousPurchaseDates || []) as { date?: unknown; fee?: unknown }[];
+      // 解析每条历史记录的日期和费用
+      const parsedPrevRecords = rawPrevList
+        .map((item) => {
+          const d = item?.date;
+          const dateStr = d && dayjs.isDayjs(d) && (d as dayjs.Dayjs).isValid() ? (d as dayjs.Dayjs).format('YYYY-MM-DD') : '';
+          const feeVal = typeof item?.fee === 'number' && !isNaN(item.fee) && item.fee >= 0 ? item.fee : undefined;
+          return { date: dateStr, fee: feeVal };
+        })
+        .filter(r => {
+          if (!r.date) return false;
+          if (r.date === purchaseStr) return false;
+          if (purchaseStr && !dayjs(r.date).isBefore(dayjs(purchaseStr), 'day')) return false;
+          return true;
+        });
+      // 去重（同日期保留最后一条，有费用优先）
+      const prevRecordsMap = new Map<string, number | undefined>();
+      parsedPrevRecords.forEach(r => {
+        if (!prevRecordsMap.has(r.date) || r.fee !== undefined) {
+          prevRecordsMap.set(r.date, r.fee);
+        }
+      });
+      const previousPurchaseRecordsSorted: PreviousPurchaseRecord[] = [...prevRecordsMap.entries()]
+        .sort(([a], [b]) => dayjs(a).valueOf() - dayjs(b).valueOf())
+        .map(([date, fee]) => fee !== undefined ? { date, fee } : { date });
+      const previousPurchaseDatesSorted = previousPurchaseRecordsSorted.map(r => r.date);
       
       let segmentData: IPSegment = {
         id: editingSegment?.id || `ip-${Date.now()}`,
@@ -1943,6 +1988,7 @@ const IPManagement: React.FC = () => {
         history: finalHistory.length > 0 ? finalHistory : undefined,
         multiPurchaseMarked: !!values.multiPurchaseMarked,
         previousPurchaseDates: previousPurchaseDatesSorted.length > 0 ? previousPurchaseDatesSorted : undefined,
+        previousPurchaseRecords: previousPurchaseRecordsSorted.length > 0 ? previousPurchaseRecordsSorted : undefined,
         additionalAsns: editingSegment?.additionalAsns,
         createdAt: editingSegment?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -2777,6 +2823,21 @@ const IPManagement: React.FC = () => {
             // 购买时间总是更新（因为它是必填项）
             updateData.purchaseDate = validPurchaseDate;
             updateData.renewalDate = renewalDate;
+            // 如果新购买日期比现有的晚（重复购买），归档旧记录到 previousPurchaseRecords
+            const oldPurchaseDate = existingData.purchaseDate;
+            if (oldPurchaseDate && validPurchaseDate && validPurchaseDate > oldPurchaseDate) {
+              const existingRecs: PreviousPurchaseRecord[] = existingData.previousPurchaseRecords || [];
+              const existingDates: string[] = existingData.previousPurchaseDates || [];
+              if (!existingRecs.some(r => r.date === oldPurchaseDate)) {
+                const archivedRec: PreviousPurchaseRecord = existingData.monthlyPrice !== undefined
+                  ? { date: oldPurchaseDate, fee: existingData.monthlyPrice }
+                  : { date: oldPurchaseDate };
+                updateData.previousPurchaseRecords = [...existingRecs, archivedRec]
+                  .sort((a, b) => dayjs(a.date).valueOf() - dayjs(b.date).valueOf());
+                updateData.previousPurchaseDates = [...new Set([...existingDates, oldPurchaseDate])].sort();
+                updateData.multiPurchaseMarked = true;
+              }
+            }
             if (hasValue(item.cancellationDate)) {
               updateData.cancellationDate = String(item.cancellationDate).trim();
             }
@@ -4064,19 +4125,28 @@ const IPManagement: React.FC = () => {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item label="历史购买日期" tooltip="须早于上方「购买时间」。每条一行，保存为 YYYY-MM-DD。">
+              <Form.Item label="历史购买日期" tooltip="须早于上方「购买时间」。日期 + 当时月费（可选）。">
                 <Form.List name="previousPurchaseDates">
                   {(fields, { add, remove }) => (
                     <div>
-                      {fields.map(({ key, name, ...rest }) => (
+                      {fields.map(({ key, name }) => (
                         <Space key={key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
-                          <Form.Item {...rest} name={name} style={{ marginBottom: 0 }}>
-                            <DatePicker format="YYYY-MM-DD" style={{ width: 200 }} placeholder="历史购买日" />
+                          <Form.Item name={[name, 'date']} style={{ marginBottom: 0 }}>
+                            <DatePicker format="YYYY-MM-DD" style={{ width: 140 }} placeholder="历史购买日" />
+                          </Form.Item>
+                          <Form.Item name={[name, 'fee']} style={{ marginBottom: 0 }}>
+                            <InputNumber<number>
+                              style={{ width: 110 }}
+                              min={0}
+                              precision={2}
+                              placeholder="当时费用"
+                              addonBefore="$"
+                            />
                           </Form.Item>
                           <MinusCircleOutlined onClick={() => remove(name)} />
                         </Space>
                       ))}
-                      <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
+                      <Button type="dashed" onClick={() => add({ date: undefined, fee: undefined })} block icon={<PlusOutlined />}>
                         添加历史购买日期
                       </Button>
                     </div>
