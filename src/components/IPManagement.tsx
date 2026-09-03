@@ -4130,21 +4130,21 @@ const IPManagement: React.FC = () => {
                   {(fields, { add, remove }) => (
                     <div>
                       {fields.map(({ key, name }) => (
-                        <Space key={key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
-                          <Form.Item name={[name, 'date']} style={{ marginBottom: 0 }}>
+                        <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <Form.Item name={[name, 'date']} style={{ marginBottom: 0, flex: '0 0 auto' }}>
                             <DatePicker format="YYYY-MM-DD" style={{ width: 140 }} placeholder="历史购买日" />
                           </Form.Item>
-                          <Form.Item name={[name, 'fee']} style={{ marginBottom: 0 }}>
+                          <Form.Item name={[name, 'fee']} style={{ marginBottom: 0, flex: '1 1 auto' }}>
                             <InputNumber<number>
-                              style={{ width: 110 }}
+                              style={{ width: '100%' }}
                               min={0}
                               precision={2}
                               placeholder="当时费用"
                               addonBefore="$"
                             />
                           </Form.Item>
-                          <MinusCircleOutlined onClick={() => remove(name)} />
-                        </Space>
+                          <MinusCircleOutlined style={{ flexShrink: 0 }} onClick={() => remove(name)} />
+                        </div>
                       ))}
                       <Button type="dashed" onClick={() => add({ date: undefined, fee: undefined })} block icon={<PlusOutlined />}>
                         添加历史购买日期
