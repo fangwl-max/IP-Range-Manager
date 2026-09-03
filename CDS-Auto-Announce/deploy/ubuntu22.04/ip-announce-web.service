@@ -10,7 +10,7 @@ WorkingDirectory=/home/ubuntu/IP段自动宣告-20260602
 Environment=IP_ANNOUNCE_CONFIG=/home/ubuntu/IP段自动宣告-20260602/config.yaml
 Environment=IP_ANNOUNCE_HOST=0.0.0.0
 Environment=IP_ANNOUNCE_PORT=9010
-ExecStart=/home/ubuntu/IP段自动宣告-20260602/.venv/bin/gunicorn -w 2 -b 0.0.0.0:9010 --timeout 900 --graceful-timeout 30 --chdir /home/ubuntu/IP段自动宣告-20260602 wsgi:app
+ExecStart=/home/ubuntu/IP段自动宣告-20260602/.venv/bin/gunicorn -w 2 -b 0.0.0.0:9010 --timeout 7200 --graceful-timeout 30 --chdir /home/ubuntu/IP段自动宣告-20260602 wsgi:app
 Restart=on-failure
 RestartSec=5
 

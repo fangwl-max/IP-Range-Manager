@@ -3,7 +3,7 @@
 功能：
 - 任务队列：多人下发的任务自动排队，按顺序串行执行
 - 取消：任意用户可发起取消，当前任务在下一个"检查点"感知并提前终止
-- 超时自动解锁：任务超过 MAX_TASK_SECONDS 未结束，看门狗自动将其标记为 cancelled
+- 超时自动解锁：任务超时（按 item 数动态计算），看门狗自动将其标记为 cancelled
   并让队列继续推进，防止卡死
 """
 from __future__ import annotations
@@ -14,8 +14,10 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-# 单个任务最长允许运行时间（秒）；超时后看门狗自动取消并解锁队列
-MAX_TASK_SECONDS = 900  # 15 分钟，与 gunicorn timeout 一致
+# 看门狗超时：按 item 数量动态计算（见 _watchdog_loop）
+# 每个 item 最多允许 10 分钟（AddPublicIp + wait_for_async_task 300s + vdc_wait 120s + 余量）
+PER_ITEM_SECONDS = 600   # 每 item 预算
+MIN_TASK_SECONDS = 1800  # 最低保底 30 分钟（兼容单 item 或 item 数很少的情况）
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +262,10 @@ class PurchaseTaskManager:
                 cur = self._current
             if cur and cur.started_at and cur.status == "running":
                 elapsed = time.time() - cur.started_at
-                if elapsed > MAX_TASK_SECONDS:
+                max_seconds = max(MIN_TASK_SECONDS, len(cur.items) * PER_ITEM_SECONDS)
+                if elapsed > max_seconds:
                     cur.cancel()
-                    cur.current_hint = f"任务超时（>{MAX_TASK_SECONDS}s），已自动取消"
+                    cur.current_hint = f"任务超时（>{max_seconds}s），已自动取消"
 
 
 # ---------------------------------------------------------------------------
