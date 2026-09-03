@@ -14,10 +14,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-# 看门狗超时：按 item 数量动态计算（见 _watchdog_loop）
-# 每个 item 最多允许 10 分钟（AddPublicIp + wait_for_async_task 300s + vdc_wait 120s + 余量）
-PER_ITEM_SECONDS = 600   # 每 item 预算
-MIN_TASK_SECONDS = 1800  # 最低保底 30 分钟（兼容单 item 或 item 数很少的情况）
+# 看门狗：单个 item 无响应超时（超过此时长未收到任何进度事件，认为卡死）
+STALL_SECONDS = 600  # 10 分钟（AddPublicIp + wait_for_async_task 300s + vdc_wait 120s + 余量）
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +44,7 @@ class PurchaseTask:
         self.status: str = "queued"   # queued | running | done | cancelled | error
         self.started_at: float = 0.0
         self.finished_at: float = 0.0
+        self.last_event_at: float = 0.0  # 最后一次收到进度事件的时间
         self.total: int = len(items)
         self.success_count: int = 0
         self.dry_run: bool = False
@@ -261,11 +260,11 @@ class PurchaseTaskManager:
             with self._lock:
                 cur = self._current
             if cur and cur.started_at and cur.status == "running":
-                elapsed = time.time() - cur.started_at
-                max_seconds = max(MIN_TASK_SECONDS, len(cur.items) * PER_ITEM_SECONDS)
-                if elapsed > max_seconds:
+                last = cur.last_event_at or cur.started_at
+                stall = time.time() - last
+                if stall > STALL_SECONDS:
                     cur.cancel()
-                    cur.current_hint = f"任务超时（>{max_seconds}s），已自动取消"
+                    cur.current_hint = f"任务卡死（>{STALL_SECONDS}s 无进度），已自动取消"
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +273,7 @@ class PurchaseTaskManager:
 
 def _apply_event_to_task(task: PurchaseTask, ev: Dict[str, Any]) -> None:
     """将单条 NDJSON 事件解析并更新 PurchaseTask 状态。"""
+    task.last_event_at = time.time()
     t = ev.get("type", "")
 
     if t == "batch_start":
