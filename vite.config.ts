@@ -1024,7 +1024,29 @@ async function refreshIpxoCache(): Promise<{ servicesCount: number; invoicesCoun
     page++;
   } while (page <= lastPage);
 
-  // 2. 全量拉取发票
+  // 2. 批量拉取每条服务的 start_date（详情接口才有），并发度 10
+  {
+    const CONCURRENCY = 10;
+    for (let i = 0; i < allServices.length; i += CONCURRENCY) {
+      await Promise.all(
+        allServices.slice(i, i + CONCURRENCY).map(async (svc: any) => {
+          const bsUuid = svc.billing_service?.uuid;
+          if (!bsUuid) return;
+          try {
+            const detail = await callIpxoApi(
+              `/billing/v1/{tenant_uuid}/market/ipv4/services/${bsUuid}`
+            );
+            const startDate = detail.body?.billing_service?.start_date;
+            if (detail.status === 200 && startDate) {
+              svc.billing_service.start_date = startDate;
+            }
+          } catch { /* 单条失败不中断整体 */ }
+        })
+      );
+    }
+  }
+
+  // 3. 全量拉取发票
   const allInvoices: any[] = [];
   let invPage = 1;
   let invLastPage = 1;
@@ -1040,7 +1062,7 @@ async function refreshIpxoCache(): Promise<{ servicesCount: number; invoicesCoun
     invPage++;
   } while (invPage <= invLastPage);
 
-  // 3. 计算近期续费（7天内）
+  // 4. 计算近期续费（7天内）
   const nowSec = Math.floor(Date.now() / 1000);
   const endSec = nowSec + 7 * 86400;
   const upcoming = allServices
@@ -1052,7 +1074,7 @@ async function refreshIpxoCache(): Promise<{ servicesCount: number; invoicesCoun
       (a.billing_service?.next_due_date ?? 0) - (b.billing_service?.next_due_date ?? 0)
     );
 
-  // 4. 写入缓存
+  // 5. 写入缓存
   const nowIso = new Date().toISOString();
   const cache: IpxoCache = {
     cachedAt: nowIso,
@@ -1107,9 +1129,10 @@ async function refreshIpxoInvoices(): Promise<{ invoicesCount: number }> {
 }
 
 /**
- * 从 IPXO 服务记录中提取 ASN、购买日期（近似）、续费日期
+ * 从 IPXO 服务记录中提取 ASN、购买日期、续费日期
  * - primaryAsn / additionalAsns：来自 loa[].asn（active，按 created_at 升序，最早为主）
- * - purchaseDate：最早 LOA 的 created_at 转日期（IPXO 无独立购买日字段，以此近似）
+ * - purchaseDate：优先用 billing_service.start_date（刷新缓存时从详情接口获取），
+ *                 无则回退到最早 LOA 的 created_at（ASN 授权时间，误差数小时）
  * - renewalDate：billing_service.next_due_date
  */
 function extractIpxoServiceMeta(svc: any): {
@@ -1125,9 +1148,14 @@ function extractIpxoServiceMeta(svc: any): {
 
   const primaryAsn = activeLoas.length > 0 ? String(activeLoas[0].asn) : '';
   const additionalAsns = activeLoas.slice(1).map((l: any) => String(l.asn));
-  const purchaseDate = activeLoas.length > 0
-    ? new Date((activeLoas[0].created_at as number) * 1000).toISOString().slice(0, 10)
-    : '';
+
+  let purchaseDate = '';
+  if (bs.start_date) {
+    purchaseDate = new Date((bs.start_date as number) * 1000).toISOString().slice(0, 10);
+  } else if (activeLoas.length > 0) {
+    purchaseDate = new Date((activeLoas[0].created_at as number) * 1000).toISOString().slice(0, 10);
+  }
+
   const renewalDate = bs.next_due_date
     ? new Date((bs.next_due_date as number) * 1000).toISOString().slice(0, 10)
     : '';
