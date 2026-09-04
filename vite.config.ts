@@ -1070,8 +1070,36 @@ async function refreshIpxoCache(): Promise<{ servicesCount: number; invoicesCoun
   return { servicesCount: allServices.length, invoicesCount: allInvoices.length };
 }
 
+/**
+ * 从 IPXO 服务记录中提取 ASN、购买日期（近似）、续费日期
+ * - primaryAsn / additionalAsns：来自 loa[].asn（active，按 created_at 升序，最早为主）
+ * - purchaseDate：最早 LOA 的 created_at 转日期（IPXO 无独立购买日字段，以此近似）
+ * - renewalDate：billing_service.next_due_date
+ */
+function extractIpxoServiceMeta(svc: any): {
+  primaryAsn: string;
+  additionalAsns: string[];
+  purchaseDate: string;
+  renewalDate: string;
+} {
+  const bs = svc.billing_service || {};
+  const activeLoas: any[] = ((svc.loa as any[]) || [])
+    .filter((l: any) => l.asn && (l.status || '').toLowerCase() === 'active')
+    .sort((a: any, b: any) => (a.created_at || 0) - (b.created_at || 0));
+
+  const primaryAsn = activeLoas.length > 0 ? String(activeLoas[0].asn) : '';
+  const additionalAsns = activeLoas.slice(1).map((l: any) => String(l.asn));
+  const purchaseDate = activeLoas.length > 0
+    ? new Date((activeLoas[0].created_at as number) * 1000).toISOString().slice(0, 10)
+    : '';
+  const renewalDate = bs.next_due_date
+    ? new Date((bs.next_due_date as number) * 1000).toISOString().slice(0, 10)
+    : '';
+  return { primaryAsn, additionalAsns, purchaseDate, renewalDate };
+}
+
 /** 自动同步 IPXO 缓存中的新增/取消 IP 段到本地 ip-data.json */
-async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelledCount: number }> {
+async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelledCount: number; updatedCount: number }> {
   const cache = loadIpxoCache();
   if (!cache?.services?.data?.length) return { addedCount: 0, cancelledCount: 0 };
 
@@ -1109,15 +1137,15 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     const marketUuid = svc.market_service?.uuid || '';
     const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
     if (!existing) {
-      const nextDueDate = bs.next_due_date ? new Date(bs.next_due_date * 1000).toISOString().slice(0, 10) : '';
-      localData.ipSegments.push({
+      const meta = extractIpxoServiceMeta(svc);
+      const newSeg: any = {
         id: `ip-${Date.now()}-${Math.random()}-ipxo`,
         segment: segStr,
         supplier: 'IPXO',
-        asn: '',
+        asn: meta.primaryAsn,
         usageArea: '',
-        purchaseDate: '',
-        renewalDate: nextDueDate,
+        purchaseDate: meta.purchaseDate,
+        renewalDate: meta.renewalDate,
         cancellationDate: '',
         monthlyPrice: bs.recurring_amount ?? 0,
         renewalStatus: 'not_renewed',
@@ -1132,8 +1160,40 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
         ipxoLastSyncAt: nowIso,
         createdAt: nowIso,
         updatedAt: nowIso,
-      });
+      };
+      if (meta.additionalAsns.length > 0) newSeg.additionalAsns = meta.additionalAsns;
+      localData.ipSegments.push(newSeg);
       addedCount++;
+    }
+  }
+
+  // 缓存有、本地有（ipxo_api 来源）→ 更新 ASN / 购买日 / 续费日
+  let updatedCount = 0;
+  for (const svc of cache.services.data) {
+    const bs = svc.billing_service;
+    if (!bs?.address || bs.cidr == null) continue;
+    if ((bs.status || '').toLowerCase() !== 'active') continue;
+    const segStr = `${bs.address}/${bs.cidr}`;
+    const marketUuid = svc.market_service?.uuid || '';
+    const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+    if (!existing) continue;
+    const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
+    if (idx === -1) continue;
+    const seg = localData.ipSegments[idx];
+    const meta = extractIpxoServiceMeta(svc);
+    let changed = false;
+    if (!seg.asn && meta.primaryAsn) { seg.asn = meta.primaryAsn; changed = true; }
+    if (!(seg.additionalAsns?.length) && meta.additionalAsns.length > 0) {
+      seg.additionalAsns = meta.additionalAsns; changed = true;
+    }
+    if (!seg.purchaseDate && meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
+    if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) {
+      seg.renewalDate = meta.renewalDate; changed = true;
+    }
+    if (changed) {
+      seg.ipxoLastSyncAt = nowIso;
+      seg.updatedAt = nowIso;
+      updatedCount++;
     }
   }
 
@@ -1156,12 +1216,12 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     cancelledCount++;
   }
 
-  if (addedCount > 0 || cancelledCount > 0) {
+  if (addedCount > 0 || cancelledCount > 0 || updatedCount > 0) {
     localData.exportTime = nowIso;
     fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
   }
 
-  return { addedCount, cancelledCount };
+  return { addedCount, cancelledCount, updatedCount };
 }
 
 /**
@@ -1666,10 +1726,10 @@ function startIpxoCacheRefreshScheduler(): void {
       // 自动同步新增 IP 段
       try {
         const syncResult = await autoSyncLeasedFromCache();
-        if (syncResult.addedCount > 0 || syncResult.cancelledCount > 0) {
-          console.log(`[IpxoCache] 自动同步完成：新增 ${syncResult.addedCount} 条，取消 ${syncResult.cancelledCount} 条`);
+        if (syncResult.addedCount > 0 || syncResult.cancelledCount > 0 || syncResult.updatedCount > 0) {
+          console.log(`[IpxoCache] 自动同步完成：新增 ${syncResult.addedCount} 条，取消 ${syncResult.cancelledCount} 条，更新 ${syncResult.updatedCount} 条`);
         } else {
-          console.log('[IpxoCache] 自动同步完成：无新增或取消');
+          console.log('[IpxoCache] 自动同步完成：无变化');
         }
       } catch (syncErr: any) {
         console.error('[IpxoCache] 自动同步失败:', syncErr.message);
@@ -5593,16 +5653,20 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         // POST：执行同步
         let addedCount = 0;
         let cancelledCount = 0;
+        let updatedCount = 0;
 
         for (const item of toAdd) {
+          const meta = extractIpxoServiceMeta({ loa: item.loa, billing_service: { next_due_date: null } });
+          // renewalDate 用 item.nextDueDate（toAdd 阶段已转换）
+          const renewalDate = item.nextDueDate || meta.renewalDate;
           const newSeg: any = {
             id: `ip-${Date.now()}-${Math.random()}-ipxo`,
             segment: item.segment,
             supplier: 'IPXO',
-            asn: '',
+            asn: meta.primaryAsn,
             usageArea: '',
-            purchaseDate: '',
-            renewalDate: item.nextDueDate || '',
+            purchaseDate: meta.purchaseDate,
+            renewalDate,
             cancellationDate: '',
             monthlyPrice: item.monthlyPrice,
             renewalStatus: 'not_renewed',
@@ -5618,6 +5682,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             createdAt: nowIso,
             updatedAt: nowIso,
           };
+          if (meta.additionalAsns.length > 0) newSeg.additionalAsns = meta.additionalAsns;
           localData.ipSegments.push(newSeg);
           addedCount++;
         }
@@ -5634,6 +5699,31 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           cancelledCount++;
         }
 
+        // 已有记录 → 更新 ASN / 购买日 / 续费日
+        for (const svc of cache.services.data) {
+          const bs = svc.billing_service;
+          if (!bs?.address || bs.cidr == null) continue;
+          if ((bs.status || '').toLowerCase() !== 'active') continue;
+          const segStr = `${bs.address}/${bs.cidr}`;
+          const marketUuid = svc.market_service?.uuid || '';
+          const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+          if (!existing) continue;
+          const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
+          if (idx === -1) continue;
+          const seg = localData.ipSegments[idx];
+          const meta = extractIpxoServiceMeta(svc);
+          let changed = false;
+          if (!seg.asn && meta.primaryAsn) { seg.asn = meta.primaryAsn; changed = true; }
+          if (!(seg.additionalAsns?.length) && meta.additionalAsns.length > 0) {
+            seg.additionalAsns = meta.additionalAsns; changed = true;
+          }
+          if (!seg.purchaseDate && meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
+          if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) {
+            seg.renewalDate = meta.renewalDate; changed = true;
+          }
+          if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
+        }
+
         localData.exportTime = nowIso;
         fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
 
@@ -5643,7 +5733,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           preview: false,
           addedCount,
           cancelledCount,
-          message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条`,
+          updatedCount,
+          message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条，更新 ${updatedCount} 条`,
         }));
       } catch (e: any) {
         res.statusCode = 500;
@@ -5800,14 +5891,16 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         if (syncMode !== 'status_only') {
         for (const item of toAdd) {
           const newId = `ip-${Date.now()}-${Math.random()}-ipxo`;
+          const meta = extractIpxoServiceMeta({ loa: item.loa, billing_service: { next_due_date: null } });
+          const renewalDate = item.nextDueDate || meta.renewalDate;
           const newSeg: any = {
             id: newId,
             segment: item.segment,
             supplier: 'IPXO',
-            asn: '',
+            asn: meta.primaryAsn,
             usageArea: '',
-            purchaseDate: '',
-            renewalDate: item.nextDueDate || '',
+            purchaseDate: meta.purchaseDate,
+            renewalDate,
             cancellationDate: '',
             monthlyPrice: item.monthlyPrice,
             renewalStatus: 'not_renewed',
@@ -5823,6 +5916,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             createdAt: nowIso,
             updatedAt: nowIso,
           };
+          if (meta.additionalAsns.length > 0) newSeg.additionalAsns = meta.additionalAsns;
           localData.ipSegments.push(newSeg);
           addedCount++;
         }
@@ -5986,16 +6080,19 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
         let addedCount = 0;
         let cancelledCount = 0;
+        let updatedCount = 0;
 
         for (const item of toAdd) {
+          const meta = extractIpxoServiceMeta({ loa: item.loa, billing_service: { next_due_date: null } });
+          const renewalDate = item.nextDueDate || meta.renewalDate;
           const newSeg: any = {
             id: `ip-${Date.now()}-${Math.random()}-ipxo`,
             segment: item.segment,
             supplier: 'IPXO',
-            asn: '',
+            asn: meta.primaryAsn,
             usageArea: '',
-            purchaseDate: '',
-            renewalDate: item.nextDueDate || '',
+            purchaseDate: meta.purchaseDate,
+            renewalDate,
             cancellationDate: '',
             monthlyPrice: item.monthlyPrice,
             renewalStatus: 'not_renewed',
@@ -6011,6 +6108,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             createdAt: nowIso,
             updatedAt: nowIso,
           };
+          if (meta.additionalAsns.length > 0) newSeg.additionalAsns = meta.additionalAsns;
           localData.ipSegments.push(newSeg);
           addedCount++;
         }
@@ -6027,6 +6125,31 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           cancelledCount++;
         }
 
+        // 已有记录 → 更新 ASN / 购买日 / 续费日
+        for (const svc of cache.services.data) {
+          const bs = svc.billing_service;
+          if (!bs?.address || bs.cidr == null) continue;
+          if ((bs.status || '').toLowerCase() !== 'active') continue;
+          const segStr = `${bs.address}/${bs.cidr}`;
+          const marketUuid = svc.market_service?.uuid || '';
+          const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+          if (!existing) continue;
+          const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
+          if (idx === -1) continue;
+          const seg = localData.ipSegments[idx];
+          const meta = extractIpxoServiceMeta(svc);
+          let changed = false;
+          if (!seg.asn && meta.primaryAsn) { seg.asn = meta.primaryAsn; changed = true; }
+          if (!(seg.additionalAsns?.length) && meta.additionalAsns.length > 0) {
+            seg.additionalAsns = meta.additionalAsns; changed = true;
+          }
+          if (!seg.purchaseDate && meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
+          if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) {
+            seg.renewalDate = meta.renewalDate; changed = true;
+          }
+          if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
+        }
+
         localData.exportTime = nowIso;
         fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
 
@@ -6036,7 +6159,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           preview: false,
           addedCount,
           cancelledCount,
-          message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条`,
+          updatedCount,
+          message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条，更新 ${updatedCount} 条`,
         }));
       } catch (e: any) {
         res.statusCode = 500;
