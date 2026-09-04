@@ -1071,6 +1071,42 @@ async function refreshIpxoCache(): Promise<{ servicesCount: number; invoicesCoun
 }
 
 /**
+ * 仅拉取全量发票并写入缓存，不触及 services/upcoming
+ */
+async function refreshIpxoInvoices(): Promise<{ invoicesCount: number }> {
+  const config = loadIpxoConfig();
+  if (!config) throw new Error('IPXO 配置未设置');
+
+  const allInvoices: any[] = [];
+  let page = 1;
+  let lastPage = 1;
+  do {
+    const result = await callIpxoApi(
+      `/billing/v1/{tenant_uuid}/invoices?page=${page}&per_page=100`
+    );
+    if (result.status !== 200) throw new Error(`获取发票失败 page ${page}: HTTP ${result.status}`);
+    const body = result.body;
+    const items: any[] = body?.data ?? [];
+    lastPage = body?.meta?.last_page ?? 1;
+    allInvoices.push(...items);
+    page++;
+  } while (page <= lastPage);
+
+  const cache = loadIpxoCache() ?? {
+    cachedAt: new Date().toISOString(),
+    services: { data: [], meta: {} },
+    invoices: { data: [], meta: {} },
+    upcoming: [],
+  };
+  cache.invoices = {
+    data: allInvoices,
+    meta: { total: allInvoices.length, last_page: 1, per_page: allInvoices.length, current_page: 1 },
+  };
+  saveIpxoCache(cache);
+  return { invoicesCount: allInvoices.length };
+}
+
+/**
  * 从 IPXO 服务记录中提取 ASN、购买日期（近似）、续费日期
  * - primaryAsn / additionalAsns：来自 loa[].asn（active，按 created_at 升序，最早为主）
  * - purchaseDate：最早 LOA 的 created_at 转日期（IPXO 无独立购买日字段，以此近似）
@@ -4544,19 +4580,40 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
     });
 
-    // IPXO 账单发票列表（优先读缓存）
+    // IPXO 账单发票列表（GET 优先读缓存；POST 全量同步发票并更新缓存）
     server.middlewares.use('/api/ipxo/invoices', async (req, res, _next) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       res.setHeader('Content-Type', 'application/json');
       if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+
+      const config = loadIpxoConfig();
+      if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
+
+      // POST：全量同步发票
+      if (req.method === 'POST') {
+        try {
+          const { invoicesCount } = await refreshIpxoInvoices();
+          const cache = loadIpxoCache();
+          res.statusCode = 200;
+          res.end(JSON.stringify({
+            success: true,
+            invoicesCount,
+            cachedAt: cache?.cachedAt,
+            message: `同步完成，共 ${invoicesCount} 条发票`,
+          }));
+        } catch (e: any) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ success: false, message: e.message }));
+        }
+        return;
+      }
+
+      // GET：从缓存读取（6小时内有效）
       try {
-        const config = loadIpxoConfig();
-        if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
         const reqUrl = new URL(req.url || '/', 'http://localhost');
         const forceRefresh = reqUrl.searchParams.get('refresh') === '1';
-        // 检查缓存（6小时有效）
         const cache = loadIpxoCache();
         const cacheValid = cache && !forceRefresh && (Date.now() - new Date(cache.cachedAt).getTime()) < 6 * 3600 * 1000;
         if (cacheValid && cache.invoices) {

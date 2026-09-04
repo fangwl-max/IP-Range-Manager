@@ -141,11 +141,35 @@ const IPXOBilling: React.FC = () => {
   // 行内设置状态中
   const [inlineSaving, setInlineSaving] = useState(false);
 
+  // 发票同步
+  const [invoiceSyncing, setInvoiceSyncing] = useState(false);
+
   // 缓存状态
   const [cacheStatus, setCacheStatus] = useState<any>(null);
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
 
   const [activeTab, setActiveTab] = useState('upcoming');
+
+  // 同步发票（全量从 IPXO API 拉取，约数秒）
+  const handleInvoiceSync = async () => {
+    setInvoiceSyncing(true);
+    message.loading({ content: '正在从 IPXO 同步发票数据...', key: 'invoice-sync', duration: 120 });
+    try {
+      const res = await fetch('/api/ipxo/invoices', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        message.success({ content: json.message, key: 'invoice-sync', duration: 4 });
+        loadCacheStatus();
+        loadInvoices();
+      } else {
+        message.error({ content: '同步失败: ' + (json.message || '未知错误'), key: 'invoice-sync', duration: 4 });
+      }
+    } catch (e: any) {
+      message.error({ content: '同步失败: ' + e.message, key: 'invoice-sync', duration: 4 });
+    } finally {
+      setInvoiceSyncing(false);
+    }
+  };
 
   // 加载发票
   const loadInvoices = useCallback(async () => {
@@ -1452,14 +1476,33 @@ const IPXOBilling: React.FC = () => {
                 </Space>
               ),
               children: (
-                <Table
-                  loading={invoicesLoading}
-                  dataSource={invoices}
-                  columns={invoiceColumns}
-                  rowKey={(r, i) => r.uuid || r.id || r.invoice_number || `inv-${i}`}
-                  size="small"
-                  pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-                />
+                <>
+                  <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <Button
+                      icon={<ReloadOutlined />}
+                      loading={invoicesLoading}
+                      onClick={loadInvoices}
+                    >
+                      刷新
+                    </Button>
+                    <Button
+                      type="primary"
+                      icon={<SyncOutlined />}
+                      loading={invoiceSyncing}
+                      onClick={handleInvoiceSync}
+                    >
+                      同步发票
+                    </Button>
+                  </div>
+                  <Table
+                    loading={invoicesLoading}
+                    dataSource={invoices}
+                    columns={invoiceColumns}
+                    rowKey={(r, i) => r.uuid || r.id || r.invoice_number || `inv-${i}`}
+                    size="small"
+                    pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+                  />
+                </>
               ),
             },
           ]}
