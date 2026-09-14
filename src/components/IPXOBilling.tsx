@@ -75,6 +75,25 @@ interface IPXOBillingProps {
   tab?: 'upcoming' | 'services' | 'invoices';
 }
 
+const SERVICES_CACHE_KEY = 'ipxo-services-cache';
+const INVOICES_CACHE_KEY = 'ipxo-invoices-cache';
+
+function readCache(key: string): { data: any[]; meta: any; cachedAt: string } | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.data && parsed?.cachedAt) return parsed;
+    return null;
+  } catch { return null; }
+}
+
+function writeCache(key: string, data: any[], meta: any) {
+  try {
+    localStorage.setItem(key, JSON.stringify({ data, meta, cachedAt: new Date().toISOString() }));
+  } catch { /* 存储满时静默忽略 */ }
+}
+
 const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   // 发票
   const [invoices, setInvoices] = useState<any[]>([]);
@@ -150,6 +169,8 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   // 缓存状态
   const [cacheStatus, setCacheStatus] = useState<any>(null);
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
+  const [servicesCachedAt, setServicesCachedAt] = useState('');
+  const [invoicesCachedAt, setInvoicesCachedAt] = useState('');
 
   const [activeTab, setActiveTab] = useState(forcedTab ?? 'upcoming');
 
@@ -163,7 +184,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       if (json.success) {
         message.success({ content: json.message, key: 'invoice-sync', duration: 4 });
         loadCacheStatus();
-        loadInvoices();
+        loadInvoices(true);
       } else {
         message.error({ content: '同步失败: ' + (json.message || '未知错误'), key: 'invoice-sync', duration: 4 });
       }
@@ -175,7 +196,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   };
 
   // 加载发票
-  const loadInvoices = useCallback(async () => {
+  const loadInvoices = useCallback(async (saveToCache = false) => {
     setInvoicesLoading(true);
     try {
       const res = await fetch('/api/ipxo/invoices');
@@ -183,8 +204,13 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       if (json.success) {
         const raw = json.data;
         const list = Array.isArray(raw) ? raw : raw?.data ?? raw?.items ?? raw?.invoices ?? [];
+        const meta = { total: raw?.meta?.total ?? list.length };
         setInvoices(list);
-        setInvoicesMeta({ total: raw?.meta?.total ?? list.length });
+        setInvoicesMeta(meta);
+        if (saveToCache) {
+          writeCache(INVOICES_CACHE_KEY, list, meta);
+          setInvoicesCachedAt(new Date().toISOString());
+        }
       } else {
         message.error('获取发票失败: ' + (json.message || '未知错误'));
       }
@@ -196,7 +222,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   }, []);
 
   // 加载活跃服务（全量加载，不分页）
-  const loadServices = useCallback(async (status: string, search?: string, asnFilter?: string, asnValue?: string) => {
+  const loadServices = useCallback(async (status: string, search?: string, asnFilter?: string, asnValue?: string, saveToCache = false) => {
     setServicesLoading(true);
     try {
       const params = new URLSearchParams({ page: '1', per_page: '9999' });
@@ -208,8 +234,14 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       const json = await res.json();
       if (json.success) {
         const raw = json.data;
-        setServices(Array.isArray(raw) ? raw : raw?.data ?? []);
-        if (raw?.meta) setServicesMeta(raw.meta);
+        const list = Array.isArray(raw) ? raw : raw?.data ?? [];
+        const meta = raw?.meta ?? { current_page: 1, last_page: 1, per_page: 9999, total: list.length };
+        setServices(list);
+        setServicesMeta(meta);
+        if (saveToCache) {
+          writeCache(SERVICES_CACHE_KEY, list, meta);
+          setServicesCachedAt(new Date().toISOString());
+        }
       } else {
         message.error('获取服务列表失败: ' + (json.message || '未知错误'));
       }
@@ -239,8 +271,8 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       if (json.success) {
         message.success({ content: json.message, key: 'cache', duration: 4 });
         loadCacheStatus();
-        loadInvoices();
-        loadServices(servicesStatus);
+        loadInvoices(true);
+        loadServices(servicesStatus, '', '', '', true);
         loadUpcoming(upcomingDays);
       } else {
         message.error({ content: '缓存刷新失败: ' + (json.message || '未知错误'), key: 'cache', duration: 4 });
@@ -497,11 +529,32 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   }, []);
 
   useEffect(() => {
-    loadInvoices();
-    loadServices(servicesStatus);
-    loadUpcoming(upcomingDays);
     loadCacheStatus();
-    loadRenewed(renewedDays);
+    if (!forcedTab || forcedTab === 'upcoming') {
+      // 近期续费页：只加载 upcoming/renewed
+      loadUpcoming(upcomingDays);
+      loadRenewed(renewedDays);
+    }
+    if (forcedTab === 'services') {
+      const cached = readCache(SERVICES_CACHE_KEY);
+      if (cached) {
+        setServices(cached.data);
+        setServicesMeta(cached.meta);
+        setServicesCachedAt(cached.cachedAt);
+      } else {
+        loadServices(servicesStatus, '', '', '', true);
+      }
+    }
+    if (forcedTab === 'invoices') {
+      const cached = readCache(INVOICES_CACHE_KEY);
+      if (cached) {
+        setInvoices(cached.data);
+        setInvoicesMeta(cached.meta);
+        setInvoicesCachedAt(cached.cachedAt);
+      } else {
+        loadInvoices(true);
+      }
+    }
   }, []); // eslint-disable-line
 
   const handleStatusChange = (val: string) => {
@@ -1398,7 +1451,28 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                   </Row>
 
                   <div style={{ marginBottom: 12 }}>
-                    <Space wrap>
+                    <Space wrap style={{ width: '100%' }}>
+                      {servicesCachedAt && (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          缓存于 {new Date(servicesCachedAt).toLocaleString('zh-CN')}
+                        </Typography.Text>
+                      )}
+                      <Button
+                        icon={<ReloadOutlined />}
+                        size="small"
+                        loading={servicesLoading}
+                        onClick={() => {
+                          setServicesSearch('');
+                          setServicesAsnFilter('all');
+                          setServicesAsnValue('');
+                          loadServices('active', '', '', '', true);
+                          setServicesStatus('active');
+                        }}
+                      >
+                        刷新数据
+                      </Button>
+                    </Space>
+                    <Space wrap style={{ marginTop: 8 }}>
                       <Input
                         placeholder="搜索IP段，多个用逗号/空格分隔"
                         value={servicesSearch}
@@ -1506,11 +1580,17 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
               ),
               children: (
                 <>
-                  <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {invoicesCachedAt && (
+                      <Typography.Text type="secondary" style={{ fontSize: 12, flex: 1 }}>
+                        缓存于 {new Date(invoicesCachedAt).toLocaleString('zh-CN')}
+                      </Typography.Text>
+                    )}
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
                     <Button
                       icon={<ReloadOutlined />}
                       loading={invoicesLoading}
-                      onClick={loadInvoices}
+                      onClick={() => loadInvoices(true)}
                     >
                       刷新
                     </Button>
@@ -1522,6 +1602,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                     >
                       同步发票
                     </Button>
+                    </div>
                   </div>
                   <Table
                     loading={invoicesLoading}
@@ -1534,7 +1615,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                 </>
               ),
             },
-          ] as any[]).filter(t => forcedTab ? t.key === forcedTab : true)}
+          ] as any[]).filter(t => forcedTab ? t.key === forcedTab : t.key === 'upcoming')}
         />
       </Card>
 
