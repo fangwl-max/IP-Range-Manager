@@ -11,6 +11,7 @@ interface AuthContextType {
   login: (username: string, password: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -104,12 +105,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const hasPermission = useCallback((permission: string) => {
     if (!user) return false;
     if (user.role === 'admin') return true;
-    if (user.permissions) return user.permissions.includes(permission);
+    if (user.permissions) {
+      if (user.permissions.includes(permission)) return true;
+      // 兼容旧数据：若只存了父权限（如 announce-zen），子权限（announce-zen.announce）也视为拥有
+      const dotIdx = permission.lastIndexOf('.');
+      if (dotIdx > 0) {
+        const parent = permission.slice(0, dotIdx);
+        if (user.permissions.includes(parent)) return true;
+      }
+      return false;
+    }
     return ROLE_DEFAULTS[user.role]?.includes(permission) ?? false;
   }, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, hasPermission }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, hasPermission, refreshUser: fetchCurrentUser }}>
       {children}
     </AuthContext.Provider>
   );

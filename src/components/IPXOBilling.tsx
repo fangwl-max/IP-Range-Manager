@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Card,
   Table,
@@ -80,15 +80,14 @@ const IPXOBilling: React.FC = () => {
   // 活跃服务
   const [services, setServices] = useState<any[]>([]);
   const [servicesLoading, setServicesLoading] = useState(false);
-  const [servicesMeta, setServicesMeta] = useState<ServicesMeta>({ current_page: 1, last_page: 1, per_page: 15, total: 0 });
-  const [servicesPage, setServicesPage] = useState(1);
-  const [servicesPageSize, setServicesPageSize] = useState(15);
+  const [servicesMeta, setServicesMeta] = useState<ServicesMeta>({ current_page: 1, last_page: 1, per_page: 9999, total: 0 });
   const [servicesStatus, setServicesStatus] = useState<string>('active');
   // 已租用IP - 搜索 / ASN筛选 / 行选择
   const [servicesSearch, setServicesSearch] = useState('');
   const [servicesAsnFilter, setServicesAsnFilter] = useState<'all' | 'no_asn' | 'specific'>('all');
   const [servicesAsnValue, setServicesAsnValue] = useState('');
   const [servicesSelectedKeys, setServicesSelectedKeys] = useState<string[]>([]);
+  const [servicesTableFilters, setServicesTableFilters] = useState<Record<string, string[]>>({});
   // 设置 ASN 弹窗
   const [setAsnVisible, setSetAsnVisible] = useState(false);
   const [setAsnLoading, setSetAsnLoading] = useState(false);
@@ -192,13 +191,15 @@ const IPXOBilling: React.FC = () => {
     }
   }, []);
 
-  // 加载活跃服务（服务端分页）
-  const loadServices = useCallback(async (page: number, pageSize: number, status: string, search?: string) => {
+  // 加载活跃服务（全量加载，不分页）
+  const loadServices = useCallback(async (status: string, search?: string, asnFilter?: string, asnValue?: string) => {
     setServicesLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(page), per_page: String(pageSize) });
+      const params = new URLSearchParams({ page: '1', per_page: '9999' });
       if (status) params.set('status', status);
       if (search) params.set('search', search);
+      if (asnFilter && asnFilter !== 'all') params.set('asn_filter', asnFilter);
+      if (asnFilter === 'specific' && asnValue) params.set('asn_value', asnValue.replace(/^AS/i, '').trim());
       const res = await fetch(`/api/ipxo/services?${params}`);
       const json = await res.json();
       if (json.success) {
@@ -235,7 +236,7 @@ const IPXOBilling: React.FC = () => {
         message.success({ content: json.message, key: 'cache', duration: 4 });
         loadCacheStatus();
         loadInvoices();
-        loadServices(servicesPage, servicesPageSize, servicesStatus);
+        loadServices(servicesStatus);
         loadUpcoming(upcomingDays);
       } else {
         message.error({ content: '缓存刷新失败: ' + (json.message || '未知错误'), key: 'cache', duration: 4 });
@@ -493,43 +494,34 @@ const IPXOBilling: React.FC = () => {
 
   useEffect(() => {
     loadInvoices();
-    loadServices(servicesPage, servicesPageSize, servicesStatus);
+    loadServices(servicesStatus);
     loadUpcoming(upcomingDays);
     loadCacheStatus();
     loadRenewed(renewedDays);
   }, []); // eslint-disable-line
 
-  const handleServicesTableChange = (pagination: any) => {
-    const newPage = pagination.current;
-    const newSize = pagination.pageSize;
-    setServicesPage(newPage);
-    setServicesPageSize(newSize);
-    loadServices(newPage, newSize, servicesStatus, servicesSearch);
-  };
-
   const handleStatusChange = (val: string) => {
     setServicesStatus(val);
-    setServicesPage(1);
-    loadServices(1, servicesPageSize, val, servicesSearch);
+    loadServices(val, servicesSearch, servicesAsnFilter, servicesAsnValue);
   };
 
   const handleServicesSearch = () => {
-    setServicesPage(1);
-    loadServices(1, servicesPageSize, servicesStatus, servicesSearch);
+    loadServices(servicesStatus, servicesSearch, servicesAsnFilter, servicesAsnValue);
   };
 
-  // ASN 前端过滤
-  const filteredServices = React.useMemo(() => {
-    if (servicesAsnFilter === 'all') return services;
-    if (servicesAsnFilter === 'no_asn') {
-      return services.filter(r => !r.loa || !Array.isArray(r.loa) || r.loa.length === 0);
+  // ASN 过滤已移至服务端；RIR 和续费状态在客户端通过 Table 筛选状态过滤
+  const filteredServices = useMemo(() => {
+    let result = services;
+    const rir = servicesTableFilters['registry'];
+    const renewal = servicesTableFilters['renewalStatus'];
+    if (rir?.length) {
+      result = result.filter(r => rir.includes((r.market_service?.registry || '').toLowerCase()));
     }
-    if (servicesAsnFilter === 'specific' && servicesAsnValue) {
-      const target = servicesAsnValue.replace(/^AS/i, '').trim();
-      return services.filter(r => Array.isArray(r.loa) && r.loa.some((l: any) => String(l.asn) === target));
+    if (renewal?.length) {
+      result = result.filter(r => renewal.includes(r._renewalStatus));
     }
-    return services;
-  }, [services, servicesAsnFilter, servicesAsnValue]);
+    return result;
+  }, [services, servicesTableFilters]);
 
   // 设置 ASN 提交
   const handleSetAsnSubmit = async () => {
@@ -599,7 +591,7 @@ const IPXOBilling: React.FC = () => {
         }
         setCancelVisible(false);
         setServicesSelectedKeys([]);
-        loadServices(servicesPage, servicesPageSize, servicesStatus, servicesSearch);
+        loadServices(servicesStatus, servicesSearch);
       } else {
         message.error(json.message || '取消续费失败');
       }
@@ -670,11 +662,11 @@ const IPXOBilling: React.FC = () => {
     {
       title: 'IP 段',
       key: 'subnet',
-      width: 150,
+      width: 180,
       render: (_: any, r: any) => {
         const bs = r.billing_service || {};
         return bs.address && bs.cidr != null
-          ? <span style={{ fontFamily: 'monospace', fontWeight: 500 }}>{bs.address}/{bs.cidr}</span>
+          ? <span style={{ fontFamily: 'monospace', fontWeight: 500, whiteSpace: 'nowrap' }}>{bs.address}/{bs.cidr}</span>
           : '-';
       },
     },
@@ -692,6 +684,16 @@ const IPXOBilling: React.FC = () => {
       title: 'RIR',
       key: 'registry',
       width: 90,
+      filters: [
+        { text: 'ARIN', value: 'arin' },
+        { text: 'RIPE NCC', value: 'ripencc' },
+        { text: 'APNIC', value: 'apnic' },
+        { text: 'AFRINIC', value: 'afrinic' },
+        { text: 'LACNIC', value: 'lacnic' },
+      ],
+      filteredValue: servicesTableFilters['registry'] || null,
+      onFilter: (value: any, r: any) =>
+        (r.market_service?.registry || '').toLowerCase() === value,
       render: (_: any, r: any) => {
         const reg = r.market_service?.registry;
         if (!reg) return '-';
@@ -720,6 +722,22 @@ const IPXOBilling: React.FC = () => {
       },
       sorter: (a: any, b: any) =>
         (a.billing_service?.next_due_date ?? 0) - (b.billing_service?.next_due_date ?? 0),
+    },
+    {
+      title: '续费状态',
+      key: 'renewalStatus',
+      width: 110,
+      filters: [
+        { text: '未取消', value: 'active' },
+        { text: '到期取消', value: 'cancelled' },
+      ],
+      filteredValue: servicesTableFilters['renewalStatus'] || null,
+      onFilter: (value: any, r: any) => r._renewalStatus === value,
+      render: (_: any, r: any) => {
+        const v = r._renewalStatus;
+        if (v === 'cancelled') return <Tag color="warning">到期取消</Tag>;
+        return <Tag color="success">未取消</Tag>;
+      },
     },
     {
       title: 'LOA',
@@ -789,7 +807,7 @@ const IPXOBilling: React.FC = () => {
             </Button>
             <Button
               icon={<ReloadOutlined />}
-              onClick={() => { loadInvoices(); loadServices(servicesPage, servicesPageSize, servicesStatus); loadUpcoming(upcomingDays); }}
+              onClick={() => { loadInvoices(); loadServices(servicesStatus); loadUpcoming(upcomingDays); }}
               loading={invoicesLoading || servicesLoading || upcomingLoading}
             >
               刷新数据
@@ -1399,7 +1417,11 @@ const IPXOBilling: React.FC = () => {
                       />
                       <Select
                         value={servicesAsnFilter}
-                        onChange={(v) => { setServicesAsnFilter(v); setServicesAsnValue(''); }}
+                        onChange={(v) => {
+                          setServicesAsnFilter(v as 'all' | 'no_asn' | 'specific');
+                          setServicesAsnValue('');
+                          loadServices(servicesStatus, servicesSearch, v, '');
+                        }}
                         style={{ width: 120 }}
                         options={[
                           { label: 'ASN: 全部', value: 'all' },
@@ -1411,7 +1433,11 @@ const IPXOBilling: React.FC = () => {
                         <Input
                           placeholder="输入ASN号"
                           value={servicesAsnValue}
-                          onChange={e => setServicesAsnValue(e.target.value)}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setServicesAsnValue(val);
+                            loadServices(servicesStatus, servicesSearch, 'specific', val);
+                          }}
                           style={{ width: 110 }}
                         />
                       )}
@@ -1454,15 +1480,13 @@ const IPXOBilling: React.FC = () => {
                     }}
                     size="small"
                     scroll={{ x: 1100 }}
-                    pagination={{
-                      current: servicesSearch ? 1 : servicesPage,
-                      pageSize: servicesSearch ? filteredServices.length || 50 : servicesPageSize,
-                      total: servicesSearch ? filteredServices.length : servicesMeta.total,
-                      showSizeChanger: !servicesSearch,
-                      pageSizeOptions: ['15', '30', '50', '100'],
-                      showTotal: (t) => `共 ${t} 条`,
+                    pagination={false}
+                    onChange={(_p, filters) => {
+                      setServicesTableFilters({
+                        registry: (filters['registry'] as string[]) || [],
+                        renewalStatus: (filters['renewalStatus'] as string[]) || [],
+                      });
                     }}
-                    onChange={servicesSearch ? undefined : handleServicesTableChange}
                   />
                 </>
               ),

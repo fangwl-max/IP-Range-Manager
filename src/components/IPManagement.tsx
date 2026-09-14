@@ -1583,6 +1583,7 @@ const IPManagement: React.FC = () => {
           const finalData = needDetectedSync ? {
             ...updateData,
             detectedCountries: [...new Set([
+              ...(existing?.detectedCountries ?? []),
               ...(updateData.blockedCountries ?? existing?.blockedCountries ?? []),
               ...(updateData.rateLimitedCountries ?? existing?.rateLimitedCountries ?? []),
               ...textAvailableCountries,
@@ -1690,6 +1691,7 @@ const IPManagement: React.FC = () => {
           const baseData = needDetectedSync2 ? {
             ...updateData,
             detectedCountries: [...new Set([
+              ...(existing?.detectedCountries ?? []),
               ...(updateData.blockedCountries ?? existing?.blockedCountries ?? []),
               ...(updateData.rateLimitedCountries ?? existing?.rateLimitedCountries ?? []),
               ...batchAvailableCountries,

@@ -787,6 +787,63 @@ def create_app(config_path: str) -> Flask:
         except Exception as exc:  # noqa: BLE001
             return jsonify({"ok": False, "error": str(exc)}), 500
 
+    @app.get("/loa-manager")
+    def loa_manager_page():
+        cfg = _load_cfg()
+        dry_run = bool(cfg["automation"].get("dry_run", True))
+        return render_template("loa_manager.html", dry_run=dry_run, active_page="loa-manager")
+
+    @app.get("/api/loa/list")
+    def api_loa_list():
+        try:
+            items = _loa_service().list_local_loa()
+            return jsonify({"ok": True, "items": items})
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.post("/api/loa/delete")
+    @require_permission(PERM_ANNOUNCE)
+    def api_loa_delete():
+        body = request.get_json(silent=True) or {}
+        cidr = str(body.get("cidr", "")).strip()
+        asn = str(body.get("asn", "")).strip()
+        location = str(body.get("location", "permanent")).strip()
+        if not cidr:
+            return jsonify({"ok": False, "error": "请提供 cidr"}), 400
+        try:
+            result = _loa_service().delete_loa(normalize_cidr_input(cidr), asn, location)
+            return jsonify({"ok": True, **result})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.post("/api/loa/batch-upload")
+    @require_permission(PERM_ANNOUNCE)
+    def api_loa_batch_upload():
+        files = request.files.getlist("files[]")
+        cidrs = request.form.getlist("cidrs[]")
+        asns = request.form.getlist("asns[]")
+        if not files:
+            return jsonify({"ok": False, "error": "请选择至少一个文件"}), 400
+        results = []
+        svc = _loa_service()
+        for i, upload in enumerate(files):
+            cidr = cidrs[i] if i < len(cidrs) else ""
+            asn = asns[i] if i < len(asns) else ""
+            cidr = cidr.strip()
+            asn = asn.strip()
+            if not cidr:
+                results.append({"ok": False, "filename": upload.filename, "error": "未提供 CIDR"})
+                continue
+            try:
+                status = svc.save_upload(normalize_cidr_input(cidr), upload, permanent=True, asn=asn)
+                results.append({"ok": True, "filename": upload.filename, **status})
+            except (ValueError, Exception) as exc:  # noqa: BLE001
+                results.append({"ok": False, "filename": upload.filename, "error": str(exc)})
+        all_ok = all(r["ok"] for r in results)
+        return jsonify({"ok": all_ok, "results": results})
+
     @app.post("/api/announce/stream")
     @require_permission(PERM_ANNOUNCE)
     def api_announce_stream():

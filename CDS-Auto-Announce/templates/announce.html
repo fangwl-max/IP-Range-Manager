@@ -438,6 +438,8 @@
     };
     row.querySelector('.btn-upload-loa').onclick = () => {
       if (!getCidrFromRow(row)) { alert('请先填写 CIDR 再上传 LOA'); return; }
+      const asnVal = normalizeAsnInput(row.querySelector('.asn').value || '');
+      if (!asnVal) { alert('请先填写源 ASN 再上传 LOA，LOA 文件将按"网段+ASN"保存以便下次自动复用'); return; }
       fileInput.click();
     };
     fileInput.onchange = () => {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
 import {
   Card, Row, Col, Spin, Typography, Tag, Modal, Table, Space,
   Empty, Badge, Select, Tooltip, Button, message, Radio, DatePicker, Tabs,
@@ -85,7 +85,6 @@ type TimeFilter = 'all' | 'day' | 'week' | 'month' | 'custom';
 
 function getLastWeekRange(): [Dayjs, Dayjs] {
   const today = dayjs();
-  // dayjs().day(): 0=周日, 1=周一, …, 6=周六
   const daysFromMon = today.day() === 0 ? 6 : today.day() - 1;
   const thisMonday = today.subtract(daysFromMon, 'day').startOf('day');
   return [thisMonday.subtract(7, 'day'), thisMonday.subtract(1, 'day').endOf('day')];
@@ -93,7 +92,6 @@ function getLastWeekRange(): [Dayjs, Dayjs] {
 
 function isInTimeRange(purchaseDate: string | null, filter: TimeFilter, range: [Dayjs, Dayjs] | null): boolean {
   if (filter === 'all') return true;
-  // 无购买日期的段不参与时间过滤（始终显示）
   if (!purchaseDate) return true;
   const date = dayjs(purchaseDate);
   if (filter === 'day') {
@@ -273,16 +271,14 @@ const SimpleTreemap: React.FC<TreemapProps> = ({ data, width = 480, height = 300
 
 interface ChartCardProps {
   title: React.ReactNode;
-  allSlices: SliceData[];          // 未经局部筛选的全量切片
+  allSlices: SliceData[];
   chartType: 'pie' | 'treemap';
   onSliceClick: (s: SliceData) => void;
   renderLegend: (slices: SliceData[]) => React.ReactNode;
-  // 可筛选的维度
   filterDims: {
     key: string;
     placeholder: string;
     options: { label: string; value: string }[];
-    /** 给定一个段数组和已选值列表，返回是否保留 */
     match: (seg: any, selected: string[]) => boolean;
   }[];
   extra?: React.ReactNode;
@@ -294,17 +290,14 @@ const ChartCard: React.FC<ChartCardProps> = ({
   title, allSlices, chartType, onSliceClick, renderLegend,
   filterDims, extra, style, emptyText,
 }) => {
-  // 每个维度的已选值，key → string[]
   const [selected, setSelected] = useState<Record<string, string[]>>({});
 
   const hasFilter = filterDims.some(d => (selected[d.key] || []).length > 0);
 
-  // 对每个 slice 的 segments 应用局部筛选
   const filteredSlices: SliceData[] = (() => {
     if (!hasFilter) return allSlices;
     const result: SliceData[] = [];
     let total = 0;
-    // 先算 filtered segments
     const withSegs = allSlices.map(slice => {
       const segs = slice.segments.filter(seg =>
         filterDims.every(d => {
@@ -377,6 +370,15 @@ const ChartCard: React.FC<ChartCardProps> = ({
   );
 };
 
+// ─── 购买统计细分维度标签 ─────────────────────────────────────────────────────
+
+const PURCHASE_GROUP_BY_LABELS: Record<string, string> = {
+  project: '项目组',
+  supplier: '供应商',
+  region: '计费地区',
+  overall: '整体',
+};
+
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 
 const IPSegmentStats: React.FC = () => {
@@ -405,19 +407,19 @@ const IPSegmentStats: React.FC = () => {
   const [listFilterStatus, setListFilterStatus] = useState('');
 
   // ── 全局图表筛选（多选） ──────────────────────────────────────────────────────
-  const [gfSuppliers, setGfSuppliers] = useState<string[]>([]);    // 供应商多选
-  const [gfRegions, setGfRegions] = useState<string[]>([]);         // 计费地区多选
-  const [gfProjects, setGfProjects] = useState<string[]>([]);       // 项目组多选
-  const [purchaseRegionFilter, setPurchaseRegionFilter] = useState<string[]>([]); // 购买统计地区筛选
-  const [purchaseCustomRange, setPurchaseCustomRange] = useState<[Dayjs, Dayjs] | null>(null); // 自定义时间区间
+  const [gfSuppliers, setGfSuppliers] = useState<string[]>([]);
+  const [gfRegions, setGfRegions] = useState<string[]>([]);
+  const [gfProjects, setGfProjects] = useState<string[]>([]);
+  const [purchaseRegionFilter, setPurchaseRegionFilter] = useState<string[]>([]);
+  const [purchaseCustomRange, setPurchaseCustomRange] = useState<[Dayjs, Dayjs] | null>(null);
 
-  const openListModal = (title: string, segments: any[]) => {
+  const openListModal = useCallback((title: string, segments: any[]) => {
     setListModalTitle(title);
     setListModalBase(segments);
     setListFilterSupplier('');
     setListFilterStatus('');
     setListModalOpen(true);
-  };
+  }, []);
 
   // 图表类型
   const [chartType, setChartType] = useState<'pie' | 'treemap'>('pie');
@@ -426,6 +428,9 @@ const IPSegmentStats: React.FC = () => {
   // 时间筛选
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null);
+
+  // 购买统计细分维度（默认按项目组）
+  const [purchaseGroupBy, setPurchaseGroupBy] = useState<'overall' | 'project' | 'supplier' | 'region'>('project');
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -466,204 +471,294 @@ const IPSegmentStats: React.FC = () => {
     }
   }, [loadData]);
 
-  // ── 时间过滤 ─────────────────────────────────────────────────────────────────
+  // ── 时间过滤（memoized，避免下游重复计算和引用抖动） ──────────────────────────
 
-  const filteredList = (timeFilter === 'all')
-    ? servicesList
-    : servicesList.filter(s => isInTimeRange(s.purchaseDate, timeFilter, customRange));
+  const filteredList = useMemo(() =>
+    timeFilter === 'all'
+      ? servicesList
+      : servicesList.filter(s => isInTimeRange(s.purchaseDate, timeFilter, customRange)),
+    [servicesList, timeFilter, customRange]
+  );
 
-  // ── 数据处理 ─────────────────────────────────────────────────────────────────
+  const localFiltered = useMemo(() =>
+    timeFilter === 'all'
+      ? allLocalSegments
+      : allLocalSegments.filter(s => isInTimeRange(s.purchaseDate, timeFilter, customRange)),
+    [allLocalSegments, timeFilter, customRange]
+  );
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // ── 全局图表筛选选项（memoized，内容不变时引用稳定，避免 Select 下拉框闪烁） ──
 
-  // ── 全量供应商（本地 ip-data.json，含所有供应商）────────────────────────────
-  const localFiltered = (timeFilter === 'all')
-    ? allLocalSegments
-    : allLocalSegments.filter(s => isInTimeRange(s.purchaseDate, timeFilter, customRange));
+  const gfSupplierOptions = useMemo(() => {
+    const set = new Set<string>();
+    filteredList.forEach(s => set.add(String(s.supplier ?? '').trim() || '未知供应商'));
+    localFiltered.filter(s => String(s.supplier ?? '').trim() !== 'IPXO')
+      .forEach(s => set.add(String(s.supplier ?? '').trim() || '未知供应商'));
+    return Array.from(set).sort().map(v => ({ label: v, value: v }));
+  }, [filteredList, localFiltered]);
 
-  // ── 全局图表筛选：从所有段中收集可选项 ────────────────────────────────────────
-  // 供应商：IPXO API + 本地非IPXO
-  const allSuppliersSet = new Set<string>();
-  filteredList.forEach(s => allSuppliersSet.add(String(s.supplier ?? '').trim() || '未知供应商'));
-  localFiltered.filter(s => String(s.supplier ?? '').trim() !== 'IPXO').forEach(s => allSuppliersSet.add(String(s.supplier ?? '').trim() || '未知供应商'));
-  const gfSupplierOptions = Array.from(allSuppliersSet).sort().map(v => ({ label: v, value: v }));
+  const gfRegionOptions = useMemo(() => {
+    const set = new Set<string>();
+    filteredList.forEach(s => (s.serverLocations || []).forEach((l: any) => { if (l.region) set.add(l.region); }));
+    return Array.from(set).sort().map(v => ({ label: v, value: v }));
+  }, [filteredList]);
 
-  // 计费地区：只有 IPXO 有此字段
-  const allRegionsSet = new Set<string>();
-  filteredList.forEach(s => (s.serverLocations || []).forEach((l: any) => { if (l.region) allRegionsSet.add(l.region); }));
-  const gfRegionOptions = Array.from(allRegionsSet).sort().map(v => ({ label: v, value: v }));
+  const gfProjectOptions = useMemo(() => {
+    const set = new Set<string>();
+    filteredList.forEach(s => (s.projectGroups || []).forEach((g: string) => set.add(g)));
+    localFiltered.forEach(s => (s.projectGroups || []).forEach((g: string) => set.add(g)));
+    return Array.from(set).sort().map(v => ({ label: v, value: v }));
+  }, [filteredList, localFiltered]);
 
-  // 项目组：所有段
-  const allProjectsSet = new Set<string>();
-  filteredList.forEach(s => (s.projectGroups || []).forEach((g: string) => allProjectsSet.add(g)));
-  localFiltered.forEach(s => (s.projectGroups || []).forEach((g: string) => allProjectsSet.add(g)));
-  const gfProjectOptions = Array.from(allProjectsSet).sort().map(v => ({ label: v, value: v }));
-
+  // gfActive 使用即时值，保证清除按钮立即出现/消失
   const gfActive = gfSuppliers.length > 0 || gfRegions.length > 0 || gfProjects.length > 0;
 
-  // 通用筛选函数：对任意段数组应用全局筛选
-  const applyGf = (segs: any[]): any[] => {
-    if (!gfActive) return segs;
+  // 延迟值：让 Select 框立即响应选择操作，图表重算推迟到空闲期执行，消除闪烁
+  const deferredGfSuppliers = useDeferredValue(gfSuppliers);
+  const deferredGfRegions   = useDeferredValue(gfRegions);
+  const deferredGfProjects  = useDeferredValue(gfProjects);
+
+  const applyGf = useCallback((segs: any[]): any[] => {
+    if (deferredGfSuppliers.length === 0 && deferredGfRegions.length === 0 && deferredGfProjects.length === 0) return segs;
     return segs.filter(s => {
-      if (gfSuppliers.length > 0) {
+      if (deferredGfSuppliers.length > 0) {
         const sup = String(s.supplier ?? '').trim() || '未知供应商';
-        if (!gfSuppliers.includes(sup)) return false;
+        if (!deferredGfSuppliers.includes(sup)) return false;
       }
-      if (gfRegions.length > 0) {
+      if (deferredGfRegions.length > 0) {
         const regions = (s.serverLocations || []).map((l: any) => l.region).filter(Boolean);
-        if (!gfRegions.some(r => regions.includes(r))) return false;
+        if (!deferredGfRegions.some(r => regions.includes(r))) return false;
       }
-      if (gfProjects.length > 0) {
+      if (deferredGfProjects.length > 0) {
         const projs = s.projectGroups || [];
-        if (!gfProjects.some(p => projs.includes(p))) return false;
+        if (!deferredGfProjects.some(p => projs.includes(p))) return false;
       }
       return true;
     });
-  };
+  }, [deferredGfSuppliers, deferredGfRegions, deferredGfProjects]);
 
-  // 非 IPXO 供应商：仅取本地数据中 supplier !== 'IPXO' 的段
-  const nonIpxoFiltered = applyGf(localFiltered.filter(s => String(s.supplier ?? '').trim() !== 'IPXO'));
-  const nonIpxoActive = nonIpxoFiltered.filter(s =>
-    s.renewalStatus !== 'cancelled' && !s.cancellationDate
+  // ── 非 IPXO 供应商（本地 ip-data.json，含所有供应商） ────────────────────────
+
+  const nonIpxoFiltered = useMemo(() =>
+    applyGf(localFiltered.filter(s => String(s.supplier ?? '').trim() !== 'IPXO')),
+    [localFiltered, applyGf]
   );
-  const nonIpxoCancelledPending = nonIpxoFiltered.filter(s =>
-    (s.renewalStatus === 'cancelled' || s.cancellationDate) && s.renewalDate && s.renewalDate > todayStr
+
+  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  const nonIpxoActive = useMemo(() =>
+    nonIpxoFiltered.filter(s => s.renewalStatus !== 'cancelled' && !s.cancellationDate),
+    [nonIpxoFiltered]
   );
-  const nonIpxoRented = [...nonIpxoActive, ...nonIpxoCancelledPending];
 
-  // IPXO status 是"是否在租"的权威依据：缓存里 status=active 的段都算当前在租
-  // 本地 renewalStatus 仅表示用户意图，不影响 IPXO 实际计费
-  const ipxoRented = applyGf(filteredList.filter(s => !s.status || s.status === 'active'));
-  const ipxoTotal = ipxoRented.length; // 与官网一致
+  const nonIpxoCancelledPending = useMemo(() =>
+    nonIpxoFiltered.filter(s =>
+      (s.renewalStatus === 'cancelled' || s.cancellationDate) && s.renewalDate && s.renewalDate > todayStr
+    ),
+    [nonIpxoFiltered, todayStr]
+  );
 
-  // 按本地用户意图细分：
-  const activeSegs = ipxoRented.filter(s => s.renewalStatus !== 'cancelled');
-  const localCancelledSegs = ipxoRented.filter(s => s.renewalStatus === 'cancelled');
-  // 本地已取消且续费日未到 → 即将生效（正常流程）
-  const cancelledPendingSegs = localCancelledSegs.filter(s => s.renewalDate && s.renewalDate > todayStr);
-  // 本地已取消且续费日已过 → 可能已被 IPXO 续费、本地未同步
-  const cancelledExpiredSegs = localCancelledSegs.filter(s => !s.renewalDate || s.renewalDate <= todayStr);
+  const nonIpxoRented = useMemo(() =>
+    [...nonIpxoActive, ...nonIpxoCancelledPending],
+    [nonIpxoActive, nonIpxoCancelledPending]
+  );
 
-  // 按计费地区分类
-  const categoryMap: Record<string, IpxoServiceItem[]> = {};
-  REGION_CATEGORIES.forEach(c => { categoryMap[c.key] = []; });
+  // ── IPXO 数据 ────────────────────────────────────────────────────────────────
 
-  activeSegs.forEach(seg => {
-    const catKey = classifyByRegion(seg.serverLocations || []);
-    categoryMap[catKey].push(seg);
-  });
+  const ipxoRented = useMemo(() =>
+    applyGf(filteredList.filter(s => !s.status || s.status === 'active')),
+    [filteredList, applyGf]
+  );
 
-  const noRegionSegs = categoryMap['no_region'];
-  const withRegionSegs = activeSegs.filter(s => (s.serverLocations || []).length > 0 &&
-    (s.serverLocations || []).some((l: any) => l.region));
+  const ipxoTotal = ipxoRented.length;
 
-  // 按供应商分组（在用 IP 段）
-  const supplierMap = new Map<string, IpxoServiceItem[]>();
-  activeSegs.forEach(seg => {
-    const key = String(seg.supplier ?? '').trim() || '未知供应商';
-    if (!supplierMap.has(key)) supplierMap.set(key, []);
-    supplierMap.get(key)!.push(seg);
-  });
-  const supplierBreakdown = Array.from(supplierMap.entries())
-    .map(([supplier, segs], i) => ({
-      supplier,
-      count: segs.length,
-      segs,
-      percentage: activeSegs.length > 0 ? (segs.length / activeSegs.length) * 100 : 0,
-      color: PIE_COLORS[i % PIE_COLORS.length],
-    }))
-    .sort((a, b) => b.count - a.count);
-  const supplierSlices: SliceData[] = supplierBreakdown.map(s => ({
-    key: s.supplier, label: s.supplier, color: s.color,
-    count: s.count, segments: s.segs, percentage: s.percentage,
-  }));
+  const activeSegs = useMemo(() =>
+    ipxoRented.filter(s => s.renewalStatus !== 'cancelled'),
+    [ipxoRented]
+  );
 
-  // ── 全量供应商饼图数据（当前租用 = 正常 + 已取消未到期）────────────────────────
-  // IPXO 用 API 数据（权威），非 IPXO 用本地数据
-  // 全量当前租用：IPXO API 在租段 + 非IPXO本地在租段
-  const allRentedSegs: any[] = [...ipxoRented, ...nonIpxoRented];
-  const allRentedTotal = allRentedSegs.length;
-  const allRentedMap = new Map<string, any[]>();
-  allRentedSegs.forEach(seg => {
-    const key = (seg.supplier as string)?.trim() || '未知供应商';
-    if (!allRentedMap.has(key)) allRentedMap.set(key, []);
-    allRentedMap.get(key)!.push(seg);
-  });
-  const allRentedBreakdown = Array.from(allRentedMap.entries())
-    .map(([supplier, segs], i) => ({
-      supplier, count: segs.length, segs,
-      percentage: allRentedTotal > 0 ? (segs.length / allRentedTotal) * 100 : 0,
-      color: PIE_COLORS[i % PIE_COLORS.length],
-    }))
-    .sort((a, b) => b.count - a.count);
-  const allRentedBySupplierSlices: SliceData[] = allRentedBreakdown.map(s => ({
-    key: s.supplier, label: s.supplier, color: s.color,
-    count: s.count, segments: s.segs, percentage: s.percentage,
-  }));
+  const localCancelledSegs = useMemo(() =>
+    ipxoRented.filter(s => s.renewalStatus === 'cancelled'),
+    [ipxoRented]
+  );
 
-  // 全量在用：IPXO activeSegs（未取消）+ 非IPXO local active
-  const allActiveSegs: any[] = [...activeSegs, ...nonIpxoActive];
-  const allActiveTotal = allActiveSegs.length;
-  // 全量已标记计费地区：allActiveSegs 中有 serverLocations.region 的段，按地区分组
-  const allRegionMap = new Map<string, any[]>();
-  allActiveSegs.forEach(seg => {
-    const regions: string[] = (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean);
-    const dedupedRegions = Array.from(new Set(regions));
-    if (dedupedRegions.length === 0) return;
-    dedupedRegions.forEach(r => {
-      if (!allRegionMap.has(r)) allRegionMap.set(r, []);
-      allRegionMap.get(r)!.push(seg);
+  const cancelledPendingSegs = useMemo(() =>
+    localCancelledSegs.filter(s => s.renewalDate && s.renewalDate > todayStr),
+    [localCancelledSegs, todayStr]
+  );
+
+  const cancelledExpiredSegs = useMemo(() =>
+    localCancelledSegs.filter(s => !s.renewalDate || s.renewalDate <= todayStr),
+    [localCancelledSegs, todayStr]
+  );
+
+  // ── 按计费地区分类 ────────────────────────────────────────────────────────────
+
+  const categoryMap = useMemo(() => {
+    const map: Record<string, IpxoServiceItem[]> = {};
+    REGION_CATEGORIES.forEach(c => { map[c.key] = []; });
+    activeSegs.forEach(seg => {
+      const catKey = classifyByRegion(seg.serverLocations || []);
+      map[catKey].push(seg);
     });
-  });
-  const allRegionBreakdown = Array.from(allRegionMap.entries())
-    .map(([region, segs], i) => ({
-      region, count: segs.length, segs,
-      percentage: allActiveTotal > 0 ? (segs.length / allActiveTotal) * 100 : 0,
-      color: PIE_COLORS[i % PIE_COLORS.length],
-    }))
-    .sort((a, b) => b.count - a.count);
-  const allRegionSlices: SliceData[] = allRegionBreakdown.map(s => ({
-    key: s.region, label: s.region, color: s.color,
-    count: s.count, segments: s.segs, percentage: s.percentage,
-  }));
+    return map;
+  }, [activeSegs]);
 
-  // ── 已租用IP段分布（全量：在用 + 已取消待生效）───────────────────────────────
-  const overviewSlices: SliceData[] = [
+  const noRegionSegs = useMemo(() => categoryMap['no_region'], [categoryMap]);
+
+  const withRegionSegs = useMemo(() =>
+    activeSegs.filter(s =>
+      (s.serverLocations || []).length > 0 &&
+      (s.serverLocations || []).some((l: any) => l.region)
+    ),
+    [activeSegs]
+  );
+
+  // ── 按供应商分组（在用 IP 段） ─────────────────────────────────────────────────
+
+  const { supplierBreakdown, supplierSlices } = useMemo(() => {
+    const supplierMap = new Map<string, IpxoServiceItem[]>();
+    activeSegs.forEach(seg => {
+      const key = String(seg.supplier ?? '').trim() || '未知供应商';
+      if (!supplierMap.has(key)) supplierMap.set(key, []);
+      supplierMap.get(key)!.push(seg);
+    });
+    const breakdown = Array.from(supplierMap.entries())
+      .map(([supplier, segs], i) => ({
+        supplier, count: segs.length, segs,
+        percentage: activeSegs.length > 0 ? (segs.length / activeSegs.length) * 100 : 0,
+        color: PIE_COLORS[i % PIE_COLORS.length],
+      }))
+      .sort((a, b) => b.count - a.count);
+    const slices: SliceData[] = breakdown.map(s => ({
+      key: s.supplier, label: s.supplier, color: s.color,
+      count: s.count, segments: s.segs, percentage: s.percentage,
+    }));
+    return { supplierBreakdown: breakdown, supplierSlices: slices };
+  }, [activeSegs]);
+
+  // ── 全量当前租用（IPXO + 非IPXO） ────────────────────────────────────────────
+
+  const allRentedSegs = useMemo(() => [...ipxoRented, ...nonIpxoRented], [ipxoRented, nonIpxoRented]);
+  const allRentedTotal = allRentedSegs.length;
+
+  const allRentedBySupplierSlices = useMemo((): SliceData[] => {
+    const map = new Map<string, any[]>();
+    allRentedSegs.forEach(seg => {
+      const key = (seg.supplier as string)?.trim() || '未知供应商';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(seg);
+    });
+    return Array.from(map.entries())
+      .map(([supplier, segs], i) => ({
+        supplier, count: segs.length, segs,
+        percentage: allRentedTotal > 0 ? (segs.length / allRentedTotal) * 100 : 0,
+        color: PIE_COLORS[i % PIE_COLORS.length],
+      }))
+      .sort((a, b) => b.count - a.count)
+      .map(s => ({
+        key: s.supplier, label: s.supplier, color: s.color,
+        count: s.count, segments: s.segs, percentage: s.percentage,
+      }));
+  }, [allRentedSegs, allRentedTotal]);
+
+  // ── 全量在用（IPXO 在用 + 非IPXO 在用） ──────────────────────────────────────
+
+  const allActiveSegs = useMemo(() => [...activeSegs, ...nonIpxoActive], [activeSegs, nonIpxoActive]);
+  const allActiveTotal = allActiveSegs.length;
+
+  const allRegionSlices = useMemo((): SliceData[] => {
+    const map = new Map<string, any[]>();
+    allActiveSegs.forEach(seg => {
+      const regions = [...new Set(
+        (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean)
+      )] as string[];
+      regions.forEach(r => {
+        if (!map.has(r)) map.set(r, []);
+        map.get(r)!.push(seg);
+      });
+    });
+    return Array.from(map.entries())
+      .map(([region, segs], i) => ({
+        region, count: segs.length, segs,
+        percentage: allActiveTotal > 0 ? (segs.length / allActiveTotal) * 100 : 0,
+        color: PIE_COLORS[i % PIE_COLORS.length],
+      }))
+      .sort((a, b) => b.count - a.count)
+      .map(s => ({
+        key: s.region, label: s.region, color: s.color,
+        count: s.count, segments: s.segs, percentage: s.percentage,
+      }));
+  }, [allActiveSegs, allActiveTotal]);
+
+  // ── 图表切片数据 ─────────────────────────────────────────────────────────────
+
+  const overviewSlices = useMemo((): SliceData[] => ([
     ...REGION_CATEGORIES.filter(c => c.key !== 'no_region').map(cat => ({
       key: cat.key, label: cat.label, color: cat.color,
-      count: categoryMap[cat.key].length,
-      segments: categoryMap[cat.key],
+      count: categoryMap[cat.key].length, segments: categoryMap[cat.key],
       percentage: ipxoTotal > 0 ? (categoryMap[cat.key].length / ipxoTotal) * 100 : 0,
     })),
-    {
-      key: 'no_region', label: '未标记计费地区', color: '#faad14',
+    { key: 'no_region', label: '未标记计费地区', color: '#faad14',
       count: noRegionSegs.length, segments: noRegionSegs,
-      percentage: ipxoTotal > 0 ? (noRegionSegs.length / ipxoTotal) * 100 : 0,
-    },
-    {
-      key: 'cancelled_pending', label: '已取消（待生效）', color: '#ff7875',
+      percentage: ipxoTotal > 0 ? (noRegionSegs.length / ipxoTotal) * 100 : 0 },
+    { key: 'cancelled_pending', label: '已取消（待生效）', color: '#ff7875',
       count: cancelledPendingSegs.length, segments: cancelledPendingSegs,
-      percentage: ipxoTotal > 0 ? (cancelledPendingSegs.length / ipxoTotal) * 100 : 0,
-    },
-    {
-      key: 'cancelled_overdue', label: '本地取消但IPXO续费', color: '#cf1322',
+      percentage: ipxoTotal > 0 ? (cancelledPendingSegs.length / ipxoTotal) * 100 : 0 },
+    { key: 'cancelled_overdue', label: '本地取消但IPXO续费', color: '#cf1322',
       count: cancelledExpiredSegs.length, segments: cancelledExpiredSegs,
-      percentage: ipxoTotal > 0 ? (cancelledExpiredSegs.length / ipxoTotal) * 100 : 0,
-    },
-  ].filter(s => s.count > 0);
+      percentage: ipxoTotal > 0 ? (cancelledExpiredSegs.length / ipxoTotal) * 100 : 0 },
+  ].filter(s => s.count > 0)), [categoryMap, noRegionSegs, cancelledPendingSegs, cancelledExpiredSegs, ipxoTotal]);
 
-  // ── 已标记计费地区的在用 IP 段分布 ──────────────────────────────────────────
-  const usageSlices: SliceData[] = REGION_CATEGORIES
-    .filter(c => c.key !== 'no_region')
-    .map(cat => ({
-      key: cat.key, label: cat.label, color: cat.color,
-      count: categoryMap[cat.key].length,
-      segments: categoryMap[cat.key],
-      percentage: withRegionSegs.length > 0 ? (categoryMap[cat.key].length / withRegionSegs.length) * 100 : 0,
-    }))
-    .filter(s => s.count > 0);
+  const usageSlices = useMemo((): SliceData[] =>
+    REGION_CATEGORIES.filter(c => c.key !== 'no_region')
+      .map(cat => ({
+        key: cat.key, label: cat.label, color: cat.color,
+        count: categoryMap[cat.key].length, segments: categoryMap[cat.key],
+        percentage: withRegionSegs.length > 0 ? (categoryMap[cat.key].length / withRegionSegs.length) * 100 : 0,
+      }))
+      .filter(s => s.count > 0),
+    [categoryMap, withRegionSegs]
+  );
 
-  // ── 按项目组 × 时间段购买统计 ───────────────────────────────────────────────
+  // ── ChartCard 局部筛选维度定义 ────────────────────────────────────────────────
+
+  const supplierOpts = useMemo(() =>
+    Array.from(new Set(allRentedSegs.map(s => String(s.supplier ?? '').trim() || '未知供应商')))
+      .sort().map(v => ({ label: v, value: v })),
+    [allRentedSegs]
+  );
+
+  const regionOpts = useMemo(() =>
+    Array.from(new Set(
+      [...allRentedSegs, ...activeSegs].flatMap(s => (s.serverLocations || []).map((l: any) => l.region).filter(Boolean))
+    )).sort().map(v => ({ label: v, value: v })),
+    [allRentedSegs, activeSegs]
+  );
+
+  const projectOpts = useMemo(() =>
+    Array.from(new Set(
+      [...allRentedSegs, ...activeSegs].flatMap(s => s.projectGroups || [])
+    )).sort().map(v => ({ label: v, value: v })),
+    [allRentedSegs, activeSegs]
+  );
+
+  const matchSupplier = useCallback((seg: any, sel: string[]) =>
+    sel.includes(String(seg.supplier ?? '').trim() || '未知供应商'),
+    []
+  );
+
+  const matchRegion = useCallback((seg: any, sel: string[]) =>
+    (seg.serverLocations || []).some((l: any) => sel.includes(l.region)),
+    []
+  );
+
+  const matchProject = useCallback((seg: any, sel: string[]) =>
+    (seg.projectGroups || []).some((p: string) => sel.includes(p)),
+    []
+  );
+
+  // ── 购买统计相关 ──────────────────────────────────────────────────────────────
 
   const COUNTRY_LABEL: Record<string, string> = {
     iran: '伊朗', myanmar: '缅甸', turkmenistan: '土库曼', russia: '俄罗斯', pakistan: '巴基斯坦',
@@ -679,7 +774,6 @@ const IPSegmentStats: React.FC = () => {
       const [mon, sun] = getLastWeekRange();
       return [mon.format('YYYY-MM-DD'), sun.format('YYYY-MM-DD')];
     }
-    // month
     const start = d.subtract(1, 'month').startOf('month');
     const end = d.subtract(1, 'month').endOf('month');
     return [start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD')];
@@ -700,29 +794,50 @@ const IPSegmentStats: React.FC = () => {
   // 购买统计用本地全量数据（含 IPXO 已取消/退款段），purchaseDate 以本地记录为准
   const allSegsForPurchase: any[] = allLocalSegments;
 
-  const periodStats: (PeriodStat & { byProject: Map<string, any[]> })[] = PERIOD_DEFS.map(({ key, label }) => {
-    const [from, to] = getPurchasePeriod(key);
-    const segs = allSegsForPurchase.filter(s => {
-      if (!s.purchaseDate) return false;
-      if (s.purchaseDate < from || s.purchaseDate > to) return false;
-      if (purchaseRegionFilter.length > 0) {
-        const regions = (s.serverLocations || []).map((l: any) => l.region).filter(Boolean);
-        if (!purchaseRegionFilter.some(r => regions.includes(r))) return false;
-      }
-      return true;
-    });
-    const byProject = new Map<string, any[]>();
+  const buildByGroup = useCallback((segs: any[]): Map<string, any[]> => {
+    const byGroup = new Map<string, any[]>();
     segs.forEach(seg => {
-      const projs: string[] = seg.projectGroups?.length ? seg.projectGroups : ['未分配项目组'];
-      projs.forEach(p => {
-        if (!byProject.has(p)) byProject.set(p, []);
-        byProject.get(p)!.push(seg);
+      let groupKeys: string[];
+      if (purchaseGroupBy === 'overall') {
+        groupKeys = ['整体'];
+      } else if (purchaseGroupBy === 'project') {
+        groupKeys = seg.projectGroups?.length ? seg.projectGroups : ['未分配项目组'];
+      } else if (purchaseGroupBy === 'supplier') {
+        groupKeys = [String(seg.supplier ?? '').trim() || '未知供应商'];
+      } else {
+        // region
+        const regions = [...new Set(
+          (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean)
+        )] as string[];
+        groupKeys = regions.length > 0 ? regions : ['未知地区'];
+      }
+      groupKeys.forEach(k => {
+        if (!byGroup.has(k)) byGroup.set(k, []);
+        byGroup.get(k)!.push(seg);
       });
     });
-    return { label, range: [from, to], segs, byProject };
-  });
+    return byGroup;
+  }, [purchaseGroupBy]);
 
-  const customPeriodStat: (PeriodStat & { byProject: Map<string, any[]> }) | null = (() => {
+  const periodStats = useMemo(() =>
+    PERIOD_DEFS.map(({ key, label }) => {
+      const [from, to] = getPurchasePeriod(key);
+      const segs = allSegsForPurchase.filter(s => {
+        if (!s.purchaseDate) return false;
+        if (s.purchaseDate < from || s.purchaseDate > to) return false;
+        if (purchaseRegionFilter.length > 0) {
+          const regions = (s.serverLocations || []).map((l: any) => l.region).filter(Boolean);
+          if (!purchaseRegionFilter.some(r => regions.includes(r))) return false;
+        }
+        return true;
+      });
+      return { label, range: [from, to] as [string, string], segs, byGroup: buildByGroup(segs) };
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allSegsForPurchase, purchaseRegionFilter, buildByGroup]
+  );
+
+  const customPeriodStat = useMemo(() => {
     if (!purchaseCustomRange) return null;
     const from = purchaseCustomRange[0].format('YYYY-MM-DD');
     const to   = purchaseCustomRange[1].format('YYYY-MM-DD');
@@ -736,50 +851,32 @@ const IPSegmentStats: React.FC = () => {
       }
       return true;
     });
-    const byProject = new Map<string, any[]>();
-    segs.forEach(seg => {
-      const projs: string[] = seg.projectGroups?.length ? seg.projectGroups : ['未分配项目组'];
-      projs.forEach(p => {
-        if (!byProject.has(p)) byProject.set(p, []);
-        byProject.get(p)!.push(seg);
-      });
-    });
-    return { label, range: [from, to], segs, byProject };
-  })();
+    return { label, range: [from, to] as [string, string], segs, byGroup: buildByGroup(segs) };
+  }, [purchaseCustomRange, allSegsForPurchase, purchaseRegionFilter, buildByGroup]);
 
-  const allPeriodStats = customPeriodStat
-    ? [...periodStats, customPeriodStat]
-    : periodStats;
+  const allPeriodStats = useMemo(() =>
+    customPeriodStat ? [...periodStats, customPeriodStat] : periodStats,
+    [periodStats, customPeriodStat]
+  );
 
-  const purchaseRegionOpts = Array.from(new Set(
-    allSegsForPurchase.flatMap(s => (s.serverLocations || []).map((l: any) => l.region).filter(Boolean))
-  )).sort().map(v => ({ label: v, value: v }));
+  const purchaseRegionOpts = useMemo(() =>
+    Array.from(new Set(
+      allSegsForPurchase.flatMap(s => (s.serverLocations || []).map((l: any) => l.region).filter(Boolean))
+    )).sort().map(v => ({ label: v, value: v })),
+    [allSegsForPurchase]
+  );
 
-  // ── ChartCard 局部筛选维度定义 ────────────────────────────────────────────────
-
-  const supplierOpts = Array.from(new Set(allRentedSegs.map(s => String(s.supplier ?? '').trim() || '未知供应商'))).sort().map(v => ({ label: v, value: v }));
-  const regionOpts = Array.from(new Set(
-    [...allRentedSegs, ...activeSegs].flatMap(s => (s.serverLocations || []).map((l: any) => l.region).filter(Boolean))
-  )).sort().map(v => ({ label: v, value: v }));
-  const projectOpts = Array.from(new Set(
-    [...allRentedSegs, ...activeSegs].flatMap(s => s.projectGroups || [])
-  )).sort().map(v => ({ label: v, value: v }));
-
-  const matchSupplier = (seg: any, sel: string[]) => sel.includes(String(seg.supplier ?? '').trim() || '未知供应商');
-  const matchRegion   = (seg: any, sel: string[]) => (seg.serverLocations || []).some((l: any) => sel.includes(l.region));
-  const matchProject  = (seg: any, sel: string[]) => (seg.projectGroups || []).some((p: string) => sel.includes(p));
-
-  const openModal = (slice: SliceData) => {
+  const openModal = useCallback((slice: SliceData) => {
     setModalTitle(`${slice.label}（${slice.count} 个 IP 段）`);
     setModalSegments(slice.segments);
     setModalVisible(true);
-  };
+  }, []);
 
-  const openPurchaseModal = (title: string, segs: any[]) => {
+  const openPurchaseModal = useCallback((title: string, segs: any[]) => {
     setPurchaseModalTitle(title);
     setPurchaseModalSegments(segs);
     setPurchaseModalVisible(true);
-  };
+  }, []);
 
   // ── 购买统计弹窗表格列（含被墙信息）──────────────────────────────────────────
   const purchaseModalColumns = [
@@ -904,7 +1001,7 @@ const IPSegmentStats: React.FC = () => {
 
   // ── 渲染辅助：图例 ───────────────────────────────────────────────────────────
 
-  const renderLegend = (slices: SliceData[]) => (
+  const renderLegend = useCallback((slices: SliceData[]) => (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center', marginTop: 12 }}>
       {slices.map(s => (
         <Space key={s.key} size={4} style={{ cursor: 'pointer' }} onClick={() => openModal(s)}>
@@ -915,7 +1012,7 @@ const IPSegmentStats: React.FC = () => {
         </Space>
       ))}
     </div>
-  );
+  ), [openModal]);
 
   // ── 时间筛选标签文本 ─────────────────────────────────────────────────────────
 
@@ -1182,7 +1279,6 @@ const IPSegmentStats: React.FC = () => {
                   }
                   style={{ minHeight: 180 }}
                 >
-                  {/* 被墙统计 */}
                   {isKnownCountry && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
                       <Tag color="success" style={{ fontSize: 11 }}>可用 {availableCount} 个 · {pct(availableCount)}</Tag>
@@ -1291,9 +1387,26 @@ const IPSegmentStats: React.FC = () => {
         </>)}
 
         {statsTab === 'purchase' && (<>
-        {/* ── 按项目组购买统计（昨天 / 上周 / 上月） ── */}
+        {/* ── 购买统计（支持整体/项目组/供应商/计费地区 细分） ── */}
         <Card
-          title={<Space><span>按项目组购买统计</span><Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>昨天 / 上周 / 上月新购IP段数量、费用与地区情况</Text></Space>}
+          title={
+            <Space wrap>
+              <span>购买统计</span>
+              <Radio.Group
+                value={purchaseGroupBy}
+                onChange={e => setPurchaseGroupBy(e.target.value)}
+                size="small"
+              >
+                <Radio.Button value="project">按项目组</Radio.Button>
+                <Radio.Button value="supplier">按供应商</Radio.Button>
+                <Radio.Button value="region">按计费地区</Radio.Button>
+                <Radio.Button value="overall">整体汇总</Radio.Button>
+              </Radio.Group>
+              <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+                昨天 / 上周 / 上月新购IP段数量、费用与地区情况
+              </Text>
+            </Space>
+          }
           size="small"
           style={{ marginTop: 16 }}
           extra={
@@ -1323,7 +1436,13 @@ const IPSegmentStats: React.FC = () => {
         >
           <Row gutter={16}>
             {allPeriodStats.map(period => {
-              const allProjects = Array.from(period.byProject.keys()).sort();
+              const allGroupKeys = Array.from(period.byGroup.keys()).sort((a, b) => {
+                // "整体"/"未分配项目组"/"未知供应商"/"未知地区" 置后
+                const isSpecial = (k: string) => ['整体', '未分配项目组', '未知供应商', '未知地区'].includes(k);
+                if (isSpecial(a) && !isSpecial(b)) return 1;
+                if (!isSpecial(a) && isSpecial(b)) return -1;
+                return a.localeCompare(b, 'zh-CN');
+              });
               return (
                 <Col xs={24} lg={customPeriodStat ? 12 : 8} xl={customPeriodStat ? 6 : 8} key={period.label} style={{ marginBottom: 8 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -1354,14 +1473,12 @@ const IPSegmentStats: React.FC = () => {
                     <Text type="secondary" style={{ fontSize: 12 }}>该时间段内无新购IP段</Text>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                      {allProjects.map(proj => {
-                        const pSegs = period.byProject.get(proj)!;
+                      {allGroupKeys.map(groupKey => {
+                        const pSegs = period.byGroup.get(groupKey)!;
                         const total = pSegs.length;
                         const fee = pSegs.reduce((s, seg) => s + (seg.monthlyPrice || 0), 0);
                         const pct = (n: number) => total > 0 ? `${((n / total) * 100).toFixed(1)}%` : '0%';
 
-                        // 计费地区：去重统计每个段在哪些 region
-                        // 统一按计费地区分组；无地区归入"未知地区"
                         const regionStats:   Record<string, { count: number; fee: number; segs: any[] }> = {};
                         const blockedStats:  Record<string, { count: number; fee: number; segs: any[] }> = {};
                         const untestedStats: Record<string, { count: number; fee: number; segs: any[] }> = {};
@@ -1387,7 +1504,6 @@ const IPSegmentStats: React.FC = () => {
                           ] as string[];
 
                           if (uniqueRegions.length === 0) {
-                            // 未填写计费地区 → 归入「未知地区」
                             addTo(regionStats, '未知地区', seg, price);
                             if (blocked.length > 0) addTo(blockedStats, '未知地区', seg, price);
                             if (blocked.length === 0 && detected.length === 0) addTo(untestedStats, '未知地区', seg, price);
@@ -1441,7 +1557,7 @@ const IPSegmentStats: React.FC = () => {
                                     color={color}
                                     style={{ fontSize: 12, margin: 0, cursor: 'pointer', minWidth: 90 }}
                                     onClick={() => openPurchaseModal(
-                                      `${proj} · ${period.label} · ${titleFn(k)}（${count} 个）`,
+                                      `${groupKey} · ${period.label} · ${titleFn(k)}（${count} 个）`,
                                       kSegs,
                                     )}
                                   >
@@ -1456,7 +1572,7 @@ const IPSegmentStats: React.FC = () => {
                         };
 
                         return (
-                          <div key={proj} style={{
+                          <div key={groupKey} style={{
                             background: '#fafafa', borderRadius: 6,
                             padding: '10px 14px', border: '1px solid #e8e8e8',
                           }}>
@@ -1464,9 +1580,9 @@ const IPSegmentStats: React.FC = () => {
                               <Text
                                 strong
                                 style={{ fontSize: 14, cursor: 'pointer', color: '#1677ff' }}
-                                onClick={() => openPurchaseModal(`${proj} · ${period.label}（${total} 个）`, pSegs)}
+                                onClick={() => openPurchaseModal(`${groupKey} · ${period.label}（${total} 个）`, pSegs)}
                               >
-                                {proj}
+                                {groupKey}
                               </Text>
                               <Space size={8}>
                                 <Tag color="blue" style={{ fontSize: 12 }}>{total} 个</Tag>

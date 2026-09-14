@@ -1,0 +1,355 @@
+{% extends "base.html" %}
+
+{% block title %}LOA 管理 — IP段宣告控制台{% endblock %}
+{% block page_title %}LOA 文件管理{% endblock %}
+
+{% block extra_head %}
+<style>
+  .loa-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .loa-table th { color: var(--muted); font-size: 12px; font-weight: 700; padding: 8px 10px; border-bottom: 2px solid var(--border); text-align: left; white-space: nowrap; }
+  .loa-table td { padding: 10px 10px; border-bottom: 1px solid #edf2f7; vertical-align: middle; }
+  .loa-table tbody tr:hover { background: #f8fafc; }
+  .loa-table .col-check { width: 36px; }
+  .loa-table .col-cidr { min-width: 160px; font-family: monospace; font-size: 13px; }
+  .loa-table .col-asn { min-width: 90px; font-family: monospace; font-size: 13px; }
+  .loa-table .col-loc { width: 80px; }
+  .loa-table .col-size { width: 80px; text-align: right; color: var(--muted); font-size: 13px; }
+  .loa-table .col-time { width: 160px; color: var(--muted); font-size: 13px; }
+  .loa-table .col-ops { width: 110px; text-align: right; }
+  .loc-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .loc-badge.permanent { background: #d1fae5; color: #065f46; }
+  .loc-badge.temp { background: #fef3c7; color: #92400e; }
+  .search-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .search-bar input { width: 220px; }
+  .upload-zone {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 24px 20px;
+    text-align: center; cursor: pointer; transition: border-color .2s, background .2s;
+    background: #f8fafc; color: var(--muted); font-size: 14px;
+  }
+  .upload-zone.drag-over { border-color: var(--secondary); background: #eff6ff; color: var(--secondary); }
+  .preview-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+  .preview-table th { color: var(--muted); font-size: 11px; font-weight: 700; padding: 6px 8px; border-bottom: 2px solid var(--border); text-align: left; }
+  .preview-table td { padding: 6px 8px; border-bottom: 1px solid #edf2f7; vertical-align: middle; }
+  .preview-table input { padding: 5px 8px; font-size: 13px; }
+  .preview-table .fn-col { color: var(--muted); font-size: 12px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .preview-table .del-btn { width: 28px; height: 28px; padding: 0; border-radius: 6px; }
+  #uploadStatus .item { padding: 4px 0; font-size: 13px; }
+  #uploadStatus .item.ok { color: var(--primary); }
+  #uploadStatus .item.err { color: var(--danger); }
+  .empty-row td { text-align: center; color: var(--muted); padding: 32px 0; font-size: 14px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- LOA 列表 -->
+<div class="card">
+  <div class="card-title">已保存的 LOA 文件</div>
+  <div class="search-bar">
+    <input id="searchInput" type="text" placeholder="搜索 IP段 / ASN…" style="width:220px">
+    <button class="btn btn-danger" id="batchDeleteBtn" disabled>批量删除</button>
+    <span id="selectedCount" style="font-size:13px;color:var(--muted);"></span>
+    <span style="flex:1"></span>
+    <button class="btn btn-ghost" id="refreshBtn">刷新</button>
+  </div>
+  <div style="overflow-x:auto">
+    <table class="loa-table">
+      <thead>
+        <tr>
+          <th class="col-check"><input type="checkbox" id="checkAll"></th>
+          <th class="col-cidr">IP段</th>
+          <th class="col-asn">ASN</th>
+          <th class="col-loc">目录</th>
+          <th class="col-size">大小</th>
+          <th class="col-time">更新时间</th>
+          <th class="col-ops">操作</th>
+        </tr>
+      </thead>
+      <tbody id="loaTableBody">
+        <tr class="empty-row"><td colspan="7">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 批量上传 -->
+<div class="card">
+  <div class="card-title">批量上传 LOA</div>
+  <p class="hint" style="margin:0 0 12px">上传后文件将保存至 permanent 目录，下次宣告时自动复用。文件名格式 <code>{IP}_{mask}_AS{ASN}.pdf</code> 或 <code>{IP}_{mask}.pdf</code> 可自动解析。</p>
+  <div class="upload-zone" id="uploadZone">
+    拖拽 PDF 文件到此处，或 <strong>点击选择文件</strong>
+    <input type="file" id="fileInput" accept=".pdf" multiple style="display:none">
+  </div>
+  <div id="previewArea" style="display:none">
+    <table class="preview-table">
+      <thead>
+        <tr>
+          <th style="width:40px">#</th>
+          <th>文件名</th>
+          <th style="width:180px">IP段 (CIDR)</th>
+          <th style="width:120px">ASN</th>
+          <th style="width:36px"></th>
+        </tr>
+      </thead>
+      <tbody id="previewBody"></tbody>
+    </table>
+    <div class="footer-bar">
+      <button class="btn btn-primary" id="doUploadBtn">上传全部</button>
+      <button class="btn btn-ghost" id="clearPreviewBtn">清空</button>
+      <span id="uploadStatus" style="flex:1"></span>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  /* ── 工具函数 ─────────────────────────────── */
+  function fmt_size(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+  function fmt_time(ts) {
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString('zh-CN') + ' ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  }
+  // 从文件名解析 CIDR 和 ASN
+  // 支持：192.168.1.0_24_AS12345.pdf 和 192.168.1.0_24.pdf
+  function parse_filename(name) {
+    const base = name.replace(/\.pdf$/i, '');
+    const m_asn = base.match(/^(\d+\.\d+\.\d+\.\d+)_(\d+)_AS(\d+)$/i);
+    if (m_asn) return { cidr: `${m_asn[1]}/${m_asn[2]}`, asn: m_asn[3] };
+    const m_gen = base.match(/^(\d+\.\d+\.\d+\.\d+)_(\d+)$/);
+    if (m_gen) return { cidr: `${m_gen[1]}/${m_gen[2]}`, asn: '' };
+    return { cidr: '', asn: '' };
+  }
+
+  /* ── 加载列表 ─────────────────────────────── */
+  let allItems = [];
+  async function loadList() {
+    const tbody = document.getElementById('loaTableBody');
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="7">加载中…</td></tr>';
+    try {
+      const res = await fetch('/api/loa/list');
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error);
+      allItems = data.items || [];
+      renderTable(allItems);
+    } catch (e) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="7" style="color:var(--danger)">加载失败：${e.message}</td></tr>`;
+    }
+  }
+
+  function renderTable(items) {
+    const tbody = document.getElementById('loaTableBody');
+    document.getElementById('checkAll').checked = false;
+    updateBatchBtn();
+    if (!items.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">暂无 LOA 文件</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map((item, i) => `
+      <tr data-idx="${i}">
+        <td class="col-check"><input type="checkbox" class="row-check" data-idx="${i}"></td>
+        <td class="col-cidr">${item.cidr}</td>
+        <td class="col-asn">${item.asn ? 'AS' + item.asn : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="col-loc"><span class="loc-badge ${item.location}">${item.location === 'permanent' ? '正式' : '临时'}</span></td>
+        <td class="col-size">${fmt_size(item.size)}</td>
+        <td class="col-time">${fmt_time(item.updated_at)}</td>
+        <td class="col-ops">
+          <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px" onclick="downloadLoa('${item.cidr}','${item.asn}')">下载</button>
+          <button class="btn btn-danger" style="padding:5px 10px;font-size:12px;margin-left:4px" onclick="deleteSingle('${item.cidr}','${item.asn}','${item.location}')">删除</button>
+        </td>
+      </tr>`).join('');
+
+    // 行复选框监听
+    tbody.querySelectorAll('.row-check').forEach(cb => {
+      cb.addEventListener('change', updateBatchBtn);
+    });
+  }
+
+  document.getElementById('searchInput').addEventListener('input', function () {
+    const q = this.value.trim().toLowerCase();
+    if (!q) { renderTable(allItems); return; }
+    renderTable(allItems.filter(it => it.cidr.includes(q) || it.asn.includes(q)));
+  });
+
+  /* ── 全选 / 批量删除 ──────────────────────── */
+  document.getElementById('checkAll').addEventListener('change', function () {
+    document.querySelectorAll('.row-check').forEach(cb => { cb.checked = this.checked; });
+    updateBatchBtn();
+  });
+
+  function updateBatchBtn() {
+    const checked = document.querySelectorAll('.row-check:checked');
+    const btn = document.getElementById('batchDeleteBtn');
+    btn.disabled = checked.length === 0;
+    document.getElementById('selectedCount').textContent = checked.length ? `已选 ${checked.length} 项` : '';
+  }
+
+  document.getElementById('batchDeleteBtn').addEventListener('click', async () => {
+    const checked = [...document.querySelectorAll('.row-check:checked')];
+    if (!checked.length) return;
+    if (!confirm(`确定删除选中的 ${checked.length} 个 LOA 文件？此操作不可恢复。`)) return;
+    const targets = checked.map(cb => {
+      const idx = parseInt(cb.dataset.idx);
+      const q = document.getElementById('searchInput').value.trim().toLowerCase();
+      const list = q ? allItems.filter(it => it.cidr.includes(q) || it.asn.includes(q)) : allItems;
+      return list[idx];
+    }).filter(Boolean);
+
+    let failed = 0;
+    for (const item of targets) {
+      const ok = await doDelete(item.cidr, item.asn, item.location, false);
+      if (!ok) failed++;
+    }
+    if (failed) alert(`${failed} 个文件删除失败`);
+    loadList();
+  });
+
+  /* ── 单条删除 ─────────────────────────────── */
+  async function deleteSingle(cidr, asn, location) {
+    if (!confirm(`确定删除 ${cidr}${asn ? ' AS' + asn : ''} 的 LOA 文件？`)) return;
+    await doDelete(cidr, asn, location, true);
+    loadList();
+  }
+
+  async function doDelete(cidr, asn, location, toast) {
+    try {
+      const res = await fetch('/api/loa/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cidr, asn, location }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error);
+      if (toast) showToast(`已删除 ${data.deleted}`);
+      return true;
+    } catch (e) {
+      if (toast) alert(`删除失败：${e.message}`);
+      return false;
+    }
+  }
+
+  /* ── 下载 ─────────────────────────────────── */
+  function downloadLoa(cidr, asn) {
+    const url = `/api/loa/download?cidr=${encodeURIComponent(cidr)}&asn=${encodeURIComponent(asn)}`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    a.click();
+  }
+
+  /* ── 刷新 ─────────────────────────────────── */
+  document.getElementById('refreshBtn').addEventListener('click', loadList);
+
+  /* ── 批量上传 ─────────────────────────────── */
+  const uploadZone = document.getElementById('uploadZone');
+  const fileInput = document.getElementById('fileInput');
+  const previewArea = document.getElementById('previewArea');
+  const previewBody = document.getElementById('previewBody');
+  let pendingFiles = [];
+
+  uploadZone.addEventListener('click', () => fileInput.click());
+  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+  uploadZone.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadZone.classList.remove('drag-over');
+    addFiles([...e.dataTransfer.files]);
+  });
+  fileInput.addEventListener('change', () => {
+    addFiles([...fileInput.files]);
+    fileInput.value = '';
+  });
+
+  function addFiles(files) {
+    const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    if (!pdfs.length) { alert('请选择 PDF 文件'); return; }
+    pdfs.forEach(f => {
+      const { cidr, asn } = parse_filename(f.name);
+      pendingFiles.push({ file: f, cidr, asn });
+    });
+    renderPreview();
+  }
+
+  function renderPreview() {
+    document.getElementById('uploadStatus').innerHTML = '';
+    if (!pendingFiles.length) { previewArea.style.display = 'none'; return; }
+    previewArea.style.display = '';
+    previewBody.innerHTML = pendingFiles.map((item, i) => `
+      <tr data-pidx="${i}">
+        <td>${i + 1}</td>
+        <td class="fn-col" title="${item.file.name}">${item.file.name}</td>
+        <td><input type="text" class="p-cidr" value="${item.cidr}" placeholder="如 1.2.3.0/24"></td>
+        <td><input type="text" class="p-asn" value="${item.asn}" placeholder="如 12345 或 AS12345"></td>
+        <td><button class="btn btn-icon del preview-table del-btn" onclick="removePreviewRow(${i})" title="移除">✕</button></td>
+      </tr>`).join('');
+
+    // 同步编辑回 pendingFiles
+    previewBody.querySelectorAll('tr[data-pidx]').forEach(tr => {
+      const idx = parseInt(tr.dataset.pidx);
+      tr.querySelector('.p-cidr').addEventListener('input', function () { pendingFiles[idx].cidr = this.value.trim(); });
+      tr.querySelector('.p-asn').addEventListener('input', function () { pendingFiles[idx].asn = this.value.trim(); });
+    });
+  }
+
+  window.removePreviewRow = function (idx) {
+    pendingFiles.splice(idx, 1);
+    renderPreview();
+  };
+
+  document.getElementById('clearPreviewBtn').addEventListener('click', () => {
+    pendingFiles = [];
+    renderPreview();
+  });
+
+  document.getElementById('doUploadBtn').addEventListener('click', async () => {
+    if (!pendingFiles.length) return;
+    const btn = document.getElementById('doUploadBtn');
+    btn.disabled = true;
+    btn.textContent = '上传中…';
+    const statusEl = document.getElementById('uploadStatus');
+    statusEl.innerHTML = '';
+
+    const fd = new FormData();
+    pendingFiles.forEach((item, i) => {
+      fd.append('files[]', item.file, item.file.name);
+      fd.append('cidrs[]', item.cidr);
+      fd.append('asns[]', item.asn.replace(/^AS/i, ''));
+    });
+
+    try {
+      const res = await fetch('/api/loa/batch-upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      const results = data.results || [];
+      statusEl.innerHTML = results.map(r =>
+        `<div class="item ${r.ok ? 'ok' : 'err'}">${r.ok ? '✓' : '✗'} ${r.filename}${r.ok ? '' : ' — ' + r.error}</div>`
+      ).join('');
+      if (results.some(r => r.ok)) {
+        pendingFiles = pendingFiles.filter((_, i) => !results[i]?.ok);
+        renderPreview();
+        loadList();
+      }
+    } catch (e) {
+      statusEl.innerHTML = `<div class="item err">上传请求失败：${e.message}</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '上传全部';
+    }
+  });
+
+  /* ── Toast 提示 ───────────────────────────── */
+  function showToast(msg) {
+    const el = Object.assign(document.createElement('div'), {
+      textContent: msg,
+      style: 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:10px 20px;border-radius:8px;font-size:14px;z-index:9999;opacity:1;transition:opacity .4s',
+    });
+    document.body.appendChild(el);
+    setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 400); }, 2500);
+  }
+
+  /* ── 初始化 ───────────────────────────────── */
+  loadList();
+</script>
+{% endblock %}

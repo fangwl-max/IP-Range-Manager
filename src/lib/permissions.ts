@@ -66,7 +66,7 @@ export const PAGE_PERMS: Record<string, PermNode> = {
       'withdraw': '执行批量撤播',
     },
   },
-  'remote-sync': { label: '远程数据同步', adminOnly: true },
+  'remote-sync': { label: '远程数据同步' },
   'user-management': { label: '用户与权限', adminOnly: true },
 };
 
@@ -79,7 +79,7 @@ export const ROLE_DEFAULTS: Record<string, string[]> = {
   admin: ALL_KEYS,
   editor: [
     'ip-management', 'ip-management.edit', 'ip-management.delete', 'ip-management.import', 'ip-management.export',
-    'irr-detection',
+    'irr-detection', 'irr-detection.ssh-manage',
     'pre-purchase-check',
     'cost-analysis-main', 'cost-analysis-ipxo', 'ip-segment-stats',
     'config-project-groups', 'config-project-groups.edit',
@@ -91,11 +91,16 @@ export const ROLE_DEFAULTS: Record<string, string[]> = {
     'notify-config', 'notify-config.edit',
     'announce-zen', 'announce-zen.announce', 'announce-zen.withdraw',
     'announce-capital-online', 'announce-capital-online.announce', 'announce-capital-online.withdraw',
+    'remote-sync',
   ],
   viewer: [
-    'ip-management',
+    'ip-management', 'ip-management.export',
     'irr-detection',
-    'cost-analysis-main', 'cost-analysis-ipxo', 'ip-segment-stats',
+    'cost-analysis-main', 'ip-segment-stats',
+    'asn-standby-a', 'asn-standby-a.edit',
+    'asn-standby-b', 'asn-standby-b.edit',
+    'announce-zen', 'announce-zen.announce',
+    'announce-capital-online', 'announce-capital-online.announce',
   ],
 };
 

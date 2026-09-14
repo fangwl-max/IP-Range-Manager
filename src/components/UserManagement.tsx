@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Card, Table, Button, Modal, Form, Input, Select, message, Popconfirm, Tag,
   Drawer, Tree, Space, Divider, Badge, Tooltip,
@@ -32,7 +32,7 @@ function allTreeKeys(): string[] {
 const ALL_GRANTABLE_KEYS = allTreeKeys();
 
 const UserManagement: React.FC = () => {
-  const { user: currentUser, hasPermission, token } = useAuth();
+  const { user: currentUser, hasPermission, token, refreshUser } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
@@ -44,8 +44,6 @@ const UserManagement: React.FC = () => {
   const [permTargetUser, setPermTargetUser] = useState<User | null>(null);
   const [checkedKeys, setCheckedKeys] = useState<string[]>([]);
   const [savingPerms, setSavingPerms] = useState(false);
-  // For checkStrictly:true, halfCheckedKeys is irrelevant but we track it for the prop
-  const halfCheckedRef = useRef<string[]>([]);
 
   const fetchUsers = async () => {
     if (!hasPermission('user-management')) return;
@@ -148,6 +146,10 @@ const UserManagement: React.FC = () => {
         message.success('权限已保存');
         setPermDrawerOpen(false);
         fetchUsers();
+        // 若修改的是当前登录用户，立即刷新 AuthContext 以更新前端权限
+        if (permTargetUser.id === currentUser?.id) {
+          await refreshUser();
+        }
       } else {
         message.error(data.message || '保存失败');
       }
@@ -345,12 +347,11 @@ const UserManagement: React.FC = () => {
 
         <Tree
           checkable
-          checkStrictly
           defaultExpandAll
           treeData={PERM_TREE_DATA}
-          checkedKeys={{ checked: checkedKeys, halfChecked: halfCheckedRef.current }}
+          checkedKeys={checkedKeys}
           onCheck={(keys: any) => {
-            setCheckedKeys((keys as { checked: string[]; halfChecked: string[] }).checked);
+            setCheckedKeys(Array.isArray(keys) ? keys : (keys as { checked: string[] }).checked);
           }}
         />
 

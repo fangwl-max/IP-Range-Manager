@@ -2,12 +2,13 @@ import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import {
   Card, Row, Col, Button, Table, Tag, Space, Input, Select, InputNumber,
   Typography, Spin, Alert, Tooltip, Badge, Modal, message, Divider,
-  Checkbox, Tabs, Form, Switch,
+  Checkbox, Tabs, Form, Switch, Popconfirm, Radio, List, Result,
 } from 'antd';
 import {
   SearchOutlined, ShoppingCartOutlined, FilterOutlined, BugOutlined,
   ReloadOutlined, CheckCircleOutlined,
   WarningOutlined, CloudServerOutlined, TeamOutlined, CopyOutlined, LinkOutlined,
+  DeleteOutlined, StopOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons';
 
 const { Text, Title, Link } = Typography;
@@ -36,6 +37,7 @@ interface LeasedSegment {
   address: string;
   cidr: number;
   status: string;
+  purchaseDate: string;
   nextDueDate: string | null;
   recurringAmount: number;
   serviceUuid: string;
@@ -207,6 +209,16 @@ const PrePurchaseCheck: React.FC = () => {
   const [loaAsn, setLoaAsn] = useState('');
   const [loaCompany, setLoaCompany] = useState('');
   const [loaAdding, setLoaAdding] = useState(false);
+
+  // LOA 移除（取消 ASN 授权）
+  const [removingLoaKey, setRemovingLoaKey] = useState<string | null>(null);
+
+  // 取消续费 Modal
+  const [cancelRenewalVisible, setCancelRenewalVisible] = useState(false);
+  const [cancelRenewalLoading, setCancelRenewalLoading] = useState(false);
+  const [cancelType, setCancelType] = useState<'end_of_period' | 'immediate'>('end_of_period');
+  const [cancelReason, setCancelReason] = useState('End of project');
+  const [cancelResults, setCancelResults] = useState<{ subnet: string; ok: boolean; message: string }[]>([]);
 
   // ── 加载已有 IP 段的 AB 段统计（包含所有历史购买段，含已取消） ────────
   const loadExistingSegments = useCallback(async () => {
@@ -609,6 +621,65 @@ const PrePurchaseCheck: React.FC = () => {
     }
   }, [loaAsn, loaCompany, leasedSelectedKeys, leasedItems]);
 
+  // ── 移除单条 LOA（取消 ASN 授权） ──────────────────────────────────────
+  const handleRemoveLoa = useCallback(async (segment: LeasedSegment, loaUuid: string) => {
+    setRemovingLoaKey(loaUuid);
+    try {
+      const res = await fetch('/api/ipxo/loa/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceUuid: segment.serviceUuid, loaUuid, subnet: segment.segment }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        message.success(json.message || `已移除 ${segment.segment} 的 ASN 授权`);
+        loadLeasedSegments(leasedPage, leasedPageSize, leasedNoAsnOnly, leasedSearch, leasedNoPaging);
+      } else {
+        message.error('移除失败: ' + (json.message || '未知错误'));
+      }
+    } catch (e: any) {
+      message.error('请求失败: ' + e.message);
+    } finally {
+      setRemovingLoaKey(null);
+    }
+  }, [leasedPage, leasedPageSize, leasedNoAsnOnly, leasedSearch, leasedNoPaging, loadLeasedSegments]);
+
+  // ── 批量取消续费 ────────────────────────────────────────────────────────
+  const handleCancelRenewal = useCallback(async () => {
+    setCancelRenewalLoading(true);
+    setCancelResults([]);
+    const services = leasedItems
+      .filter(i => leasedSelectedKeys.includes(i.segment))
+      .map(i => ({ billingUuid: i.serviceUuid, marketUuid: i.marketServiceUuid, subnet: i.segment }));
+    try {
+      const res = await fetch('/api/ipxo/services/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ services, type: cancelType, reason: cancelReason }),
+      });
+      const json = await res.json();
+      const results: { subnet: string; ok: boolean; message: string }[] = (json.results || []).map((r: any) => ({
+        subnet: r.subnet || r.billingUuid || '',
+        ok: !!r.ok,
+        message: r.message || '',
+      }));
+      setCancelResults(results);
+      const successCount = results.filter(r => r.ok).length;
+      if (successCount > 0) {
+        message.success(`成功取消 ${successCount}/${results.length} 个 IP 段续费`);
+        setLeasedSelectedKeys([]);
+        loadLeasedSegments(leasedPage, leasedPageSize, leasedNoAsnOnly, leasedSearch, leasedNoPaging);
+      } else {
+        message.error('所有请求均失败，请查看详情');
+      }
+    } catch (e: any) {
+      message.error('请求失败: ' + e.message);
+    } finally {
+      setCancelRenewalLoading(false);
+    }
+  }, [leasedItems, leasedSelectedKeys, cancelType, cancelReason,
+      leasedPage, leasedPageSize, leasedNoAsnOnly, leasedSearch, leasedNoPaging, loadLeasedSegments]);
+
   // ── 统计 ────────────────────────────────────────────────────────────────
   const displayItems = smartFilteredItems;
   const selectedItems = displayItems.filter(i => selectedKeys.includes(i.segment));
@@ -1002,7 +1073,15 @@ const PrePurchaseCheck: React.FC = () => {
                         checked={leasedNoAsnOnly}
                         onChange={v => {
                           setLeasedNoAsnOnly(v); setLeasedPage(1); setLeasedSelectedKeys([]);
-                          loadLeasedSegments(1, leasedPageSize, v, leasedSearch, leasedNoPaging);
+                          // 开启"仅无 ASN"时清空搜索，避免两个过滤器叠加导致 0 结果
+                          if (v) {
+                            setLeasedSearch('');
+                            setLeasedSearchInput('');
+                            if (leasedDebounceRef.current) clearTimeout(leasedDebounceRef.current);
+                            loadLeasedSegments(1, leasedPageSize, true, '', leasedNoPaging);
+                          } else {
+                            loadLeasedSegments(1, leasedPageSize, false, leasedSearch, leasedNoPaging);
+                          }
                         }}
                         checkedChildren="仅无 ASN" unCheckedChildren="全部"
                       />
@@ -1030,11 +1109,21 @@ const PrePurchaseCheck: React.FC = () => {
                       </Button>
                     </Col>
                     {leasedSelectedKeys.length > 0 && (
-                      <Col>
-                        <Button type="primary" icon={<TeamOutlined />} onClick={() => setLoaModalVisible(true)}>
-                          设置 ASN（{leasedSelectedKeys.length} 个）
-                        </Button>
-                      </Col>
+                      <>
+                        <Col>
+                          <Button type="primary" icon={<TeamOutlined />} onClick={() => setLoaModalVisible(true)}>
+                            设置 ASN（{leasedSelectedKeys.length} 个）
+                          </Button>
+                        </Col>
+                        <Col>
+                          <Button
+                            danger icon={<StopOutlined />}
+                            onClick={() => { setCancelResults([]); setCancelRenewalVisible(true); }}
+                          >
+                            取消续费（{leasedSelectedKeys.length} 个）
+                          </Button>
+                        </Col>
+                      </>
                     )}
                     {leasedCachedAt && (
                       <Col>
@@ -1067,21 +1156,46 @@ const PrePurchaseCheck: React.FC = () => {
                       columns={[
                         { title: 'IP 段', dataIndex: 'segment', key: 'segment', width: 160,
                           render: (v: string) => <Text style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: 13 }}>{v}</Text> },
-                        { title: 'ASN', key: 'asn', width: 220,
+                        { title: 'ASN', key: 'asn', width: 260,
                           render: (_: any, r: LeasedSegment) => r.loa.length > 0
                             ? <Space direction="vertical" size={2}>
-                                {r.loa.map(l => <Space key={l.uuid} size={4}>
-                                  <Tag color={l.status === 'Active' ? 'green' : 'orange'} style={{ fontSize: 11 }}>AS{l.asn}</Tag>
-                                  <Text style={{ fontSize: 11 }} type="secondary">{l.asName}</Text>
-                                </Space>)}
+                                {r.loa.map(l => (
+                                  <Space key={l.uuid} size={4} align="center">
+                                    <Tag color={l.status === 'Active' ? 'green' : 'orange'} style={{ fontSize: 11, marginRight: 0 }}>AS{l.asn}</Tag>
+                                    <Text style={{ fontSize: 11 }} type="secondary">{l.asName}</Text>
+                                    <Popconfirm
+                                      title={`确认移除 AS${l.asn} 对 ${r.segment} 的授权？`}
+                                      description="此操作将通过 IPXO API 删除 LOA 授权，不可撤销。"
+                                      onConfirm={() => handleRemoveLoa(r, l.uuid)}
+                                      okText="确认移除" cancelText="取消"
+                                      okButtonProps={{ danger: true }}
+                                    >
+                                      <Button
+                                        type="text" danger size="small"
+                                        icon={<DeleteOutlined />}
+                                        loading={removingLoaKey === l.uuid}
+                                        style={{ padding: '0 2px', height: 18 }}
+                                      />
+                                    </Popconfirm>
+                                  </Space>
+                                ))}
                               </Space>
                             : <Tag color="red" icon={<WarningOutlined />}>未设置 ASN</Tag> },
                         { title: '月费', dataIndex: 'recurringAmount', key: 'recurringAmount', width: 100, align: 'right' as const,
                           render: (v: number) => v != null ? `$${Number(v).toFixed(2)}` : '-' },
                         { title: 'RIR', dataIndex: 'registry', key: 'registry', width: 80,
                           render: (v: string) => v ? <Tag>{v.toUpperCase()}</Tag> : '-' },
+                        { title: '购买日', dataIndex: 'purchaseDate', key: 'purchaseDate', width: 110,
+                          render: (v: string) => v || '-' },
                         { title: '续费日', dataIndex: 'nextDueDate', key: 'nextDueDate', width: 110,
                           render: (v: string) => v || '-' },
+                        { title: '续费状态', dataIndex: 'renewalStatus', key: 'renewalStatus', width: 100,
+                          render: (v: string | null) => {
+                            if (v === 'cancelled') return <Tag color="warning">到期取消</Tag>;
+                            if (v === 'refunded') return <Tag color="error">已退款</Tag>;
+                            if (v === 'renewed') return <Tag color="success">未取消</Tag>;
+                            return <Tag color="default">未取消</Tag>;
+                          }},
                         { title: '项目组', key: 'projectGroups', width: 140,
                           render: (_: any, r: LeasedSegment) => r.projectGroups.length > 0
                             ? <Space wrap size={2}>{r.projectGroups.map(g => <Tag key={g} style={{ fontSize: 11 }}>{g}</Tag>)}</Space>
@@ -1130,6 +1244,75 @@ const PrePurchaseCheck: React.FC = () => {
           },
         ]}
       />
+
+      {/* 取消续费 Modal */}
+      <Modal
+        title={<Space><ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />取消 IP 段续费</Space>}
+        open={cancelRenewalVisible}
+        onCancel={() => setCancelRenewalVisible(false)}
+        onOk={handleCancelRenewal}
+        confirmLoading={cancelRenewalLoading}
+        okText="确认取消续费"
+        cancelText="返回"
+        okButtonProps={{ danger: true, disabled: cancelResults.length > 0 }}
+        width={600}
+      >
+        {cancelResults.length === 0 ? (
+          <>
+            <Alert
+              type="warning" showIcon
+              message="操作警告"
+              description="取消续费后，IP 段将在到期日停止服务（到期取消）或立即停止（立即取消）。此操作通过 IPXO API 执行，请谨慎确认。"
+              style={{ marginBottom: 16 }}
+            />
+            <div style={{ marginBottom: 12 }}>
+              <Text type="secondary">待取消 IP 段（{leasedSelectedKeys.length} 个）：</Text>
+              <div style={{ maxHeight: 100, overflowY: 'auto', marginTop: 6, padding: '6px 8px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: 4 }}>
+                {leasedItems.filter(i => leasedSelectedKeys.includes(i.segment)).map(i => (
+                  <Space key={i.segment} size={8} style={{ display: 'block', marginBottom: 2 }}>
+                    <Tag style={{ fontFamily: 'monospace' }}>{i.segment}</Tag>
+                    {i.nextDueDate && <Text type="secondary" style={{ fontSize: 11 }}>续费日 {i.nextDueDate}</Text>}
+                  </Space>
+                ))}
+              </div>
+            </div>
+            <Form layout="vertical">
+              <Form.Item label="取消方式">
+                <Radio.Group value={cancelType} onChange={e => setCancelType(e.target.value)}>
+                  <Radio value="end_of_period">到期取消（到期日后停止，推荐）</Radio>
+                  <Radio value="immediate"><Text type="danger">立即取消（立刻停止服务）</Text></Radio>
+                </Radio.Group>
+              </Form.Item>
+              <Form.Item label="取消原因">
+                <Input
+                  value={cancelReason}
+                  onChange={e => setCancelReason(e.target.value)}
+                  placeholder="填写取消原因（发送给 IPXO）"
+                />
+              </Form.Item>
+            </Form>
+          </>
+        ) : (
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <Text strong>执行结果：</Text>
+            </div>
+            <List
+              size="small"
+              dataSource={cancelResults}
+              renderItem={item => (
+                <List.Item>
+                  <Space>
+                    <Tag color={item.ok ? 'success' : 'error'}>{item.ok ? '成功' : '失败'}</Tag>
+                    <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{item.subnet}</Text>
+                    <Text type={item.ok ? undefined : 'danger'} style={{ fontSize: 12 }}>{item.message}</Text>
+                  </Space>
+                </List.Item>
+              )}
+            />
+          </>
+        )}
+      </Modal>
 
       {/* 购物车弹窗 */}
       <Modal

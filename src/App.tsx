@@ -31,6 +31,7 @@ import UserManagement from './components/UserManagement';
 import Login from './components/Login';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import IPXOBilling from './components/IPXOBilling';
+import LarusManagement from './components/LarusManagement';
 import NotifyConfig from './components/NotifyConfig';
 import AsnStandbyPage from './components/AsnStandbyPage';
 import IPSegmentStats from './components/IPSegmentStats';
@@ -71,6 +72,7 @@ const VALID_MENU_KEYS = [
   ...CONFIG_SUB_KEYS,
   ...ASN_SUB_KEYS,
   ...ANNOUNCE_SUB_KEYS,
+  'larus-management',
   'user-management',
   'notify-config',
   'pre-purchase-check',
@@ -162,6 +164,7 @@ const AppContent: React.FC = () => {
 
   const menuItems: MenuProps['items'] = [
     { key: 'ip-management', icon: <DatabaseOutlined />, label: 'IP段管理' },
+    { key: 'larus-management', icon: <CloudDownloadOutlined />, label: 'Larus 管理' },
     {
       key: 'ip-detection',
       icon: <SearchOutlined />,
@@ -200,7 +203,7 @@ const AppContent: React.FC = () => {
     },
     ...(hasPermission('user-management') ? [{ key: 'user-management', icon: <UserOutlined />, label: '用户与权限' }] : []),
     { key: 'notify-config', icon: <MailOutlined />, label: '通知配置' },
-    { key: 'remote-sync', icon: <CloudDownloadOutlined />, label: '远程数据同步' },
+    ...(hasPermission('remote-sync') ? [{ key: 'remote-sync', icon: <CloudDownloadOutlined />, label: '远程数据同步' }] : []),
     {
       key: 'announce',
       icon: <SoundOutlined />,
@@ -334,6 +337,7 @@ const AppContent: React.FC = () => {
           {selectedMenu === 'pre-purchase-check' && <PrePurchaseCheck />}
           {selectedMenu === 'cost-analysis-main' && <CostAnalysis />}
           {selectedMenu === 'cost-analysis-ipxo' && <IPXOBilling />}
+          {selectedMenu === 'larus-management' && <LarusManagement />}
           {selectedMenu === 'ip-segment-stats' && <IPSegmentStats />}
           {selectedMenu === 'config-suppliers' && <SupplierConfigPage />}
           {selectedMenu === 'config-usage-areas' && <UsageAreaConfigPage />}

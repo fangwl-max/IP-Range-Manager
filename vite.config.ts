@@ -35,8 +35,59 @@ const cdsConfigFilePath = path.resolve(__dirname, 'cds-config.json');
 // 内存中的 token 存储 (token -> { userId, username })
 const tokenStore = new Map<string, { userId: string; username: string; role: string }>();
 
+// 角色默认权限（与 src/lib/permissions.ts 保持一致）
+const BACKEND_ROLE_DEFAULTS: Record<string, string[]> = {
+  editor: [
+    'ip-management', 'ip-management.edit', 'ip-management.delete', 'ip-management.import', 'ip-management.export',
+    'irr-detection', 'pre-purchase-check',
+    'cost-analysis-main', 'cost-analysis-ipxo', 'ip-segment-stats',
+    'config-project-groups', 'config-project-groups.edit',
+    'config-suppliers', 'config-suppliers.edit',
+    'config-usage-areas', 'config-usage-areas.edit',
+    'asn-management', 'asn-management.edit',
+    'asn-standby-a', 'asn-standby-a.edit',
+    'asn-standby-b', 'asn-standby-b.edit',
+    'notify-config', 'notify-config.edit',
+    'announce-zen', 'announce-zen.announce', 'announce-zen.withdraw',
+    'announce-capital-online', 'announce-capital-online.announce', 'announce-capital-online.withdraw',
+  ],
+  viewer: [
+    'ip-management', 'irr-detection',
+    'cost-analysis-main', 'cost-analysis-ipxo', 'ip-segment-stats',
+  ],
+};
+
+/** 检查 token 对应的用户是否拥有指定权限 key（每次从 users.json 读最新 permissions，权限修改即时生效） */
+function userHasPermission(tokenVal: string, permKey: string): boolean {
+  const session = tokenStore.get(tokenVal);
+  if (!session) return false;
+  if (session.role === 'admin') return true;
+  try {
+    const users = loadUsers();
+    const user = users.find((u: any) => u.id === session.userId);
+    if (!user) return false;
+    if (user.role === 'admin') return true;
+    if (Array.isArray(user.permissions)) return user.permissions.includes(permKey);
+    return (BACKEND_ROLE_DEFAULTS[user.role] ?? []).includes(permKey);
+  } catch {
+    return false;
+  }
+}
+
 // CDS 内部 token（主系统与 Flask 子进程共享，用于跳过 Flask 自身认证）
-const CDS_INTERNAL_TOKEN = crypto.randomBytes(32).toString('hex');
+// 持久化到文件，确保 Vite 重启后 token 不变，Flask 子进程无需重启
+const cdsTokenPath = path.resolve(__dirname, '.cds-token');
+const CDS_INTERNAL_TOKEN = (() => {
+  try {
+    if (fs.existsSync(cdsTokenPath)) {
+      const t = fs.readFileSync(cdsTokenPath, 'utf-8').trim();
+      if (t.length === 64) return t; // 32 bytes hex
+    }
+  } catch { /* ignore */ }
+  const t = crypto.randomBytes(32).toString('hex');
+  try { fs.writeFileSync(cdsTokenPath, t, 'utf-8'); } catch { /* ignore */ }
+  return t;
+})();
 
 /** 读取 cds-config.json */
 function loadCdsConfig(): any {
@@ -324,6 +375,10 @@ const notifyConfigPath = path.resolve(__dirname, 'notify-config.json');
 const upcomingStatusPath = path.resolve(__dirname, 'ipxo-upcoming-status.json');
 /** SSH 远程服务器配置文件 */
 const sshServersPath = path.resolve(__dirname, 'ssh-servers.json');
+
+// ===================== Larus 配置存储 =====================
+const larusConfigPath = path.resolve(__dirname, 'larus-config.json');
+const larusCachePath = path.resolve(__dirname, 'larus-cache.json');
 
 interface SshServerConfig {
   id: string;
@@ -1759,6 +1814,169 @@ function startWeeklyReportScheduler(): void {
   }, 60_000);
 }
 
+// ===================== Larus 辅助函数 =====================
+function loadLarusConfig(): { cookie: string; cacheHours: number } | null {
+  try {
+    if (!fs.existsSync(larusConfigPath)) return null;
+    const cfg = JSON.parse(fs.readFileSync(larusConfigPath, 'utf-8'));
+    return cfg.cookie ? cfg : null;
+  } catch { return null; }
+}
+
+function loadLarusCache(): any | null {
+  try {
+    if (!fs.existsSync(larusCachePath)) return null;
+    return JSON.parse(fs.readFileSync(larusCachePath, 'utf-8'));
+  } catch { return null; }
+}
+
+function saveLarusCache(data: any): void {
+  fs.writeFileSync(larusCachePath, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+function mergeLarusCookies(existing: string, setCookieHeaders: string[]): { cookie: string; changed: boolean } {
+  const cookieMap = new Map<string, string>();
+  const order: string[] = [];
+  existing.split(/;\s*/).forEach(pair => {
+    const eq = pair.indexOf('=');
+    if (eq > 0) {
+      const name = pair.slice(0, eq).trim();
+      if (!cookieMap.has(name)) order.push(name);
+      cookieMap.set(name, pair.slice(eq + 1).trim());
+    }
+  });
+  let changed = false;
+  for (const sc of setCookieHeaders) {
+    const mainPart = sc.split(';')[0].trim();
+    const eq = mainPart.indexOf('=');
+    if (eq <= 0) continue;
+    const name = mainPart.slice(0, eq).trim();
+    const value = mainPart.slice(eq + 1).trim();
+    if (!name) continue;
+    if (cookieMap.get(name) !== value) {
+      if (!cookieMap.has(name)) order.push(name);
+      cookieMap.set(name, value);
+      changed = true;
+    }
+  }
+  return { cookie: order.map(n => `${n}=${cookieMap.get(n)}`).join('; '), changed };
+}
+
+async function larusRequest(path: string, cookie: string): Promise<{ body: any; updatedCookie?: string }> {
+  const resp = await fetch(`https://larus.net${path}`, {
+    headers: {
+      Cookie: cookie,
+      Accept: 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      Referer: 'https://larus.net/ipv4/manage-leased-ips',
+      'X-Requested-With': 'XMLHttpRequest',
+    },
+  });
+  // 自动续期：捕获 Set-Cookie 并合并
+  let updatedCookie: string | undefined;
+  try {
+    const setCookies: string[] = (resp.headers as any).getSetCookie?.() || [];
+    if (setCookies.length > 0) {
+      const { cookie: merged, changed } = mergeLarusCookies(cookie, setCookies);
+      if (changed) updatedCookie = merged;
+    }
+  } catch { /* ignore */ }
+  if (!resp.ok) throw new Error(`Larus HTTP ${resp.status}`);
+  const contentType = resp.headers.get('content-type') || '';
+  const body = contentType.includes('json') ? await resp.json() as any : { _html: await resp.text() };
+  return { body, updatedCookie };
+}
+
+async function fetchLarusIps(cookie: string): Promise<{ items: any[]; updatedCookie?: string }> {
+  const { body, updatedCookie } = await larusRequest('/ipv4/lease-in/ip-list?page=1&limit=500', cookie);
+  if (!body.status) throw new Error(body.msg || 'Larus API 返回失败');
+  return { items: body.data?.lists || [], updatedCookie };
+}
+
+async function fetchLarusAllocationDetail(routeId: number, cookie: string): Promise<{
+  allocations: Array<{ asn: string; loa_path: string | null; alloc_id: number }>;
+  asn: string | null;
+  loa_path: string | null;
+  updatedCookie?: string;
+}> {
+  const { body, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation/${routeId}`, cookie);
+  const lists: any[] = body?.data?.lists || [];
+  const allocations = lists.map(item => ({
+    asn: String(item.asn),
+    loa_path: item.loa_file ? `/ipv4/contract/loa/${item.id}` : null,
+    alloc_id: item.id,
+  }));
+  const first = allocations[0] ?? null;
+  return {
+    allocations,
+    asn: first?.asn ?? null,
+    loa_path: first?.loa_path ?? null,
+    updatedCookie,
+  };
+}
+
+async function enrichLarusItems(
+  items: any[],
+  cookie: string,
+  fallback?: Map<string, { allocations?: any[]; asn?: string; loa_path?: string }>,
+): Promise<{ items: any[]; updatedCookie?: string }> {
+  let latestCookie = cookie;
+  const concurrency = 5;
+  const queue = [...items];
+  const results: any[] = [];
+  async function worker() {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) break;
+      try {
+        const detail = await fetchLarusAllocationDetail(item.id, latestCookie);
+        if (detail.updatedCookie) latestCookie = detail.updatedCookie;
+        results.push({
+          ...item,
+          allocations: detail.allocations,
+          asn: detail.asn,
+          loa_path: detail.loa_path,
+        });
+      } catch {
+        // 单个失败时沿用旧缓存的 ASN/LOA，避免刷新把已有数据抹掉
+        const prev = fallback?.get(String(item.id));
+        results.push(prev ? { ...item, ...prev } : item);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  const order = new Map(items.map((it, i) => [it.id, i]));
+  results.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  return { items: results, updatedCookie: latestCookie !== cookie ? latestCookie : undefined };
+}
+
+/**
+ * 每 90 分钟向 Larus 发一次轻量请求，防止 larus_session 因长期不访问而过期。
+ * 若响应携带 Set-Cookie，自动合并并持久化，保持 remember_web token 持续续期。
+ */
+function startLarusKeepAlive(): void {
+  const INTERVAL_MS = 90 * 60 * 1000;
+  const ping = async () => {
+    const cfg = loadLarusConfig();
+    if (!cfg) return;
+    try {
+      const { updatedCookie } = await larusRequest('/ipv4/lease-in/ip-list?page=1&limit=1', cfg.cookie);
+      if (updatedCookie) {
+        fs.writeFileSync(larusConfigPath, JSON.stringify({ ...cfg, cookie: updatedCookie }, null, 2), 'utf-8');
+        console.log('[Larus] KeepAlive: Session 已自动续期');
+      } else {
+        console.log('[Larus] KeepAlive: Session 有效');
+      }
+    } catch (e: any) {
+      console.warn('[Larus] KeepAlive: 请求失败，', e.message);
+    }
+  };
+  // 启动后 5 秒先 ping 一次，确认当前 session 是否有效
+  setTimeout(ping, 5000);
+  setInterval(ping, INTERVAL_MS);
+  console.log('[Larus] KeepAlive 已启动（每 90 分钟保活一次）');
+}
+
 /**
  * 每天 00:00 北京时间自动刷新 IPXO 缓存并同步新增 IP 段
  */
@@ -2026,6 +2244,36 @@ async function callIpxoApi(urlPath: string): Promise<any> {
       apiRes.on('data', (c) => { data += c.toString(); });
       apiRes.on('end', () => {
         try { resolve({ status: apiRes.statusCode, body: JSON.parse(data) }); }
+        catch { resolve({ status: apiRes.statusCode, body: data }); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('IPXO API timeout')); });
+    req.end();
+  });
+}
+
+/** DELETE 请求版本，用于移除 LOA 等操作 */
+async function callIpxoApiDelete(urlPath: string): Promise<any> {
+  const token = await getIpxoAccessToken();
+  const config = loadIpxoConfig()!;
+  const fullUrl = `https://apigw.ipxo.com${urlPath.replace('{tenant_uuid}', config.companyUuid)}`;
+  return new Promise((resolve, reject) => {
+    const urlObj = new URL(fullUrl);
+    const req = https.request({
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json',
+      },
+      timeout: 30000,
+    }, (apiRes) => {
+      let data = '';
+      apiRes.on('data', (c) => { data += c.toString(); });
+      apiRes.on('end', () => {
+        try { resolve({ status: apiRes.statusCode, body: data ? JSON.parse(data) : {} }); }
         catch { resolve({ status: apiRes.statusCode, body: data }); }
       });
     });
@@ -4728,7 +4976,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               asName: l.as_name,
               status: l.status,
             })),
-            hasAsn: loa.length > 0,
+            hasAsn: loa.some((l: any) => l.asn && (l.status || '').toLowerCase() === 'active'),
+            // 购买日期：优先 IPXO start_date（刷新缓存后有），回退本地 purchaseDate
+            purchaseDate: bs?.start_date
+              ? new Date((bs.start_date as number) * 1000).toISOString().slice(0, 10)
+              : (localSeg?.purchaseDate || ''),
             // 本地补充信息
             remark: upcomingStore[segKey]?.remark || localSeg?.remark || '',
             projectGroups: localSeg?.projectGroups || [],
@@ -4744,7 +4996,12 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           if (keywords.length > 0) {
             items = items.filter((i: any) => {
               const seg = (i.segment || '').toLowerCase();
-              return keywords.some((kw: string) => seg.includes(kw));
+              const asnStrs = (i.loa || []).map((l: any) => [
+                String(l.asn || ''),
+                `as${l.asn || ''}`,
+                (l.asName || '').toLowerCase(),
+              ]).flat();
+              return keywords.some((kw: string) => seg.includes(kw) || asnStrs.some((a: string) => a.includes(kw)));
             });
           }
         }
@@ -4947,6 +5204,51 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
     });
 
+    // ─── 移除 LOA（取消 IP 段 ASN 授权） ────────────────────────────────────
+    server.middlewares.use('/api/ipxo/loa/remove', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' })); return; }
+      try {
+        const config = loadIpxoConfig();
+        if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
+        const _chunks: Buffer[] = []; let body = '';
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', async () => { body = Buffer.concat(_chunks).toString('utf-8');
+          try {
+            const { serviceUuid, loaUuid, subnet } = JSON.parse(body);
+            if (!serviceUuid || !loaUuid) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '缺少 serviceUuid 或 loaUuid 参数' }));
+              return;
+            }
+            const r = await callIpxoApiDelete(
+              `/billing/v1/{tenant_uuid}/market/ipv4/services/${serviceUuid}/loa/${loaUuid}`
+            );
+            if (r.status >= 200 && r.status < 300) {
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, message: `已移除 ${subnet || serviceUuid} 的 LOA 授权` }));
+            } else {
+              res.statusCode = 200;
+              res.end(JSON.stringify({
+                success: false,
+                message: `移除失败 (HTTP ${r.status}): ${r.body?.message || r.body?.error || JSON.stringify(r.body).slice(0, 200)}`,
+              }));
+            }
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: e.message }));
+          }
+        });
+      } catch (e: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+    });
+
     // ─── 购前检测：搜索 IPXO 市场可购买 IP 段 ─────────────────────────────
     server.middlewares.use('/api/ipxo/market/search', async (req: any, res: any, _next: any) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -5108,9 +5410,28 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const cacheValid = cache && (Date.now() - new Date(cache.cachedAt).getTime()) < 6 * 3600 * 1000;
 
         if (cacheValid && cache.services?.data?.length) {
-          let allData: any[] = cache.services.data;
+          // _renewalStatus: 有 ecommerce_pending_order 代表已续费（未取消），否则到期取消
+          let allData: any[] = cache.services.data.map((item: any) => ({
+            ...item,
+            _renewalStatus: item.ecommerce_pending_order ? 'active' : 'cancelled',
+          }));
 
-          // 搜索过滤：多关键词 OR 匹配 IP 段
+          // ASN 过滤（服务端）
+          const asnFilter = reqUrl.searchParams.get('asn_filter') || '';
+          const asnValue = (reqUrl.searchParams.get('asn_value') || '').replace(/^AS/i, '').trim();
+          if (asnFilter === 'no_asn') {
+            allData = allData.filter((item: any) => {
+              const loa: any[] = item.loa || [];
+              return !loa.some((l: any) => l.asn && (l.status || '').toLowerCase() === 'active');
+            });
+          } else if (asnFilter === 'specific' && asnValue) {
+            allData = allData.filter((item: any) => {
+              const loa: any[] = item.loa || [];
+              return loa.some((l: any) => String(l.asn) === asnValue);
+            });
+          }
+
+          // 搜索过滤：多关键词 OR 匹配 IP 段（搜索模式全量返回，不分页）
           if (search) {
             const keywords = search.split(/[\s,，;；]+/).filter(Boolean).map(k => k.toLowerCase());
             allData = allData.filter((item: any) => {
@@ -5118,7 +5439,6 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               const subnet = `${bs.address || ''}/${bs.cidr ?? ''}`.toLowerCase();
               return keywords.some(k => subnet.includes(k));
             });
-            // 搜索模式返回全部结果（不分页）
             res.statusCode = 200;
             res.end(JSON.stringify({
               success: true,
@@ -5132,11 +5452,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             return;
           }
 
-          // 从缓存中切页返回
+          // 分页返回
           const start = (page - 1) * perPage;
           const end = start + perPage;
           const pageData = allData.slice(start, end);
-          const lastPage = Math.ceil(allData.length / perPage);
+          const lastPage = Math.max(1, Math.ceil(allData.length / perPage));
           res.statusCode = 200;
           res.end(JSON.stringify({
             success: true,
@@ -5144,7 +5464,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             cachedAt: cache.cachedAt,
             data: {
               data: pageData,
-              meta: { current_page: page, last_page: lastPage, per_page: perPage, total: allData.length, from: start + 1, to: end },
+              meta: { current_page: page, last_page: lastPage, per_page: perPage, total: allData.length, from: start + 1, to: Math.min(end, allData.length) },
             },
           }));
           return;
@@ -6996,13 +7316,12 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
-    // 仅 admin 可操作
+    // 需要 announce-zen.withdraw 权限
     const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
-    const session = token ? tokenStore.get(token) : null;
-    if (!session || session.role !== 'admin') {
+    if (!userHasPermission(token, 'announce-zen.withdraw')) {
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 403;
-      res.end(JSON.stringify({ type: 'error', message: '需要管理员权限才能执行 EIP 删除操作' }));
+      res.end(JSON.stringify({ type: 'error', message: '无 EIP 删除权限（需要 announce-zen.withdraw）' }));
       return;
     }
     try {
@@ -7064,11 +7383,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
     // 仅 admin 可操作
     const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
-    const session = token ? tokenStore.get(token) : null;
-    if (!session || session.role !== 'admin') {
+    if (!userHasPermission(token, 'announce-zen.withdraw')) {
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 403;
-      res.end(JSON.stringify({ type: 'error', message: '需要管理员权限才能执行取消宣告操作' }));
+      res.end(JSON.stringify({ type: 'error', message: '无取消宣告权限（需要 announce-zen.withdraw）' }));
       return;
     }
     try {
@@ -7103,11 +7421,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
     const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
-    const session = token ? tokenStore.get(token) : null;
-    if (!session || session.role !== 'admin') {
+    if (!userHasPermission(token, 'announce-zen.withdraw')) {
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 403;
-      res.end(JSON.stringify({ type: 'error', message: '需要管理员权限才能执行 CIDR 删除操作' }));
+      res.end(JSON.stringify({ type: 'error', message: '无 CIDR 删除权限（需要 announce-zen.withdraw）' }));
       return;
     }
     try {
@@ -7143,11 +7460,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
     // 仅 admin 可操作
     const token = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
-    const session = token ? tokenStore.get(token) : null;
-    if (!session || session.role !== 'admin') {
+    if (!userHasPermission(token, 'announce-zen.withdraw')) {
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 403;
-      res.end(JSON.stringify({ type: 'error', message: '需要管理员权限才能执行取消宣告操作' }));
+      res.end(JSON.stringify({ type: 'error', message: '无取消宣告权限（需要 announce-zen.withdraw）' }));
       return;
     }
     try {
@@ -7369,6 +7685,241 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   importZenEnvOnce();
   // 启动 CDS-Auto-Announce Flask 子进程（如已配置）
   startCdsFlask();
+
+  // ─── Larus 已租用 IP 列表 ─────────────────────────────────────────
+  server.middlewares.use('/api/larus/ips', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+
+    const forceRefresh = req.url?.includes('refresh=1');
+    let cfg = loadLarusConfig();
+    if (!cfg) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ success: false, message: 'Larus Cookie 未配置' }));
+      return;
+    }
+
+    // 有缓存且非强制刷新：直接返回（缓存永久有效，无 stale 概念）
+    if (!forceRefresh) {
+      const cache = loadLarusCache();
+      if (cache?.cachedAt && cache.items?.length) {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, fromCache: true, cachedAt: cache.cachedAt, items: cache.items }));
+        return;
+      }
+    }
+
+    // 无缓存 或 强制刷新：从 Larus API 拉取 IP 列表 + 自动补全所有 allocation（ASN/LOA）
+    try {
+      // 旧缓存按 id 建索引，供 enrich 单条失败时回填 ASN/LOA
+      const prevCache = loadLarusCache();
+      const fallback = new Map<string, any>(
+        (prevCache?.items || []).map((it: any) => [String(it.id), it]),
+      );
+      const result = await fetchLarusIps(cfg.cookie);
+      if (result.updatedCookie) {
+        cfg = { ...cfg, cookie: result.updatedCookie };
+        fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
+      }
+      // 自动补全所有 allocation（并发拉取，含多 ASN 支持）
+      const { items: enrichedItems, updatedCookie: enrichCookie } = await enrichLarusItems(result.items, cfg.cookie, fallback);
+      if (enrichCookie) {
+        cfg = { ...cfg, cookie: enrichCookie };
+        fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
+      }
+      const payload = { cachedAt: new Date().toISOString(), items: enrichedItems };
+      saveLarusCache(payload);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, fromCache: false, cookieAutoRenewed: !!(result.updatedCookie || enrichCookie), cachedAt: payload.cachedAt, items: enrichedItems }));
+    } catch (e: any) {
+      // 拉取失败时降级到旧缓存
+      const stale = loadLarusCache();
+      if (stale?.items) {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, fromCache: true, cachedAt: stale.cachedAt, items: stale.items, warning: `刷新失败（${e.message}），已显示旧缓存` }));
+      } else {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+    }
+  });
+
+  // ─── Larus Cookie 更新 ────────────────────────────────────────────
+  server.middlewares.use('/api/larus/config', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method === 'GET') {
+      const cfg = loadLarusConfig();
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, configured: !!cfg?.cookie }));
+      return;
+    }
+    if (req.method === 'POST') {
+      try {
+        const body = JSON.parse(await readRequestBody(req));
+        if (!body.cookie) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '请提供 cookie' })); return; }
+        const existing = loadLarusConfig() || {};
+        fs.writeFileSync(larusConfigPath, JSON.stringify({ ...existing, cookie: body.cookie, cacheHours: body.cacheHours ?? existing.cacheHours ?? 2 }, null, 2), 'utf-8');
+        // 清除旧缓存，强制下次重新拉取
+        if (fs.existsSync(larusCachePath)) fs.unlinkSync(larusCachePath);
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true }));
+      } catch (e: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+    }
+  });
+
+  // ─── Larus IP 详情代理：/ipv4/lease-in/allocation/{route_id} 返回该路由下的分配明细（含 ASN / LOA）────────
+  server.middlewares.use('/api/larus/detail', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    const qs = new URLSearchParams((req.url || '').split('?')[1] || '');
+    const id = qs.get('id');
+    const path = qs.get('path');
+    if (!id && !path) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少参数' })); return; }
+    const cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Cookie 未配置' })); return; }
+    try {
+      const apiPath = path || `/ipv4/lease-in/allocation/${id}`;
+      const { body, updatedCookie } = await larusRequest(apiPath, cfg.cookie);
+      if (updatedCookie) fs.writeFileSync(larusConfigPath, JSON.stringify({ ...cfg, cookie: updatedCookie }, null, 2), 'utf-8');
+      const lists: any[] = body?.data?.lists || [];
+      const allocations = lists.map((item: any) => ({
+        asn: String(item.asn),
+        loa_path: item.loa_file ? `/ipv4/contract/loa/${item.id}` : null,
+        alloc_id: item.id,
+      }));
+      const first = lists[0] ?? null;
+      const asn: string | null = first?.asn ? String(first.asn) : null;
+      const loa_path: string | null = first?.loa_file ? `/ipv4/contract/loa/${first.id}` : null;
+      // 写回主缓存：更新该 route_id 对应的 item
+      if (id) {
+        const cache = loadLarusCache();
+        if (cache?.items) {
+          const idx = cache.items.findIndex((it: any) => String(it.id) === String(id));
+          if (idx >= 0) {
+            cache.items[idx] = { ...cache.items[idx], allocations, asn: asn ?? undefined, loa_path: loa_path ?? undefined };
+            saveLarusCache(cache);
+          }
+        }
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({
+        success: true,
+        data: body,
+        allocations,
+        asn,
+        loa_path,
+        irr_data: first?.irr_data ?? null,
+      }));
+    } catch (e: any) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── 将 Larus LOA 推送到 CDS（从 Larus 下载后 multipart/form-data 上传到 CDS Flask）──
+  server.middlewares.use('/api/larus/loa-to-cds', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: '仅支持 POST' })); return; }
+    let body = '';
+    req.on('data', (c: any) => { body += c; });
+    await new Promise<void>(r => req.on('end', r));
+    let params: any = {};
+    try { params = JSON.parse(body); } catch { /* ignore */ }
+    const { loa_path, cidr, asn } = params;
+    if (!loa_path || !cidr) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ success: false, message: '缺少 loa_path 或 cidr 参数' }));
+      return;
+    }
+    const cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Larus Cookie 未配置' })); return; }
+    try {
+      // 1. 从 Larus 下载 LOA 文件
+      const upstream = await fetch(`https://larus.net${loa_path}`, {
+        headers: { Cookie: cfg.cookie, Referer: 'https://larus.net/ipv4/manage-leased-ips', 'User-Agent': 'Mozilla/5.0' },
+      });
+      if (!upstream.ok) {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ success: false, message: `从 Larus 下载 LOA 失败 (${upstream.status})` }));
+        return;
+      }
+      const loaBuffer = Buffer.from(await upstream.arrayBuffer());
+      const contentDisp = upstream.headers.get('content-disposition') || '';
+      const fnMatch = contentDisp.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      const fileName = fnMatch?.[1]?.replace(/['"]/g, '') || `loa_${asn || 'larus'}.pdf`;
+      // 2. 通过 CDS Flask /api/loa/upload 上传
+      const cdsPort = loadCdsConfig()?.port || 9010;
+      const boundary = `----FormBoundary${crypto.randomBytes(8).toString('hex')}`;
+      const fieldParts: Buffer[] = [];
+      const addField = (name: string, value: string) => {
+        fieldParts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+      };
+      addField('cidr', cidr);
+      if (asn) addField('asn', asn);
+      addField('permanent', '1');
+      const filePart = Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: application/pdf\r\n\r\n`),
+        loaBuffer,
+        Buffer.from('\r\n'),
+      ]);
+      const closing = Buffer.from(`--${boundary}--\r\n`);
+      const formData = Buffer.concat([...fieldParts, filePart, closing]);
+      const cdsResp = await fetch(`http://127.0.0.1:${cdsPort}/api/loa/upload`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': String(formData.length),
+          'X-Internal-Token': CDS_INTERNAL_TOKEN,
+        },
+        body: formData,
+      });
+      const cdsJson = await cdsResp.json() as any;
+      if (!cdsJson.ok) {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ success: false, message: `CDS 上传失败: ${cdsJson.error || '未知错误'}` }));
+        return;
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, message: 'LOA 已推送至首都在线宣告系统' }));
+    } catch (e: any) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── Larus LOA 代理下载 ──────────────────────────────────────────
+  server.middlewares.use('/api/larus/loa', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    const qs = new URLSearchParams((req.url || '').split('?')[1] || '');
+    const loaPath = qs.get('path');
+    if (!loaPath) { res.statusCode = 400; res.end('缺少 path 参数'); return; }
+    const cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end('Cookie 未配置'); return; }
+    try {
+      const upstream = await fetch(`https://larus.net${loaPath}`, {
+        headers: { Cookie: cfg.cookie, Referer: 'https://larus.net/ipv4/manage-leased-ips', 'User-Agent': 'Mozilla/5.0' },
+      });
+      if (!upstream.ok) { res.statusCode = upstream.status; res.end(`上游返回 ${upstream.status}`); return; }
+      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream');
+      res.setHeader('Content-Disposition', upstream.headers.get('content-disposition') || 'attachment; filename="loa.pdf"');
+      res.statusCode = 200;
+      res.end(Buffer.from(await upstream.arrayBuffer()));
+    } catch (e: any) { res.statusCode = 502; res.end(e.message); }
+  });
 }
 
 const dataPersistencePlugin = () => ({
@@ -7376,11 +7927,11 @@ const dataPersistencePlugin = () => ({
   enforce: 'pre' as const,
     configureServer(server) {
       installDataPersistenceMiddlewares(server);
-      setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); initSyncRemarks(); }, 2000);
+      setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); initSyncRemarks(); startLarusKeepAlive(); }, 2000);
     },
     configurePreviewServer(server) {
       installDataPersistenceMiddlewares(server);
-      setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); initSyncRemarks(); }, 2000);
+      setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); initSyncRemarks(); startLarusKeepAlive(); }, 2000);
     },
 });
 
@@ -7399,7 +7950,7 @@ export default defineConfig({
     },
   },
   preview: {
-    port: Number(process.env.VITE_PORT) || 8081,
+    port: Number(process.env.VITE_PORT) || 9010,
     host: '0.0.0.0',
     strictPort: true,
     /** 无图形界面的 Linux 服务器上若尝试 open 浏览器会报错 spawn xdg-open ENOENT */

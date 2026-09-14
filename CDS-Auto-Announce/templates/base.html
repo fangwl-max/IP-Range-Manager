@@ -137,6 +137,7 @@
         <a href="/" class="{% if active_page == 'announce' %}active{% endif %}">批量宣告</a>
         <a href="/withdraw" class="withdraw-link {% if active_page == 'withdraw' %}active{% endif %}">批量撤播</a>
         <a href="/announced" class="announced-link {% if active_page == 'announced' %}active{% endif %}">已宣告IP段</a>
+        <a href="/loa-manager" class="{% if active_page == 'loa-manager' %}active{% endif %}">LOA 管理</a>
         {% if current_user %}
         {% if can_manage_accounts %}
         <a href="/admin/accounts" class="nav-auth {% if active_page == 'accounts' %}active{% endif %}">账号管理</a>

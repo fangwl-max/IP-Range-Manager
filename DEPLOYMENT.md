@@ -191,6 +191,9 @@ server {
     listen 80;
     server_name your-domain.com;
 
+    # ip-data.json 随 IP 段增长可达数 MB，必须放开 body 大小限制，否则保存会报 413
+    client_max_body_size 50m;
+
     location / {
         proxy_pass http://127.0.0.1:8081;
         proxy_http_version 1.1;
@@ -205,6 +208,8 @@ server {
 }
 ```
 
+> **重要**：`client_max_body_size 50m` 不可省略。系统以 JSON 格式将全量数据 POST 到 `/api/save-data`，当 IP 段数量较多时（>1000 条）请求体轻松超过 Nginx 默认 1 MB 限制，导致 413 错误、前端提示"数据保存失败"。
+
 ---
 
 ## 常见问题
@@ -212,3 +217,4 @@ server {
 1. **端口被占用**：修改 `vite.config.ts` 中 `server.port` 为其他端口（如 8082）
 2. **无法外网访问**：确认防火墙已放行端口，且 `server.host` 为 `0.0.0.0`（已配置）
 3. **数据丢失**：确认 `ip-data.json` 路径正确且有写入权限
+4. **数据保存失败（413 错误）**：Nginx 默认限制请求体为 1 MB，需在 Nginx 配置的 `server` 块内加 `client_max_body_size 50m;`，然后 `sudo nginx -t && sudo systemctl reload nginx`

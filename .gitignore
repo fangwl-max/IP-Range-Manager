@@ -33,6 +33,12 @@ cds-config.json
 # Docker 数据挂载目录（含所有配置和数据文件）
 data/
 
+# Larus 相关（含 Cookie / Token / 缓存，不上传）
+larus-config.json
+larus-cache.json
+larus-enrich.json
+.cds-token
+
 # 数据文件（线上为准，不用 git 管理）
 ip-data.json
 ip-data*.json

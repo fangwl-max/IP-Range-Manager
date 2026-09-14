@@ -148,28 +148,55 @@ class LoaService:
         dst.write_bytes(src.read_bytes())
         return self.loa_status(f"{address}/{mask}")
 
+    def delete_loa(self, cidr: str, asn: str = "", location: str = "permanent") -> Dict[str, Any]:
+        """删除指定 LOA 文件。location: 'permanent' 或 'temp'"""
+        address, mask = parse_cidr(cidr)
+        normalized_asn = asn.strip().upper().replace("AS", "") if asn else ""
+        base = self.temp_dir if location == "temp" else self.permanent_dir
+        target = base / _loa_filename(address, mask, normalized_asn)
+        if not target.is_file():
+            raise ValueError(f"文件不存在: {target.name}")
+        target.unlink()
+        return {"cidr": f"{address}/{mask}", "asn": normalized_asn, "deleted": target.name}
+
     def list_local_loa(self) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         seen: set[str] = set()
+        # 同时匹配新格式（含 ASN）和旧格式（不含 ASN）
+        pat_with_asn = re.compile(r"^(\d+\.\d+\.\d+\.\d+)_(\d+)_AS(\d+)\.pdf$", re.I)
+        pat_generic  = re.compile(r"^(\d+\.\d+\.\d+\.\d+)_(\d+)\.pdf$", re.I)
         for base, location in ((self.permanent_dir, "permanent"), (self.temp_dir, "temp")):
             for path in sorted(base.glob("*.pdf")):
-                m = re.match(r"^(\d+\.\d+\.\d+\.\d+)_(\d+)\.pdf$", path.name, re.I)
-                if not m:
+                m_asn = pat_with_asn.match(path.name)
+                m_gen = pat_generic.match(path.name)
+                if m_asn:
+                    cidr = f"{m_asn.group(1)}/{m_asn.group(2)}"
+                    asn  = m_asn.group(3)
+                elif m_gen:
+                    cidr = f"{m_gen.group(1)}/{m_gen.group(2)}"
+                    asn  = ""
+                else:
                     continue
-                cidr = f"{m.group(1)}/{m.group(2)}"
-                if cidr in seen and location == "temp":
+                key = f"{cidr}#{asn}#{location}"
+                if key in seen:
                     continue
-                seen.add(cidr)
+                # 同一 cidr+asn 组合，permanent 优先于 temp
+                cidr_asn_key = f"{cidr}#{asn}"
+                if cidr_asn_key in seen and location == "temp":
+                    continue
+                seen.add(key)
+                seen.add(cidr_asn_key)
                 items.append(
                     {
                         "cidr": cidr,
+                        "asn": asn,
                         "location": location,
                         "path": str(path),
                         "size": path.stat().st_size,
                         "updated_at": int(path.stat().st_mtime),
                     }
                 )
-        return sorted(items, key=lambda x: x["cidr"])
+        return sorted(items, key=lambda x: (x["cidr"], x["asn"]))
 
     def cleanup_orphaned(
         self,
