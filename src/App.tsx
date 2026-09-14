@@ -17,6 +17,7 @@ import {
   StarOutlined,
   SoundOutlined,
   CloudDownloadOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import './App.css';
@@ -63,6 +64,11 @@ const ANNOUNCE_SUB_KEYS = [
   'announce-zen',
   'announce-capital-online',
 ] as const;
+const IPXO_SUB_KEYS = [
+  'pre-purchase-check',
+  'ipxo-services',
+  'ipxo-invoices',
+] as const;
 const VALID_MENU_KEYS = [
   'ip-management',
   'irr-detection',
@@ -72,15 +78,16 @@ const VALID_MENU_KEYS = [
   ...CONFIG_SUB_KEYS,
   ...ASN_SUB_KEYS,
   ...ANNOUNCE_SUB_KEYS,
+  ...IPXO_SUB_KEYS,
   'larus-management',
   'user-management',
   'notify-config',
-  'pre-purchase-check',
   'remote-sync',
 ] as const;
 const isConfigSubKey = (k: string) => CONFIG_SUB_KEYS.includes(k as (typeof CONFIG_SUB_KEYS)[number]);
 const isAsnSubKey = (k: string) => ASN_SUB_KEYS.includes(k as (typeof ASN_SUB_KEYS)[number]);
 const isAnnounceSubKey = (k: string) => ANNOUNCE_SUB_KEYS.includes(k as (typeof ANNOUNCE_SUB_KEYS)[number]);
+const isIpxoSubKey = (k: string) => IPXO_SUB_KEYS.includes(k as (typeof IPXO_SUB_KEYS)[number]);
 
 const AppContent: React.FC = () => {
   const { user, logout, loading, hasPermission } = useAuth();
@@ -98,6 +105,7 @@ const AppContent: React.FC = () => {
     const o: string[] = [];
     if (s && (s === 'configuration' || isConfigSubKey(s))) o.push('configuration');
     if (s === 'irr-detection') o.push('ip-detection');
+    if (s && isIpxoSubKey(s)) o.push('ipxo');
     if (s === 'cost-analysis-main' || s === 'cost-analysis-ipxo') o.push('cost-analysis');
     if (s && isAsnSubKey(s)) o.push('asn');
     if (s && isAnnounceSubKey(s)) o.push('announce');
@@ -116,10 +124,15 @@ const AppContent: React.FC = () => {
       } else {
         n = n.filter((x) => x !== 'configuration');
       }
-      if (selectedMenu === 'irr-detection' || selectedMenu === 'pre-purchase-check') {
+      if (selectedMenu === 'irr-detection') {
         if (!n.includes('ip-detection')) n.push('ip-detection');
       } else {
         n = n.filter((x) => x !== 'ip-detection');
+      }
+      if (isIpxoSubKey(selectedMenu)) {
+        if (!n.includes('ipxo')) n.push('ipxo');
+      } else {
+        n = n.filter((x) => x !== 'ipxo');
       }
       if (selectedMenu === 'cost-analysis-main' || selectedMenu === 'cost-analysis-ipxo') {
         if (!n.includes('cost-analysis')) n.push('cost-analysis');
@@ -171,7 +184,16 @@ const AppContent: React.FC = () => {
       label: 'IP段检测',
       children: [
         { key: 'irr-detection', label: '综合检测' },
+      ],
+    },
+    {
+      key: 'ipxo',
+      icon: <ApiOutlined />,
+      label: 'IPXO管理',
+      children: [
         ...(hasPermission('pre-purchase-check') ? [{ key: 'pre-purchase-check', label: '购前检测' }] : []),
+        { key: 'ipxo-services', label: '已租用IP' },
+        { key: 'ipxo-invoices', label: '发票' },
       ],
     },
     { key: 'cost-analysis', icon: <BarChartOutlined />, label: '费用统计',
@@ -273,8 +295,8 @@ const AppContent: React.FC = () => {
             onOpenChange={setMenuOpenKeys}
             items={menuItems}
             onClick={({ key }) => {
-              if ((VALID_MENU_KEYS as readonly string[]).includes(key) || key === 'configuration' || key === 'ip-detection' || key === 'announce') {
-                if (key !== 'configuration' && key !== 'ip-detection' && key !== 'announce') setSelectedMenu(key);
+              if ((VALID_MENU_KEYS as readonly string[]).includes(key) || key === 'configuration' || key === 'ip-detection' || key === 'announce' || key === 'ipxo') {
+                if (key !== 'configuration' && key !== 'ip-detection' && key !== 'announce' && key !== 'ipxo') setSelectedMenu(key);
               }
             }}
           />
@@ -337,6 +359,8 @@ const AppContent: React.FC = () => {
           {selectedMenu === 'pre-purchase-check' && <PrePurchaseCheck />}
           {selectedMenu === 'cost-analysis-main' && <CostAnalysis />}
           {selectedMenu === 'cost-analysis-ipxo' && <IPXOBilling />}
+          {selectedMenu === 'ipxo-services' && <IPXOBilling tab="services" />}
+          {selectedMenu === 'ipxo-invoices' && <IPXOBilling tab="invoices" />}
           {selectedMenu === 'larus-management' && <LarusManagement />}
           {selectedMenu === 'ip-segment-stats' && <IPSegmentStats />}
           {selectedMenu === 'config-suppliers' && <SupplierConfigPage />}

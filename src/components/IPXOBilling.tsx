@@ -71,7 +71,11 @@ const fmtFee = (amount: number | null | undefined, supplier?: string): string =>
   return '$' + calcFee(amount, supplier).toFixed(2);
 };
 
-const IPXOBilling: React.FC = () => {
+interface IPXOBillingProps {
+  tab?: 'upcoming' | 'services' | 'invoices';
+}
+
+const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   // 发票
   const [invoices, setInvoices] = useState<any[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
@@ -147,7 +151,7 @@ const IPXOBilling: React.FC = () => {
   const [cacheStatus, setCacheStatus] = useState<any>(null);
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
 
-  const [activeTab, setActiveTab] = useState('upcoming');
+  const [activeTab, setActiveTab] = useState(forcedTab ?? 'upcoming');
 
   // 同步发票（全量从 IPXO API 拉取，约数秒）
   const handleInvoiceSync = async () => {
@@ -845,12 +849,13 @@ const IPXOBilling: React.FC = () => {
 
       <Card>
         <Tabs
-          activeKey={activeTab}
+          activeKey={forcedTab ?? activeTab}
+          tabBarStyle={forcedTab ? { display: 'none' } : undefined}
           onChange={(key) => {
-            setActiveTab(key);
+            setActiveTab(key as 'upcoming' | 'services' | 'invoices');
             if (key === 'upcoming') loadRenewed(renewedDays);
           }}
-          items={[
+          items={([
             {
               key: 'upcoming',
               label: (
@@ -1529,7 +1534,7 @@ const IPXOBilling: React.FC = () => {
                 </>
               ),
             },
-          ]}
+          ] as any[]).filter(t => forcedTab ? t.key === forcedTab : true)}
         />
       </Card>
 
