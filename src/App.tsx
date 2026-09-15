@@ -54,6 +54,8 @@ const CONFIG_SUB_KEYS = [
   'config-project-groups',
   'config-suppliers',
   'config-usage-areas',
+  'notify-config',
+  'remote-sync',
 ] as const;
 const ASN_SUB_KEYS = [
   'asn-management',
@@ -211,6 +213,8 @@ const AppContent: React.FC = () => {
         { key: 'config-project-groups', icon: <TeamOutlined />, label: '项目组' },
         { key: 'config-suppliers', icon: <ShopOutlined />, label: '供应商' },
         { key: 'config-usage-areas', icon: <GlobalOutlined />, label: '宣告地区' },
+        { key: 'notify-config', icon: <MailOutlined />, label: '通知配置' },
+        ...(hasPermission('remote-sync') ? [{ key: 'remote-sync', icon: <CloudDownloadOutlined />, label: '远程数据同步' }] : []),
       ],
     },
     {
@@ -224,8 +228,6 @@ const AppContent: React.FC = () => {
       ],
     },
     ...(hasPermission('user-management') ? [{ key: 'user-management', icon: <UserOutlined />, label: '用户与权限' }] : []),
-    { key: 'notify-config', icon: <MailOutlined />, label: '通知配置' },
-    ...(hasPermission('remote-sync') ? [{ key: 'remote-sync', icon: <CloudDownloadOutlined />, label: '远程数据同步' }] : []),
     {
       key: 'announce',
       icon: <SoundOutlined />,
