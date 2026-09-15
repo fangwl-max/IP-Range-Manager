@@ -6812,34 +6812,61 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         };
 
         const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-        const sep = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
         const PERIOD_ICONS: Record<string, string> = { '昨天': '⏰', '上周': '📅', '上个月': '📆' };
 
-        const lines: string[] = [
-          `📊 *IP段购买统计汇总*  |  按${groupByLabel}`,
-          `发送时间：${now}`,
-          sep,
-        ];
-
-        for (const period of periods) {
+        // 每个时间段 → 一个可折叠 section
+        const ALWAYS_SHOW = 3; // 摘要 + 前 2 个分组始终可见
+        const sections = periods.map(period => {
           const icon = PERIOD_ICONS[period.label] ?? '📌';
           const rangeStr = period.range[0] === period.range[1]
             ? period.range[0]
             : `${period.range[0]} ~ ${period.range[1]}`;
-
-          lines.push(`\n${icon} *${period.label}*（${rangeStr}）`);
+          const sectionHeader = `${icon} ${period.label}（${rangeStr}）`;
 
           if (period.totalCount === 0) {
-            lines.push('  无新购 IP 段');
-          } else {
-            lines.push(`  共 ${period.totalCount} 个 IP段  ·  $${period.totalFee.toFixed(2)}/月`);
-            for (const g of period.groups) {
-              lines.push(`  • ${g.key}：${g.count} 个  $${g.fee.toFixed(2)}/月`);
-            }
+            return {
+              header: sectionHeader,
+              collapsible: false,
+              widgets: [{ textParagraph: { text: '<font color="#888888">无新购 IP 段</font>' } }],
+            };
           }
-        }
 
-        const chatPayload = JSON.stringify({ text: lines.join('\n') });
+          const summaryWidget = {
+            textParagraph: {
+              text: `共 <b>${period.totalCount}</b> 个 IP段 &nbsp;·&nbsp; <b>$${period.totalFee.toFixed(2)}</b>/月`,
+            },
+          };
+          const groupWidgets = period.groups.map((g: { key: string; count: number; fee: number }) => ({
+            decoratedText: {
+              topLabel: g.key,
+              text: `<b>${g.count} 个</b>`,
+              bottomLabel: `$${g.fee.toFixed(2)}/月`,
+            },
+          }));
+
+          const allWidgets = [summaryWidget, ...groupWidgets];
+          const needsCollapse = groupWidgets.length > ALWAYS_SHOW - 1;
+          return {
+            header: sectionHeader,
+            collapsible: needsCollapse,
+            ...(needsCollapse ? { uncollapsibleWidgetsCount: ALWAYS_SHOW } : {}),
+            widgets: allWidgets,
+          };
+        });
+
+        const card = {
+          cardsV2: [{
+            cardId: `purchase-stats-${Date.now()}`,
+            card: {
+              header: {
+                title: '📊 IP段购买统计汇总',
+                subtitle: `按${groupByLabel} · ${now}`,
+              },
+              sections,
+            },
+          }],
+        };
+        const chatPayload = JSON.stringify(card);
 
         await new Promise<void>((resolve, reject) => {
           const webhookUrl = new URL(cfg.googleChatWebhook!);
