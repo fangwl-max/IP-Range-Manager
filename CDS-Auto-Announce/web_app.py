@@ -175,19 +175,15 @@ def bootstrap_withdraw_auth(cfg: Dict[str, Any]) -> AuthStore:
 
 
 def get_logged_in_user() -> Optional[str]:
-    # 代理模式：_INTERNAL_TOKEN 有值说明由主系统启动，主系统负责认证，直接信任
-    if _INTERNAL_TOKEN:
-        return "admin"
+    # 登录系统已关闭，由主系统代理负责认证；始终以 admin 身份信任
     user = session.get(SESSION_USER_KEY)
-    return str(user) if user else None
+    return str(user) if user else "admin"
 
 
 def get_logged_in_role() -> Optional[str]:
-    # 代理模式：直接返回 admin 角色
-    if _INTERNAL_TOKEN:
-        return ROLE_ADMIN
+    # 始终返回 admin 角色
     role = session.get(SESSION_ROLE_KEY)
-    return str(role) if role else None
+    return str(role) if role else ROLE_ADMIN
 
 
 def can_manage_accounts(role: Optional[str] = None) -> bool:
@@ -298,20 +294,10 @@ def create_app(config_path: str) -> Flask:
         return bootstrap_withdraw_auth(_load_cfg())
 
     def _current_permissions() -> List[str]:
-        if _INTERNAL_TOKEN:
-            return [PERM_ANNOUNCE, PERM_WITHDRAW, PERM_PURCHASE_SLASH25]
-        user = get_logged_in_user()
-        if not user:
-            return []
-        return _auth_store().get_permissions(user)
+        return [PERM_ANNOUNCE, PERM_WITHDRAW, PERM_PURCHASE_SLASH25]
 
     def _has_permission(perm: str) -> bool:
-        if _INTERNAL_TOKEN:
-            return str(perm).strip().lower() in (PERM_ANNOUNCE, PERM_WITHDRAW, PERM_PURCHASE_SLASH25)
-        user = get_logged_in_user()
-        if not user:
-            return False
-        return _auth_store().has_permission(user, perm)
+        return str(perm).strip().lower() in (PERM_ANNOUNCE, PERM_WITHDRAW, PERM_PURCHASE_SLASH25)
 
     def require_permission(perm: str) -> Callable:
         def decorator(f: Callable) -> Callable:
@@ -396,36 +382,19 @@ def create_app(config_path: str) -> Flask:
     def api_auth_me():
         user = get_logged_in_user()
         role = get_logged_in_role()
-        if _INTERNAL_TOKEN:
-            all_perms = [PERM_ANNOUNCE, PERM_WITHDRAW, PERM_PURCHASE_SLASH25]
-            return jsonify(
-                {
-                    "ok": True,
-                    "logged_in": True,
-                    "username": user,
-                    "role": role,
-                    "role_label": "超级管理员",
-                    "permissions": all_perms,
-                    "can_manage_accounts": True,
-                    "can_announce": True,
-                    "can_withdraw": True,
-                    "can_purchase_slash25": True,
-                }
-            )
-        store = _auth_store()
-        permissions = store.get_permissions(user) if user else []
+        all_perms = [PERM_ANNOUNCE, PERM_WITHDRAW, PERM_PURCHASE_SLASH25]
         return jsonify(
             {
                 "ok": True,
-                "logged_in": bool(user),
+                "logged_in": True,
                 "username": user,
                 "role": role,
-                "role_label": "超级管理员" if role == ROLE_ADMIN else "操作员" if role else "",
-                "permissions": permissions,
-                "can_manage_accounts": can_manage_accounts(role),
-                "can_announce": store.has_permission(user, PERM_ANNOUNCE) if user else False,
-                "can_withdraw": store.has_permission(user, PERM_WITHDRAW) if user else False,
-                "can_purchase_slash25": store.has_permission(user, PERM_PURCHASE_SLASH25) if user else False,
+                "role_label": "超级管理员",
+                "permissions": all_perms,
+                "can_manage_accounts": True,
+                "can_announce": True,
+                "can_withdraw": True,
+                "can_purchase_slash25": True,
             }
         )
 
