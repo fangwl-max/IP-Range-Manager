@@ -8266,9 +8266,17 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
     const forceRefresh = req.url?.includes('refresh=1');
     let cfg = loadLarusConfig();
+
+    // 未配置时：先尝试返回旧缓存，没有缓存才报错
     if (!cfg) {
-      res.statusCode = 400;
-      res.end(JSON.stringify({ success: false, message: 'Larus Cookie 未配置' }));
+      const cache = loadLarusCache();
+      if (cache?.items?.length) {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, fromCache: true, cachedAt: cache.cachedAt, items: cache.items, warning: 'Larus Cookie 未配置，显示历史缓存' }));
+      } else {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ success: false, message: 'Larus Cookie 未配置' }));
+      }
       return;
     }
 
@@ -8305,11 +8313,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, fromCache: false, cookieAutoRenewed: !!(result.updatedCookie || enrichCookie), cachedAt: payload.cachedAt, items: enrichedItems }));
     } catch (e: any) {
-      // 拉取失败时降级到旧缓存
+      // 拉取失败时降级到旧缓存（包含 ASN/LOA 等已获取的信息）
       const stale = loadLarusCache();
-      if (stale?.items) {
+      if (stale?.items?.length) {
         res.statusCode = 200;
-        res.end(JSON.stringify({ success: true, fromCache: true, cachedAt: stale.cachedAt, items: stale.items, warning: `刷新失败（${e.message}），已显示旧缓存` }));
+        res.end(JSON.stringify({ success: true, fromCache: true, cachedAt: stale.cachedAt, items: stale.items, warning: `Cookie 已过期或刷新失败（${e.message}），显示历史缓存` }));
       } else {
         res.statusCode = 502;
         res.end(JSON.stringify({ success: false, message: e.message }));
@@ -8336,8 +8344,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         if (!body.cookie) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '请提供 cookie' })); return; }
         const existing = loadLarusConfig() || {};
         fs.writeFileSync(larusConfigPath, JSON.stringify({ ...existing, cookie: body.cookie, cacheHours: body.cacheHours ?? existing.cacheHours ?? 2 }, null, 2), 'utf-8');
-        // 清除旧缓存，强制下次重新拉取
-        if (fs.existsSync(larusCachePath)) fs.unlinkSync(larusCachePath);
+        // 不删除旧缓存：保留历史数据，新 cookie 拉取成功后会自动覆盖
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true }));
       } catch (e: any) {
