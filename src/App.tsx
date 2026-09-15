@@ -179,15 +179,6 @@ const AppContent: React.FC = () => {
 
   const menuItems: MenuProps['items'] = [
     { key: 'ip-management', icon: <DatabaseOutlined />, label: 'IP段管理' },
-    { key: 'larus-management', icon: <CloudDownloadOutlined />, label: 'Larus 管理' },
-    {
-      key: 'ip-detection',
-      icon: <SearchOutlined />,
-      label: 'IP段检测',
-      children: [
-        { key: 'irr-detection', label: '综合检测' },
-      ],
-    },
     {
       key: 'ipxo',
       icon: <ApiOutlined />,
@@ -198,10 +189,19 @@ const AppContent: React.FC = () => {
         { key: 'ipxo-invoices', label: '发票' },
       ],
     },
+    { key: 'larus-management', icon: <CloudDownloadOutlined />, label: 'Larus 管理' },
+    {
+      key: 'ip-detection',
+      icon: <SearchOutlined />,
+      label: 'IP段检测',
+      children: [
+        { key: 'irr-detection', label: '综合检测' },
+      ],
+    },
     { key: 'cost-analysis', icon: <BarChartOutlined />, label: '费用统计',
       children: [
         { key: 'cost-analysis-main', label: '费用分析' },
-        { key: 'cost-analysis-ipxo', label: 'IPXO 账单' },
+        { key: 'cost-analysis-ipxo', label: 'IP段续费管理' },
         { key: 'ip-segment-stats', label: 'IP 段统计' },
       ],
     },
