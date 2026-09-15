@@ -74,6 +74,9 @@ interface ScheduledPurchaseReport {
   id: string;
   label: string;
   time: string;
+  frequency?: 'daily' | 'weekly' | 'monthly';
+  weekdays?: number[];  // 0=周日 1=周一…6=周六，可多选
+  monthDay?: number;    // 1-31
   enabled: boolean;
   lastSentDate?: string;
   tasks: PurchaseReportTask[];
@@ -152,6 +155,7 @@ const NotifyConfig: React.FC = () => {
       id,
       label: '购买统计定时推送',
       time: '09:00',
+      frequency: 'daily',
       enabled: true,
       tasks: [{ groupBy: 'project', includeRegions: true, includeBlocked: true }],
     };
@@ -475,17 +479,68 @@ const NotifyConfig: React.FC = () => {
                     />
                   </Col>
                   <Col>
-                    <Space size={4}>
-                      <span style={{ fontSize: 12, color: '#666' }}>发送时间</span>
-                      <TimePicker
-                        size="small"
-                        format="HH:mm"
-                        minuteStep={5}
-                        value={dayjs(report.time, 'HH:mm')}
-                        onChange={(v) => v && updateReport(report.id, { time: v.format('HH:mm') })}
-                        allowClear={false}
-                        style={{ width: 90 }}
-                      />
+                    <Space size={8} wrap>
+                      {/* 频率选择 */}
+                      <Space size={4}>
+                        <span style={{ fontSize: 12, color: '#666' }}>频率</span>
+                        <Select
+                          size="small"
+                          style={{ width: 72 }}
+                          value={report.frequency ?? 'daily'}
+                          onChange={(v) => updateReport(report.id, { frequency: v })}
+                          options={[
+                            { value: 'daily', label: '每天' },
+                            { value: 'weekly', label: '每周' },
+                            { value: 'monthly', label: '每月' },
+                          ]}
+                        />
+                      </Space>
+                      {/* 每周：多选星期几 */}
+                      {(report.frequency ?? 'daily') === 'weekly' && (
+                        <Select
+                          size="small"
+                          mode="multiple"
+                          style={{ minWidth: 120, maxWidth: 260 }}
+                          placeholder="选择星期"
+                          value={report.weekdays?.length ? report.weekdays : [1]}
+                          onChange={(v: number[]) => updateReport(report.id, { weekdays: v })}
+                          maxTagCount="responsive"
+                          options={[
+                            { value: 1, label: '周一' },
+                            { value: 2, label: '周二' },
+                            { value: 3, label: '周三' },
+                            { value: 4, label: '周四' },
+                            { value: 5, label: '周五' },
+                            { value: 6, label: '周六' },
+                            { value: 0, label: '周日' },
+                          ]}
+                        />
+                      )}
+                      {/* 每月：选几号 */}
+                      {(report.frequency ?? 'daily') === 'monthly' && (
+                        <InputNumber
+                          size="small"
+                          style={{ width: 80 }}
+                          min={1}
+                          max={31}
+                          value={report.monthDay ?? 1}
+                          onChange={(v) => v != null && updateReport(report.id, { monthDay: v })}
+                          addonAfter="日"
+                        />
+                      )}
+                      {/* 发送时间 */}
+                      <Space size={4}>
+                        <span style={{ fontSize: 12, color: '#666' }}>时间</span>
+                        <TimePicker
+                          size="small"
+                          format="HH:mm"
+                          minuteStep={5}
+                          value={dayjs(report.time, 'HH:mm')}
+                          onChange={(v) => v && updateReport(report.id, { time: v.format('HH:mm') })}
+                          allowClear={false}
+                          style={{ width: 90 }}
+                        />
+                      </Space>
                     </Space>
                   </Col>
                   <Col>

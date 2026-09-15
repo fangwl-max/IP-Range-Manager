@@ -914,22 +914,43 @@ const IPSegmentStats: React.FC = () => {
             const regions = [...regionMap.entries()]
               .sort((a, b) => b[1].count - a[1].count)
               .map(([region, { count, fee }]) => ({ region, count, fee }));
-            // 被墙：每个国家的段数
-            const countryMap = new Map<string, number>();
+            // 被墙：按国家统计数量+费用
+            // 未检测：blockedCountries 和 detectedCountries 均为空时（与平台 UI 判断一致）
+            const countryMap = new Map<string, { count: number; fee: number }>();
+            const uncheckedRegionMap = new Map<string, { count: number; fee: number }>();
             segs.forEach((seg: any) => {
-              (seg.blockedCountries || []).forEach((c: string) => {
-                countryMap.set(c, (countryMap.get(c) || 0) + 1);
-              });
+              const segFee: number = seg.monthlyPrice || 0;
+              const blocked: string[] = Array.isArray(seg.blockedCountries) ? seg.blockedCountries : [];
+              const detected: string[] = Array.isArray(seg.detectedCountries) ? seg.detectedCountries : [];
+              if (blocked.length === 0 && detected.length === 0) {
+                const locs = [...new Set(
+                  (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean),
+                )] as string[];
+                const uniqueRegions = locs.length > 0 ? locs : ['未知'];
+                uniqueRegions.forEach((r: string) => {
+                  const ex = uncheckedRegionMap.get(r) || { count: 0, fee: 0 };
+                  uncheckedRegionMap.set(r, { count: ex.count + 1, fee: ex.fee + segFee });
+                });
+              } else {
+                blocked.forEach((c: string) => {
+                  const ex = countryMap.get(c) || { count: 0, fee: 0 };
+                  countryMap.set(c, { count: ex.count + 1, fee: ex.fee + segFee });
+                });
+              }
             });
             const blockedCountries = [...countryMap.entries()]
-              .sort((a, b) => b[1] - a[1])
-              .map(([country, count]) => ({ country, count }));
+              .sort((a, b) => b[1].count - a[1].count)
+              .map(([country, { count, fee }]) => ({ country, count, fee }));
+            const uncheckedRegions = [...uncheckedRegionMap.entries()]
+              .sort((a, b) => b[1].count - a[1].count)
+              .map(([region, { count, fee }]) => ({ region, count, fee }));
             return {
               key,
               count: segs.length,
               fee: segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
               regions,
               blockedCountries,
+              uncheckedRegions,
             };
           }),
         };

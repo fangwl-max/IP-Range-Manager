@@ -482,7 +482,10 @@ interface PurchaseReportTask {
 interface ScheduledPurchaseReport {
   id: string;
   label: string;
-  time: string; // HH:mm 北京时间
+  time: string;             // HH:mm 北京时间
+  frequency?: 'daily' | 'weekly' | 'monthly'; // 默认 daily
+  weekdays?: number[];      // 0=周日 1=周一…6=周六，可多选（frequency=weekly 时有效）
+  monthDay?: number;        // 1-31（frequency=monthly 时有效）
   enabled: boolean;
   lastSentDate?: string;
   tasks: PurchaseReportTask[];
@@ -495,8 +498,10 @@ interface PurchaseGroupResult {
   fee: number;
   /** 计费地区，含数量和费用（仅当 includeRegions 时存在） */
   regions?: { region: string; count: number; fee: number }[];
-  /** 被墙国家及数量（仅当 includeBlocked 时存在；空数组=无被墙） */
-  blockedCountries?: { country: string; count: number }[];
+  /** 被墙国家及数量/费用（仅当 includeBlocked 时存在；空数组=无被墙） */
+  blockedCountries?: { country: string; count: number; fee: number }[];
+  /** 未检测段按地区分布（blockedCountries 字段缺失的段，仅当 includeBlocked 时存在） */
+  uncheckedRegions?: { region: string; count: number; fee: number }[];
 }
 
 interface PurchasePeriodResult {
@@ -862,112 +867,116 @@ async function sendRenewalNotifyEmail(
     }
   }
 
-  // ─── 发送 Google Chat 消息（仅在 Webhook 已配置时）──────────────────────
+  // ─── 发送 Google Chat Cards v2 消息（仅在 Webhook 已配置时）──────────────
   if (hasChat) {
     try {
-      const renewalStatusEmoji: Record<string, string> = {
-        not_renewed: '',
-        renewed: ' ✅',
-        cancelled: ' ❌',
-        refunded: ' 💰',
-      };
-      // 构建 Google Chat 消息
-      const formatLine = (item: any, urgent: boolean) => {
+      const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+      const ALWAYS_SHOW = 3;
+
+      // 构建单个 IP 段 widget（待续费类）
+      const buildRenewalWidget = (item: any) => {
         const bs = item.billing_service || {};
-        const ms = item.market_service || {};
-        const seg = `${bs.address}/${bs.cidr}`;
-        const segDisplay = bs.address;
-        const daysLeft = Math.ceil((bs.next_due_date - nowSec2) / 86400);
-        const dueStr = new Date(bs.next_due_date * 1000).toISOString().slice(0, 10);
-        const supplier = (item._localSupplier || 'IPXO').trim();
-        const isIpxo = !supplier || supplier.toLowerCase() === 'ipxo';
-        const amount = Number(bs.recurring_amount);
-        const price = `$${(isIpxo ? amount * 1.04 : amount).toFixed(2)}`;
-        const remark = item._localRemark || '';
-        const renewalStatus = item._localRenewalStatus || 'not_renewed';
-        const statusEmoji = renewalStatusEmoji[renewalStatus] || '';
-        const statusLabel = renewalStatusText[renewalStatus] || '';
-        let timeLabel: string;
-        if (daysLeft <= 0) timeLabel = '【今日到期】';
-        else timeLabel = `【${daysLeft}天后到期】`;
-        const urgency = urgent ? (daysLeft <= 0 ? '🔴' : '🟠') : '🔵';
-        const remarkStr = remark ? `  备注: ${remark}` : '';
-        const statusStr = statusLabel ? `  [${statusLabel}${statusEmoji}]` : '';
-        return `${urgency} ${segDisplay} ${timeLabel} 【${supplier}】 ${price}/月  到期: ${dueStr}${statusStr}${remarkStr}`;
-      };
-
-      const urgentLines = sorted
-        .filter((item: any) => {
-          const ts = item.billing_service?.next_due_date;
-          return ts && (ts - nowSec2) <= 3 * 86400;
-        })
-        .map((item: any) => formatLine(item, true))
-        .join('\n');
-
-      const normalLines = sorted
-        .filter((item: any) => {
-          const ts = item.billing_service?.next_due_date;
-          return ts && (ts - nowSec2) > 3 * 86400;
-        })
-        .map((item: any) => formatLine(item, false))
-        .join('\n');
-
-      const separator = '─'.repeat(52);
-      const header = `📋 IP 段续费提醒  共 ${sorted.length} 个  月费合计 $${totalFee.toFixed(2)}`;
-      const urgentHeader = urgentCount > 0 ? `⚠️ 紧急提醒：${urgentCount} 个 IP 段 3 天内到期！\n${separator}` : null;
-      const normalHeader = normalLines ? `续费列表\n${separator}` : null;
-
-      // 已续费部分
-      const renewedChatLines = renewedToShow.map((item: any) => {
-        const bs = item.billing_service || {};
+        const seg = bs.address && bs.cidr != null ? `${bs.address}/${bs.cidr}` : '-';
+        const daysLeft = bs.next_due_date != null ? Math.ceil((bs.next_due_date - nowSec2) / 86400) : null;
         const dueStr = bs.next_due_date ? new Date(bs.next_due_date * 1000).toISOString().slice(0, 10) : '-';
         const supplier = (item._localSupplier || 'IPXO').trim();
         const isIpxo = !supplier || supplier.toLowerCase() === 'ipxo';
         const amount = Number(bs.recurring_amount);
         const price = `$${(isIpxo ? amount * 1.04 : amount).toFixed(2)}`;
         const remark = item._localRemark || '';
-        const remarkStr = remark ? `  备注: ${remark}` : '';
-        return `✅ ${bs.address}/${bs.cidr}  续费日: ${dueStr}  【${supplier}】  ${price}/月${remarkStr}`;
-      }).join('\n');
-      const renewedChatHeader = renewedToShow.length > 0 ? `\n${separator}\n✅ 近期已续费（${renewedToShow.length} 个）\n${separator}` : null;
+        const renewalStatus = item._localRenewalStatus || 'not_renewed';
+        const statusLabel = renewalStatusText[renewalStatus] || renewalStatus;
+        const urgIcon = daysLeft != null && daysLeft <= 0 ? '🔴' : daysLeft != null && daysLeft <= 3 ? '🟠' : '🔵';
+        const timeLabel = daysLeft == null ? '-' : daysLeft <= 0 ? '今日到期' : `${daysLeft} 天后到期`;
 
-      const chatText = [
-        urgentHeader,
-        urgentLines || null,
-        header,
-        normalHeader,
-        normalLines || null,
-        renewedChatHeader,
-        renewedChatLines || null,
-        `${separator}\n发送时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
-      ].filter(Boolean).join('\n');
+        const lines: string[] = [
+          `${urgIcon} <b>${seg}</b>　${timeLabel}　${supplier}　<b>${price}/月</b>`,
+        ];
+        const detail: string[] = [
+          `<font color="#888888">到期：</font>${dueStr}`,
+          `<font color="#888888">状态：</font>${statusLabel}`,
+        ];
+        if (remark) detail.push(`<font color="#888888">备注：</font>${remark}`);
+        lines.push(`　${detail.join('　')}`);
+        return { textParagraph: { text: lines.join('<br>') } };
+      };
 
-      const chatPayload = JSON.stringify({ text: chatText });
+      // 构建单个 IP 段 widget（已续费类）
+      const buildRenewedWidget = (item: any) => {
+        const bs = item.billing_service || {};
+        const seg = bs.address && bs.cidr != null ? `${bs.address}/${bs.cidr}` : '-';
+        const dueStr = bs.next_due_date ? new Date(bs.next_due_date * 1000).toISOString().slice(0, 10) : '-';
+        const supplier = (item._localSupplier || 'IPXO').trim();
+        const isIpxo = !supplier || supplier.toLowerCase() === 'ipxo';
+        const amount = Number(bs.recurring_amount);
+        const price = `$${(isIpxo ? amount * 1.04 : amount).toFixed(2)}`;
+        const remark = item._localRemark || '';
 
-      await new Promise<void>((resolve, reject) => {
-        const webhookUrl = new URL(cfg.googleChatWebhook!);
-        const options = {
-          hostname: webhookUrl.hostname,
-          path: webhookUrl.pathname + webhookUrl.search,
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json; charset=UTF-8',
-            'Content-Length': Buffer.byteLength(chatPayload),
-          },
-        };
-        const req = https.request(options, (res) => {
-          res.resume();
-          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-            console.log(`[Notify] Google Chat 消息已发送`);
-            resolve();
-          } else {
-            reject(new Error(`Google Chat 响应 HTTP ${res.statusCode}`));
-          }
-        });
-        req.on('error', reject);
-        req.write(chatPayload);
-        req.end();
+        const lines: string[] = [
+          `✅ <b>${seg}</b>　${supplier}　<b>${price}/月</b>`,
+        ];
+        const detail: string[] = [`<font color="#888888">续费日：</font>${dueStr}`];
+        if (remark) detail.push(`<font color="#888888">备注：</font>${remark}`);
+        lines.push(`　${detail.join('　')}`);
+        return { textParagraph: { text: lines.join('<br>') } };
+      };
+
+      // 分类
+      const urgentItems = sorted.filter((item: any) => {
+        const ts = item.billing_service?.next_due_date;
+        return ts != null && (ts - nowSec2) <= 3 * 86400;
       });
+      const normalItems = sorted.filter((item: any) => {
+        const ts = item.billing_service?.next_due_date;
+        return ts != null && (ts - nowSec2) > 3 * 86400;
+      });
+
+      const sections: any[] = [];
+
+      if (urgentItems.length > 0) {
+        const widgets = urgentItems.map(buildRenewalWidget);
+        sections.push({
+          header: `⚠️ 紧急（3天内到期）· ${urgentItems.length} 个`,
+          collapsible: widgets.length > ALWAYS_SHOW,
+          ...(widgets.length > ALWAYS_SHOW ? { uncollapsibleWidgetsCount: ALWAYS_SHOW } : {}),
+          widgets,
+        });
+      }
+
+      if (normalItems.length > 0) {
+        const widgets = normalItems.map(buildRenewalWidget);
+        sections.push({
+          header: `📋 待续费 · ${normalItems.length} 个`,
+          collapsible: widgets.length > ALWAYS_SHOW,
+          ...(widgets.length > ALWAYS_SHOW ? { uncollapsibleWidgetsCount: ALWAYS_SHOW } : {}),
+          widgets,
+        });
+      }
+
+      if (renewedToShow.length > 0) {
+        const widgets = renewedToShow.map(buildRenewedWidget);
+        sections.push({
+          header: `✅ 近期已续费 · ${renewedToShow.length} 个`,
+          collapsible: widgets.length > ALWAYS_SHOW,
+          ...(widgets.length > ALWAYS_SHOW ? { uncollapsibleWidgetsCount: ALWAYS_SHOW } : {}),
+          widgets,
+        });
+      }
+
+      const cardTitle = urgentCount > 0 ? '⚠️ IP 段续费提醒' : '📋 IP 段续费提醒';
+      const cardSubtitle = `共 ${sorted.length} 个待续费 · 月费合计 $${totalFee.toFixed(2)} · ${now}`;
+
+      const card = {
+        cardsV2: [{
+          cardId: `renewal-notify-${Date.now()}`,
+          card: {
+            header: { title: cardTitle, subtitle: cardSubtitle },
+            sections,
+          },
+        }],
+      };
+
+      await postToGchatWebhook(cfg.googleChatWebhook!, card);
       results.push('Google Chat 消息已发送');
     } catch (chatErr: any) {
       console.error('[Notify] Google Chat 发送失败:', chatErr.message);
@@ -1950,16 +1959,40 @@ function computePurchaseStats(
       }
 
       if (includeBlocked) {
-        // 每个国家的被墙段数
-        const countryMap = new Map<string, number>();
+        // 被墙：按国家统计数量+费用
+        // 未检测：blockedCountries 和 detectedCountries 均为空时（与平台 UI 判断一致）
+        const countryMap = new Map<string, { count: number; fee: number }>();
+        const uncheckedRegionMap = new Map<string, { count: number; fee: number }>();
+
         gs.forEach((seg: any) => {
-          (seg.blockedCountries || []).forEach((c: string) => {
-            countryMap.set(c, (countryMap.get(c) || 0) + 1);
-          });
+          const segFee: number = seg.monthlyPrice || 0;
+          const blocked: string[] = Array.isArray(seg.blockedCountries) ? seg.blockedCountries : [];
+          const detected: string[] = Array.isArray(seg.detectedCountries) ? seg.detectedCountries : [];
+
+          if (blocked.length === 0 && detected.length === 0) {
+            // 未检测：按地区统计
+            const locs = [...new Set(
+              (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean),
+            )] as string[];
+            const uniqueRegions = locs.length > 0 ? locs : ['未知'];
+            uniqueRegions.forEach(r => {
+              const ex = uncheckedRegionMap.get(r) || { count: 0, fee: 0 };
+              uncheckedRegionMap.set(r, { count: ex.count + 1, fee: ex.fee + segFee });
+            });
+          } else {
+            blocked.forEach((c: string) => {
+              const ex = countryMap.get(c) || { count: 0, fee: 0 };
+              countryMap.set(c, { count: ex.count + 1, fee: ex.fee + segFee });
+            });
+          }
         });
+
         result.blockedCountries = [...countryMap.entries()]
-          .sort((a, b) => b[1] - a[1])
-          .map(([country, count]) => ({ country, count }));
+          .sort((a, b) => b[1].count - a[1].count)
+          .map(([country, { count, fee }]) => ({ country, count, fee }));
+        result.uncheckedRegions = [...uncheckedRegionMap.entries()]
+          .sort((a, b) => b[1].count - a[1].count)
+          .map(([region, { count, fee }]) => ({ region, count, fee }));
       }
 
       return result;
@@ -2007,50 +2040,73 @@ function buildPurchaseCardV2(
 
     const summaryWidget = {
       textParagraph: {
-        text: `共 <b>${period.totalCount}</b> 个 IP段 &nbsp;·&nbsp; <b>$${period.totalFee.toFixed(2)}</b>/月`,
+        text: `共 <b>${period.totalCount}</b> 个 IP段　<b>$${period.totalFee.toFixed(2)}</b>/月`,
       },
     };
 
-    const groupWidgets = period.groups.map((g: PurchaseGroupResult) => {
+    // 每组一个 textParagraph widget，组间插入 divider
+    const groupWidgetList: any[] = [];
+    period.groups.forEach((g: PurchaseGroupResult, idx: number) => {
       const lines: string[] = [];
 
-      // 标题行
-      lines.push(`<b>${g.key}</b>　${g.count} 个 · $${g.fee.toFixed(2)}/月`);
+      // 标题行：名称 + 数量 + 费用
+      lines.push(`<b>${g.key}</b>　${g.count} 个 · <b>$${g.fee.toFixed(2)}</b>/月`);
 
-      // 计费地区
+      // 计费地区（绿色）：标签单独一行，数据缩进换行
       if (g.regions !== undefined) {
+        lines.push(`<font color="#888888">计费地区：</font>`);
         if (g.regions.length === 0) {
-          lines.push(`<font color="#888888">计费地区：</font>未知`);
+          lines.push(`　<font color="#52c41a">未知</font>`);
         } else {
-          lines.push(`<font color="#888888">计费地区：</font>`);
           g.regions.forEach(r => {
             const pct = ((r.count / g.count) * 100).toFixed(1);
-            lines.push(`　${r.region} ×${r.count}　$${r.fee.toFixed(2)}　${pct}%`);
+            lines.push(`　<font color="#52c41a">${r.region} ×${r.count}　$${r.fee.toFixed(2)}　${pct}%</font>`);
           });
         }
       }
 
-      // 被墙情况
+      // 被墙情况（红色）：无被墙时"无"留同行；有数据则换行缩进
       if (g.blockedCountries !== undefined) {
         if (g.blockedCountries.length === 0) {
           lines.push(`<font color="#888888">被墙情况：</font>无`);
         } else {
-          const parts = g.blockedCountries.map(b => `${COUNTRY_LABEL_BE[b.country] || b.country} ×${b.count}`).join('　');
-          lines.push(`<font color="#888888">被墙情况：</font>${parts}`);
+          const totalBlocked = g.blockedCountries.reduce((s, b) => s + b.count, 0);
+          lines.push(`<font color="#888888">被墙情况：</font>`);
+          g.blockedCountries.forEach(b => {
+            const pct = ((b.count / totalBlocked) * 100).toFixed(1);
+            const label = COUNTRY_LABEL_BE[b.country] || b.country;
+            lines.push(`　<font color="#ff4d4f">${label} ×${b.count}　$${b.fee.toFixed(2)}　${pct}%</font>`);
+          });
         }
       }
 
-      return {
-        textParagraph: { text: lines.join('<br>') },
-      };
+      // 未检测（橙色）：有数据时标签换行，数据缩进；无则不显示
+      if (g.uncheckedRegions !== undefined && g.uncheckedRegions.length > 0) {
+        const totalUnchecked = g.uncheckedRegions.reduce((s, r) => s + r.count, 0);
+        lines.push(`<font color="#888888">未检测：</font>`);
+        g.uncheckedRegions.forEach(r => {
+          const pct = ((r.count / totalUnchecked) * 100).toFixed(1);
+          lines.push(`　<font color="#fa8c16">${r.region} ×${r.count}　$${r.fee.toFixed(2)}　${pct}%</font>`);
+        });
+      }
+
+      groupWidgetList.push({ textParagraph: { text: lines.join('<br>') } });
+
+      // 组间加分隔线（最后一组不加）
+      if (idx < period.groups.length - 1) {
+        groupWidgetList.push({ divider: {} });
+      }
     });
 
-    const allWidgets = [summaryWidget, ...groupWidgets];
-    const needsCollapse = groupWidgets.length > ALWAYS_SHOW - 1;
+    // summary + groups + dividers = 1 + N + (N-1) 个 widget
+    const allWidgets = [summaryWidget, ...groupWidgetList];
+    // 固定展示：汇总 + 第1组 + 分隔线 = 3 个 widget；2 组及以上即触发折叠
+    const UNCOLLAPSIBLE = 3;
+    const needsCollapse = allWidgets.length > UNCOLLAPSIBLE;
     return {
       header: sectionHeader,
       collapsible: needsCollapse,
-      ...(needsCollapse ? { uncollapsibleWidgetsCount: ALWAYS_SHOW } : {}),
+      ...(needsCollapse ? { uncollapsibleWidgetsCount: UNCOLLAPSIBLE } : {}),
       widgets: allWidgets,
     };
   });
@@ -2111,9 +2167,21 @@ function startPurchaseReportScheduler(): void {
       for (const report of cfg.scheduledPurchaseReports) {
         if (!report.enabled) continue;
         if (report.time !== bjHHMM) continue;
+
+        // 频率检查
+        const freq = report.frequency ?? 'daily';
+        if (freq === 'weekly') {
+          const bjDow = bjNow.getUTCDay(); // 0=周日，1=周一…
+          const days = report.weekdays?.length ? report.weekdays : [1]; // 默认周一
+          if (!days.includes(bjDow)) continue;
+        } else if (freq === 'monthly') {
+          const bjDom = bjNow.getUTCDate();
+          if (bjDom !== (report.monthDay ?? 1)) continue;
+        }
+
         if (report.lastSentDate === bjDate) continue;
 
-        console.log(`[PurchaseReport] 触发报告「${report.label}」(${bjDate} ${bjHHMM})`);
+        console.log(`[PurchaseReport] 触发报告「${report.label}」(${bjDate} ${bjHHMM} ${freq})`);
         let taskIdx = 0;
         for (const task of report.tasks) {
           if (taskIdx > 0) await new Promise(r => setTimeout(r, 1500));
@@ -7181,6 +7249,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
     // ─── 购买统计定时推送配置 ────────────────────────────────────────────────────
     server.middlewares.use('/api/notify/purchase-reports', async (req: any, res: any, _next: any) => {
+      // 子路径（如 /trigger）交由后续中间件处理，不在此拦截
+      const subPath = (req.url ?? '/').split('?')[0];
+      if (subPath !== '/' && subPath !== '') { _next(); return; }
+
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
