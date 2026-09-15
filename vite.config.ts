@@ -493,9 +493,10 @@ interface PurchaseGroupResult {
   key: string;
   count: number;
   fee: number;
-  regions?: { region: string; count: number }[];
-  blockedCount?: number;
-  blockedCountries?: string[];
+  /** 计费地区，含数量和费用（仅当 includeRegions 时存在） */
+  regions?: { region: string; count: number; fee: number }[];
+  /** 被墙国家及数量（仅当 includeBlocked 时存在；空数组=无被墙） */
+  blockedCountries?: { country: string; count: number }[];
 }
 
 interface PurchasePeriodResult {
@@ -1931,24 +1932,34 @@ function computePurchaseStats(
       };
 
       if (includeRegions) {
-        const regionMap = new Map<string, number>();
-        gs.forEach((seg: any) =>
-          (seg.serverLocations || []).forEach((l: any) => {
-            if (l.region) regionMap.set(l.region, (regionMap.get(l.region) || 0) + 1);
-          }),
-        );
+        // 按地区统计数量和费用
+        const regionMap = new Map<string, { count: number; fee: number }>();
+        gs.forEach((seg: any) => {
+          const locs = [...new Set(
+            (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean),
+          )] as string[];
+          const uniqueRegions = locs.length > 0 ? locs : ['未知'];
+          uniqueRegions.forEach(r => {
+            const ex = regionMap.get(r) || { count: 0, fee: 0 };
+            regionMap.set(r, { count: ex.count + 1, fee: ex.fee + (seg.monthlyPrice || 0) });
+          });
+        });
         result.regions = [...regionMap.entries()]
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 4)
-          .map(([region, count]) => ({ region, count }));
+          .sort((a, b) => b[1].count - a[1].count)
+          .map(([region, { count, fee }]) => ({ region, count, fee }));
       }
 
       if (includeBlocked) {
-        const blockedSegs = gs.filter((s: any) => (s.blockedCountries || []).length > 0);
-        result.blockedCount = blockedSegs.length;
-        result.blockedCountries = [...new Set(
-          gs.flatMap((s: any) => s.blockedCountries || []),
-        )] as string[];
+        // 每个国家的被墙段数
+        const countryMap = new Map<string, number>();
+        gs.forEach((seg: any) => {
+          (seg.blockedCountries || []).forEach((c: string) => {
+            countryMap.set(c, (countryMap.get(c) || 0) + 1);
+          });
+        });
+        result.blockedCountries = [...countryMap.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([country, count]) => ({ country, count }));
       }
 
       return result;
@@ -2002,25 +2013,35 @@ function buildPurchaseCardV2(
 
     const groupWidgets = period.groups.map((g: PurchaseGroupResult) => {
       const lines: string[] = [];
+
+      // 标题行
+      lines.push(`<b>${g.key}</b>　${g.count} 个 · $${g.fee.toFixed(2)}/月`);
+
       // 计费地区
-      if (g.regions?.length) {
-        const parts = g.regions.map(r => `${r.region}×${r.count}`).join('  ');
-        lines.push(`🌐 ${parts}`);
+      if (g.regions !== undefined) {
+        if (g.regions.length === 0) {
+          lines.push(`<font color="#888888">计费地区：</font>未知`);
+        } else {
+          lines.push(`<font color="#888888">计费地区：</font>`);
+          g.regions.forEach(r => {
+            const pct = ((r.count / g.count) * 100).toFixed(1);
+            lines.push(`　${r.region} ×${r.count}　$${r.fee.toFixed(2)}　${pct}%`);
+          });
+        }
       }
-      // 被墙信息
-      if (g.blockedCount !== undefined && g.blockedCount > 0) {
-        const cnames = (g.blockedCountries || [])
-          .map(c => COUNTRY_LABEL_BE[c] || c).join('·');
-        lines.push(`🚫 ${cnames} 被墙 ${g.blockedCount} 个`);
+
+      // 被墙情况
+      if (g.blockedCountries !== undefined) {
+        if (g.blockedCountries.length === 0) {
+          lines.push(`<font color="#888888">被墙情况：</font>无`);
+        } else {
+          const parts = g.blockedCountries.map(b => `${COUNTRY_LABEL_BE[b.country] || b.country} ×${b.count}`).join('　');
+          lines.push(`<font color="#888888">被墙情况：</font>${parts}`);
+        }
       }
 
       return {
-        decoratedText: {
-          topLabel: g.key,
-          text: `<b>${g.count} 个</b>  ·  $${g.fee.toFixed(2)}/月`,
-          ...(lines.length ? { bottomLabel: lines.join('   ') } : {}),
-          wrapText: true,
-        },
+        textParagraph: { text: lines.join('<br>') },
       };
     });
 

@@ -899,28 +899,36 @@ const IPSegmentStats: React.FC = () => {
           totalFee: period.segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
           groups: groupKeys.map(key => {
             const segs = period.byGroup.get(key)!;
-            // 计费地区统计（取前 4 个高频地区）
-            const regionMap = new Map<string, number>();
-            segs.forEach((seg: any) =>
-              (seg.serverLocations || []).forEach((l: any) => {
-                if (l.region) regionMap.set(l.region, (regionMap.get(l.region) || 0) + 1);
-              }),
-            );
+            // 计费地区：数量 + 费用
+            const regionMap = new Map<string, { count: number; fee: number }>();
+            segs.forEach((seg: any) => {
+              const locs = [...new Set(
+                (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean),
+              )] as string[];
+              const uniqueRegions = locs.length > 0 ? locs : ['未知'];
+              uniqueRegions.forEach((r: string) => {
+                const ex = regionMap.get(r) || { count: 0, fee: 0 };
+                regionMap.set(r, { count: ex.count + 1, fee: ex.fee + (seg.monthlyPrice || 0) });
+              });
+            });
             const regions = [...regionMap.entries()]
+              .sort((a, b) => b[1].count - a[1].count)
+              .map(([region, { count, fee }]) => ({ region, count, fee }));
+            // 被墙：每个国家的段数
+            const countryMap = new Map<string, number>();
+            segs.forEach((seg: any) => {
+              (seg.blockedCountries || []).forEach((c: string) => {
+                countryMap.set(c, (countryMap.get(c) || 0) + 1);
+              });
+            });
+            const blockedCountries = [...countryMap.entries()]
               .sort((a, b) => b[1] - a[1])
-              .slice(0, 4)
-              .map(([region, count]) => ({ region, count }));
-            // 被墙信息
-            const blockedSegs = segs.filter((s: any) => (s.blockedCountries || []).length > 0);
-            const blockedCountries = [...new Set(
-              segs.flatMap((s: any) => s.blockedCountries || []),
-            )] as string[];
+              .map(([country, count]) => ({ country, count }));
             return {
               key,
               count: segs.length,
               fee: segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
               regions,
-              blockedCount: blockedSegs.length,
               blockedCountries,
             };
           }),
