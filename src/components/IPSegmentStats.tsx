@@ -3,7 +3,7 @@ import {
   Card, Row, Col, Spin, Typography, Tag, Modal, Table, Space,
   Empty, Badge, Select, Tooltip, Button, message, Radio, DatePicker, Tabs,
 } from 'antd';
-import { SyncOutlined, PieChartOutlined, ReloadOutlined, CalendarOutlined } from '@ant-design/icons';
+import { SyncOutlined, PieChartOutlined, ReloadOutlined, CalendarOutlined, SendOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
 
 const { Title, Text } = Typography;
@@ -431,6 +431,7 @@ const IPSegmentStats: React.FC = () => {
 
   // 购买统计细分维度（默认按项目组）
   const [purchaseGroupBy, setPurchaseGroupBy] = useState<'overall' | 'project' | 'supplier' | 'region'>('project');
+  const [gchatSending, setGchatSending] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -877,6 +878,56 @@ const IPSegmentStats: React.FC = () => {
     setPurchaseModalSegments(segs);
     setPurchaseModalVisible(true);
   }, []);
+
+  const sendPurchaseStatsToGchat = useCallback(async () => {
+    setGchatSending(true);
+    try {
+      const SPECIAL_KEYS = ['整体', '未分配项目组', '未知供应商', '未知地区'];
+      const sortGroups = (keys: string[]) =>
+        [...keys].sort((a, b) => {
+          if (SPECIAL_KEYS.includes(a) && !SPECIAL_KEYS.includes(b)) return 1;
+          if (!SPECIAL_KEYS.includes(a) && SPECIAL_KEYS.includes(b)) return -1;
+          return a.localeCompare(b, 'zh-CN');
+        });
+
+      const periods = allPeriodStats.map(period => {
+        const groupKeys = sortGroups(Array.from(period.byGroup.keys()));
+        return {
+          label: period.label,
+          range: period.range,
+          totalCount: period.segs.length,
+          totalFee: period.segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
+          groups: groupKeys.map(key => {
+            const segs = period.byGroup.get(key)!;
+            return {
+              key,
+              count: segs.length,
+              fee: segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
+            };
+          }),
+        };
+      });
+
+      const res = await fetch('/api/notify/gchat-purchase-stats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          groupByLabel: PURCHASE_GROUP_BY_LABELS[purchaseGroupBy] ?? purchaseGroupBy,
+          periods,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        message.success(data.message || '已发送到 Google Chat');
+      } else {
+        message.error(data.message || '发送失败');
+      }
+    } catch (e: any) {
+      message.error('发送失败：' + e.message);
+    } finally {
+      setGchatSending(false);
+    }
+  }, [allPeriodStats, purchaseGroupBy]);
 
   // ── 购买统计弹窗表格列（含被墙信息）──────────────────────────────────────────
   const purchaseModalColumns = [
@@ -1431,6 +1482,15 @@ const IPSegmentStats: React.FC = () => {
                 maxTagCount="responsive"
                 getPopupContainer={() => document.body}
               />
+              <Button
+                size="small"
+                icon={<SendOutlined />}
+                loading={gchatSending}
+                onClick={sendPurchaseStatsToGchat}
+                title="发送当前视图到 Google Chat"
+              >
+                发送到 Chat
+              </Button>
             </Space>
           }
         >

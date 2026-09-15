@@ -6777,6 +6777,99 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
     });
 
+    // ─── 购买统计发送到 Google Chat ──────────────────────────────────────────────
+    server.middlewares.use('/api/notify/gchat-purchase-stats', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' })); return; }
+
+      try {
+        const cfg = loadNotifyConfig();
+        if (!cfg?.googleChatWebhook) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: '未配置 Google Chat Webhook URL，请在通知配置中添加 googleChatWebhook 字段' }));
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        await new Promise<void>((resolve) => {
+          req.on('data', (chunk: any) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+          req.on('end', resolve);
+        });
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        const { groupByLabel, periods } = body as {
+          groupByLabel: string;
+          periods: Array<{
+            label: string;
+            range: [string, string];
+            totalCount: number;
+            totalFee: number;
+            groups: Array<{ key: string; count: number; fee: number }>;
+          }>;
+        };
+
+        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        const sep = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
+        const PERIOD_ICONS: Record<string, string> = { '昨天': '⏰', '上周': '📅', '上个月': '📆' };
+
+        const lines: string[] = [
+          `📊 *IP段购买统计汇总*  |  按${groupByLabel}`,
+          `发送时间：${now}`,
+          sep,
+        ];
+
+        for (const period of periods) {
+          const icon = PERIOD_ICONS[period.label] ?? '📌';
+          const rangeStr = period.range[0] === period.range[1]
+            ? period.range[0]
+            : `${period.range[0]} ~ ${period.range[1]}`;
+
+          lines.push(`\n${icon} *${period.label}*（${rangeStr}）`);
+
+          if (period.totalCount === 0) {
+            lines.push('  无新购 IP 段');
+          } else {
+            lines.push(`  共 ${period.totalCount} 个 IP段  ·  $${period.totalFee.toFixed(2)}/月`);
+            for (const g of period.groups) {
+              lines.push(`  • ${g.key}：${g.count} 个  $${g.fee.toFixed(2)}/月`);
+            }
+          }
+        }
+
+        const chatPayload = JSON.stringify({ text: lines.join('\n') });
+
+        await new Promise<void>((resolve, reject) => {
+          const webhookUrl = new URL(cfg.googleChatWebhook!);
+          const opts = {
+            hostname: webhookUrl.hostname,
+            path: webhookUrl.pathname + webhookUrl.search,
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json; charset=UTF-8',
+              'Content-Length': Buffer.byteLength(chatPayload),
+            },
+          };
+          const r = https.request(opts, (resp) => {
+            resp.resume();
+            if (resp.statusCode && resp.statusCode >= 200 && resp.statusCode < 300) resolve();
+            else reject(new Error(`HTTP ${resp.statusCode}`));
+          });
+          r.on('error', reject);
+          r.write(chatPayload);
+          r.end();
+        });
+
+        res.end(JSON.stringify({ success: true, message: '购买统计已发送到 Google Chat' }));
+      } catch (e: any) {
+        console.error('[Notify] 购买统计发送失败:', e);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: `发送失败：${e.message}` }));
+      }
+    });
+
     // ─── 查询定时任务状态 ────────────────────────────────────────────────────
     server.middlewares.use('/api/notify/schedule/status', (req: any, res: any, _next: any) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
