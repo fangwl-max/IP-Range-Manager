@@ -468,6 +468,42 @@ interface NotifyConfig {
   lastWeeklyReportDate?: string;
   /** 服务器外网访问地址（用于 Chat 消息中生成文件下载链接，如 http://192.168.1.100:8081） */
   serverBaseUrl?: string;
+  /** 购买统计定时推送任务列表 */
+  scheduledPurchaseReports?: ScheduledPurchaseReport[];
+}
+
+// ─── 购买统计定时推送类型 ────────────────────────────────────────────────────────
+interface PurchaseReportTask {
+  groupBy: 'project' | 'supplier' | 'region' | 'overall';
+  includeRegions?: boolean;
+  includeBlocked?: boolean;
+}
+
+interface ScheduledPurchaseReport {
+  id: string;
+  label: string;
+  time: string; // HH:mm 北京时间
+  enabled: boolean;
+  lastSentDate?: string;
+  tasks: PurchaseReportTask[];
+}
+
+// 每个分组的计算结果
+interface PurchaseGroupResult {
+  key: string;
+  count: number;
+  fee: number;
+  regions?: { region: string; count: number }[];
+  blockedCount?: number;
+  blockedCountries?: string[];
+}
+
+interface PurchasePeriodResult {
+  label: string;
+  range: [string, string];
+  totalCount: number;
+  totalFee: number;
+  groups: PurchaseGroupResult[];
 }
 
 function loadNotifyConfig(): NotifyConfig | null {
@@ -1784,6 +1820,313 @@ async function sendWeeklyReport(): Promise<void> {
   }
 
   console.log(`[WeeklyReport] 完成（上周购买 ${weekPurchased.length} 个，续费 ${weekRenewed.length} 个；上月购买 ${monthPurchased.length} 个，续费 ${monthRenewed.length} 个）`);
+}
+
+// ─── 购买统计计算 & 推送共享函数 ────────────────────────────────────────────────
+
+/** 计算北京时间下的购买统计周期日期范围 */
+function getPurchasePeriodBackend(key: 'day' | 'week' | 'month'): [string, string] {
+  const bjNow = new Date(Date.now() + 8 * 3600 * 1000);
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+
+  if (key === 'day') {
+    const yd = new Date(bjNow);
+    yd.setUTCDate(yd.getUTCDate() - 1);
+    const d = fmt(yd);
+    return [d, d];
+  }
+
+  if (key === 'week') {
+    const dow = bjNow.getUTCDay(); // 0=Sun
+    const daysFromMon = dow === 0 ? 6 : dow - 1;
+    const thisMonday = new Date(bjNow);
+    thisMonday.setUTCDate(thisMonday.getUTCDate() - daysFromMon);
+    const lastMonday = new Date(thisMonday);
+    lastMonday.setUTCDate(lastMonday.getUTCDate() - 7);
+    const lastSunday = new Date(thisMonday);
+    lastSunday.setUTCDate(lastSunday.getUTCDate() - 1);
+    return [fmt(lastMonday), fmt(lastSunday)];
+  }
+
+  // month
+  const y = bjNow.getUTCFullYear();
+  const m = bjNow.getUTCMonth();
+  const prevM = m === 0 ? 11 : m - 1;
+  const prevY = m === 0 ? y - 1 : y;
+  const daysInMonth = new Date(Date.UTC(prevY, prevM + 1, 0)).getUTCDate();
+  return [
+    `${prevY}-${String(prevM + 1).padStart(2, '0')}-01`,
+    `${prevY}-${String(prevM + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`,
+  ];
+}
+
+const PURCHASE_GROUP_BY_LABELS_BE: Record<string, string> = {
+  project: '项目组', supplier: '供应商', region: '计费地区', overall: '整体',
+};
+const PURCHASE_PERIOD_LABELS: { key: 'day' | 'week' | 'month'; label: string }[] = [
+  { key: 'day', label: '昨天' },
+  { key: 'week', label: '上周' },
+  { key: 'month', label: '上个月' },
+];
+
+/**
+ * 从磁盘读取 ip-data.json，按指定维度计算昨天/上周/上个月的购买统计。
+ */
+function computePurchaseStats(
+  groupBy: 'project' | 'supplier' | 'region' | 'overall',
+  includeRegions: boolean,
+  includeBlocked: boolean,
+): PurchasePeriodResult[] {
+  const localData = fs.existsSync(dataFilePath)
+    ? JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'))
+    : {};
+  const allSegs: any[] = localData?.ipSegments || [];
+
+  const SPECIAL = ['整体', '未分配项目组', '未知供应商', '未知地区'];
+  const sortGroups = (keys: string[]) =>
+    [...keys].sort((a, b) => {
+      const aS = SPECIAL.includes(a), bS = SPECIAL.includes(b);
+      if (aS && !bS) return 1;
+      if (!aS && bS) return -1;
+      return a.localeCompare(b, 'zh-CN');
+    });
+
+  return PURCHASE_PERIOD_LABELS.map(({ key, label }) => {
+    const [from, to] = getPurchasePeriodBackend(key);
+
+    const segs = allSegs.filter((s: any) => {
+      const d = s.purchaseDate;
+      return d && d >= from && d <= to;
+    });
+
+    // 分组
+    const byGroup = new Map<string, any[]>();
+    segs.forEach((seg: any) => {
+      let groupKeys: string[];
+      if (groupBy === 'overall') {
+        groupKeys = ['整体'];
+      } else if (groupBy === 'project') {
+        groupKeys = seg.projectGroups?.length ? seg.projectGroups : ['未分配项目组'];
+      } else if (groupBy === 'supplier') {
+        groupKeys = [String(seg.supplier ?? '').trim() || '未知供应商'];
+      } else {
+        const regions = [...new Set(
+          (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean),
+        )] as string[];
+        groupKeys = regions.length > 0 ? regions : ['未知地区'];
+      }
+      groupKeys.forEach(k => {
+        if (!byGroup.has(k)) byGroup.set(k, []);
+        byGroup.get(k)!.push(seg);
+      });
+    });
+
+    const groupKeys = sortGroups(Array.from(byGroup.keys()));
+    const groups: PurchaseGroupResult[] = groupKeys.map(k => {
+      const gs = byGroup.get(k)!;
+      const result: PurchaseGroupResult = {
+        key: k,
+        count: gs.length,
+        fee: gs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
+      };
+
+      if (includeRegions) {
+        const regionMap = new Map<string, number>();
+        gs.forEach((seg: any) =>
+          (seg.serverLocations || []).forEach((l: any) => {
+            if (l.region) regionMap.set(l.region, (regionMap.get(l.region) || 0) + 1);
+          }),
+        );
+        result.regions = [...regionMap.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 4)
+          .map(([region, count]) => ({ region, count }));
+      }
+
+      if (includeBlocked) {
+        const blockedSegs = gs.filter((s: any) => (s.blockedCountries || []).length > 0);
+        result.blockedCount = blockedSegs.length;
+        result.blockedCountries = [...new Set(
+          gs.flatMap((s: any) => s.blockedCountries || []),
+        )] as string[];
+      }
+
+      return result;
+    });
+
+    return {
+      label,
+      range: [from, to],
+      totalCount: segs.length,
+      totalFee: segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
+      groups,
+    };
+  });
+}
+
+const COUNTRY_LABEL_BE: Record<string, string> = {
+  iran: '伊朗', myanmar: '缅甸', turkmenistan: '土库曼', russia: '俄罗斯', pakistan: '巴基斯坦',
+};
+
+/**
+ * 将计算结果构建为 Google Chat Cards v2 JSON。
+ */
+function buildPurchaseCardV2(
+  groupByLabel: string,
+  periods: PurchasePeriodResult[],
+): object {
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const PERIOD_ICONS: Record<string, string> = { '昨天': '⏰', '上周': '📅', '上个月': '📆' };
+  const ALWAYS_SHOW = 3; // 摘要 + 前 2 组始终可见
+
+  const sections = periods.map(period => {
+    const icon = PERIOD_ICONS[period.label] ?? '📌';
+    const rangeStr = period.range[0] === period.range[1]
+      ? period.range[0]
+      : `${period.range[0]} ~ ${period.range[1]}`;
+    const sectionHeader = `${icon} ${period.label}（${rangeStr}）`;
+
+    if (period.totalCount === 0) {
+      return {
+        header: sectionHeader,
+        collapsible: false,
+        widgets: [{ textParagraph: { text: '<font color="#888888">无新购 IP 段</font>' } }],
+      };
+    }
+
+    const summaryWidget = {
+      textParagraph: {
+        text: `共 <b>${period.totalCount}</b> 个 IP段 &nbsp;·&nbsp; <b>$${period.totalFee.toFixed(2)}</b>/月`,
+      },
+    };
+
+    const groupWidgets = period.groups.map((g: PurchaseGroupResult) => {
+      const lines: string[] = [];
+      // 计费地区
+      if (g.regions?.length) {
+        const parts = g.regions.map(r => `${r.region}×${r.count}`).join('  ');
+        lines.push(`🌐 ${parts}`);
+      }
+      // 被墙信息
+      if (g.blockedCount !== undefined && g.blockedCount > 0) {
+        const cnames = (g.blockedCountries || [])
+          .map(c => COUNTRY_LABEL_BE[c] || c).join('·');
+        lines.push(`🚫 ${cnames} 被墙 ${g.blockedCount} 个`);
+      }
+
+      return {
+        decoratedText: {
+          topLabel: g.key,
+          text: `<b>${g.count} 个</b>  ·  $${g.fee.toFixed(2)}/月`,
+          ...(lines.length ? { bottomLabel: lines.join('   ') } : {}),
+          wrapText: true,
+        },
+      };
+    });
+
+    const allWidgets = [summaryWidget, ...groupWidgets];
+    const needsCollapse = groupWidgets.length > ALWAYS_SHOW - 1;
+    return {
+      header: sectionHeader,
+      collapsible: needsCollapse,
+      ...(needsCollapse ? { uncollapsibleWidgetsCount: ALWAYS_SHOW } : {}),
+      widgets: allWidgets,
+    };
+  });
+
+  return {
+    cardsV2: [{
+      cardId: `purchase-stats-${Date.now()}`,
+      card: {
+        header: {
+          title: '📊 IP段购买统计汇总',
+          subtitle: `按${groupByLabel} · ${now}`,
+        },
+        sections,
+      },
+    }],
+  };
+}
+
+/** 向 Google Chat Webhook 发送一个 Cards v2 卡片（或任意 JSON payload） */
+async function postToGchatWebhook(webhookUrl: string, payload: object): Promise<void> {
+  const body = JSON.stringify(payload);
+  await new Promise<void>((resolve, reject) => {
+    const u = new URL(webhookUrl);
+    const r = https.request({
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=UTF-8',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, (resp) => {
+      resp.resume();
+      if (resp.statusCode && resp.statusCode >= 200 && resp.statusCode < 300) resolve();
+      else reject(new Error(`HTTP ${resp.statusCode}`));
+    });
+    r.on('error', reject);
+    r.write(body);
+    r.end();
+  });
+}
+
+function startPurchaseReportScheduler(): void {
+  console.log('[PurchaseReport] 购买统计定时推送已启动，每分钟检查一次...');
+
+  setInterval(async () => {
+    try {
+      const cfg = loadNotifyConfig();
+      if (!cfg?.googleChatWebhook || !cfg.scheduledPurchaseReports?.length) return;
+
+      const bjNow = new Date(Date.now() + 8 * 3600 * 1000);
+      const bjDate = bjNow.toISOString().slice(0, 10);
+      const bjHH = String(bjNow.getUTCHours()).padStart(2, '0');
+      const bjMM = String(bjNow.getUTCMinutes()).padStart(2, '0');
+      const bjHHMM = `${bjHH}:${bjMM}`;
+
+      let cfgDirty = false;
+      for (const report of cfg.scheduledPurchaseReports) {
+        if (!report.enabled) continue;
+        if (report.time !== bjHHMM) continue;
+        if (report.lastSentDate === bjDate) continue;
+
+        console.log(`[PurchaseReport] 触发报告「${report.label}」(${bjDate} ${bjHHMM})`);
+        let taskIdx = 0;
+        for (const task of report.tasks) {
+          if (taskIdx > 0) await new Promise(r => setTimeout(r, 1500));
+          try {
+            const groupByLabel = PURCHASE_GROUP_BY_LABELS_BE[task.groupBy] ?? task.groupBy;
+            const periods = computePurchaseStats(
+              task.groupBy,
+              task.includeRegions ?? false,
+              task.includeBlocked ?? false,
+            );
+            const card = buildPurchaseCardV2(groupByLabel, periods);
+            await postToGchatWebhook(cfg.googleChatWebhook!, card);
+            console.log(`[PurchaseReport] ✓ 已发送「按${groupByLabel}」`);
+          } catch (e: any) {
+            console.error(`[PurchaseReport] ✗ 任务失败:`, e.message);
+          }
+          taskIdx++;
+        }
+
+        report.lastSentDate = bjDate;
+        cfgDirty = true;
+      }
+
+      if (cfgDirty) {
+        const latest = loadNotifyConfig();
+        if (latest) {
+          latest.scheduledPurchaseReports = cfg.scheduledPurchaseReports;
+          saveNotifyConfig(latest);
+        }
+      }
+    } catch (e: any) {
+      console.error('[PurchaseReport] 定时任务异常:', e.message);
+    }
+  }, 60_000);
 }
 
 function startWeeklyReportScheduler(): void {
@@ -6777,7 +7120,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
     });
 
-    // ─── 购买统计发送到 Google Chat ──────────────────────────────────────────────
+    // ─── 购买统计发送到 Google Chat（手动触发，前端传入预计算数据） ──────────────
     server.middlewares.use('/api/notify/gchat-purchase-stats', async (req: any, res: any, _next: any) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -6790,7 +7133,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const cfg = loadNotifyConfig();
         if (!cfg?.googleChatWebhook) {
           res.statusCode = 400;
-          res.end(JSON.stringify({ success: false, message: '未配置 Google Chat Webhook URL，请在通知配置中添加 googleChatWebhook 字段' }));
+          res.end(JSON.stringify({ success: false, message: '未配置 Google Chat Webhook URL' }));
           return;
         }
 
@@ -6802,96 +7145,110 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
         const { groupByLabel, periods } = body as {
           groupByLabel: string;
-          periods: Array<{
-            label: string;
-            range: [string, string];
-            totalCount: number;
-            totalFee: number;
-            groups: Array<{ key: string; count: number; fee: number }>;
-          }>;
+          periods: PurchasePeriodResult[];
         };
 
-        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-        const PERIOD_ICONS: Record<string, string> = { '昨天': '⏰', '上周': '📅', '上个月': '📆' };
-
-        // 每个时间段 → 一个可折叠 section
-        const ALWAYS_SHOW = 3; // 摘要 + 前 2 个分组始终可见
-        const sections = periods.map(period => {
-          const icon = PERIOD_ICONS[period.label] ?? '📌';
-          const rangeStr = period.range[0] === period.range[1]
-            ? period.range[0]
-            : `${period.range[0]} ~ ${period.range[1]}`;
-          const sectionHeader = `${icon} ${period.label}（${rangeStr}）`;
-
-          if (period.totalCount === 0) {
-            return {
-              header: sectionHeader,
-              collapsible: false,
-              widgets: [{ textParagraph: { text: '<font color="#888888">无新购 IP 段</font>' } }],
-            };
-          }
-
-          const summaryWidget = {
-            textParagraph: {
-              text: `共 <b>${period.totalCount}</b> 个 IP段 &nbsp;·&nbsp; <b>$${period.totalFee.toFixed(2)}</b>/月`,
-            },
-          };
-          const groupWidgets = period.groups.map((g: { key: string; count: number; fee: number }) => ({
-            decoratedText: {
-              topLabel: g.key,
-              text: `<b>${g.count} 个</b>`,
-              bottomLabel: `$${g.fee.toFixed(2)}/月`,
-            },
-          }));
-
-          const allWidgets = [summaryWidget, ...groupWidgets];
-          const needsCollapse = groupWidgets.length > ALWAYS_SHOW - 1;
-          return {
-            header: sectionHeader,
-            collapsible: needsCollapse,
-            ...(needsCollapse ? { uncollapsibleWidgetsCount: ALWAYS_SHOW } : {}),
-            widgets: allWidgets,
-          };
-        });
-
-        const card = {
-          cardsV2: [{
-            cardId: `purchase-stats-${Date.now()}`,
-            card: {
-              header: {
-                title: '📊 IP段购买统计汇总',
-                subtitle: `按${groupByLabel} · ${now}`,
-              },
-              sections,
-            },
-          }],
-        };
-        const chatPayload = JSON.stringify(card);
-
-        await new Promise<void>((resolve, reject) => {
-          const webhookUrl = new URL(cfg.googleChatWebhook!);
-          const opts = {
-            hostname: webhookUrl.hostname,
-            path: webhookUrl.pathname + webhookUrl.search,
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json; charset=UTF-8',
-              'Content-Length': Buffer.byteLength(chatPayload),
-            },
-          };
-          const r = https.request(opts, (resp) => {
-            resp.resume();
-            if (resp.statusCode && resp.statusCode >= 200 && resp.statusCode < 300) resolve();
-            else reject(new Error(`HTTP ${resp.statusCode}`));
-          });
-          r.on('error', reject);
-          r.write(chatPayload);
-          r.end();
-        });
-
+        const card = buildPurchaseCardV2(groupByLabel, periods);
+        await postToGchatWebhook(cfg.googleChatWebhook!, card);
         res.end(JSON.stringify({ success: true, message: '购买统计已发送到 Google Chat' }));
       } catch (e: any) {
         console.error('[Notify] 购买统计发送失败:', e);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: `发送失败：${e.message}` }));
+      }
+    });
+
+    // ─── 购买统计定时推送配置 ────────────────────────────────────────────────────
+    server.middlewares.use('/api/notify/purchase-reports', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+
+      if (req.method === 'GET') {
+        const cfg = loadNotifyConfig();
+        res.end(JSON.stringify({ success: true, data: cfg?.scheduledPurchaseReports || [] }));
+        return;
+      }
+
+      if (req.method === 'POST') {
+        try {
+          const chunks: Buffer[] = [];
+          await new Promise<void>((resolve) => {
+            req.on('data', (chunk: any) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+            req.on('end', resolve);
+          });
+          const { reports } = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as {
+            reports: ScheduledPurchaseReport[];
+          };
+          const cfg = loadNotifyConfig();
+          if (!cfg) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: '未找到通知配置，请先保存通知配置' }));
+            return;
+          }
+          cfg.scheduledPurchaseReports = reports;
+          saveNotifyConfig(cfg);
+          res.end(JSON.stringify({ success: true }));
+        } catch (e: any) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: e.message }));
+        }
+        return;
+      }
+
+      res.statusCode = 405;
+      res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' }));
+    });
+
+    // ─── 手动立即触发某条定时推送报告 ──────────────────────────────────────────
+    server.middlewares.use('/api/notify/purchase-reports/trigger', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' })); return; }
+
+      try {
+        const cfg = loadNotifyConfig();
+        if (!cfg?.googleChatWebhook) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: '未配置 Google Chat Webhook URL' }));
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        await new Promise<void>((resolve) => {
+          req.on('data', (chunk: any) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+          req.on('end', resolve);
+        });
+        const { id } = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as { id: string };
+        const report = cfg.scheduledPurchaseReports?.find(r => r.id === id);
+        if (!report) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ success: false, message: '未找到指定报告' }));
+          return;
+        }
+
+        let sent = 0;
+        for (const task of report.tasks) {
+          if (sent > 0) await new Promise(r => setTimeout(r, 1500));
+          const groupByLabel = PURCHASE_GROUP_BY_LABELS_BE[task.groupBy] ?? task.groupBy;
+          const periods = computePurchaseStats(
+            task.groupBy,
+            task.includeRegions ?? false,
+            task.includeBlocked ?? false,
+          );
+          const card = buildPurchaseCardV2(groupByLabel, periods);
+          await postToGchatWebhook(cfg.googleChatWebhook!, card);
+          sent++;
+        }
+
+        res.end(JSON.stringify({ success: true, message: `已发送 ${sent} 条消息` }));
+      } catch (e: any) {
+        console.error('[PurchaseReport] 手动触发失败:', e);
         res.statusCode = 500;
         res.end(JSON.stringify({ success: false, message: `发送失败：${e.message}` }));
       }
@@ -8047,11 +8404,11 @@ const dataPersistencePlugin = () => ({
   enforce: 'pre' as const,
     configureServer(server) {
       installDataPersistenceMiddlewares(server);
-      setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); initSyncRemarks(); startLarusKeepAlive(); }, 2000);
+      setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); startPurchaseReportScheduler(); initSyncRemarks(); startLarusKeepAlive(); }, 2000);
     },
     configurePreviewServer(server) {
       installDataPersistenceMiddlewares(server);
-      setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); initSyncRemarks(); startLarusKeepAlive(); }, 2000);
+      setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); startPurchaseReportScheduler(); initSyncRemarks(); startLarusKeepAlive(); }, 2000);
     },
 });
 

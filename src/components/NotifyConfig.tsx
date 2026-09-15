@@ -18,6 +18,11 @@ import {
   Badge,
   TimePicker,
   Collapse,
+  Select,
+  Checkbox,
+  Tooltip,
+  Popconfirm,
+  Empty,
 } from 'antd';
 import {
   SaveOutlined,
@@ -30,6 +35,10 @@ import {
   MessageOutlined,
   MailOutlined,
   DatabaseOutlined,
+  PlusOutlined,
+  DeleteOutlined,
+  ThunderboltOutlined,
+  BarChartOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
@@ -55,6 +64,28 @@ interface NotifyConfigData {
   serverBaseUrl?: string;
 }
 
+interface PurchaseReportTask {
+  groupBy: 'project' | 'supplier' | 'region' | 'overall';
+  includeRegions?: boolean;
+  includeBlocked?: boolean;
+}
+
+interface ScheduledPurchaseReport {
+  id: string;
+  label: string;
+  time: string;
+  enabled: boolean;
+  lastSentDate?: string;
+  tasks: PurchaseReportTask[];
+}
+
+const GROUP_BY_OPTIONS = [
+  { value: 'project', label: '按项目组' },
+  { value: 'supplier', label: '按供应商' },
+  { value: 'region', label: '按计费地区' },
+  { value: 'overall', label: '整体汇总' },
+];
+
 const NotifyConfig: React.FC = () => {
   const [form] = Form.useForm();
   const [config, setConfig] = useState<NotifyConfigData | null>(null);
@@ -63,6 +94,109 @@ const NotifyConfig: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [sendingWeekly, setSendingWeekly] = useState(false);
+  const [purchaseReports, setPurchaseReports] = useState<ScheduledPurchaseReport[]>([]);
+  const [reportsSaving, setReportsSaving] = useState(false);
+  const [triggering, setTriggering] = useState<Record<string, boolean>>({});
+
+  const loadPurchaseReports = useCallback(async () => {
+    try {
+      const res = await fetch('/api/notify/purchase-reports');
+      const json = await res.json();
+      if (json.success) setPurchaseReports(json.data || []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const savePurchaseReports = useCallback(async (reports: ScheduledPurchaseReport[]) => {
+    setReportsSaving(true);
+    try {
+      const res = await fetch('/api/notify/purchase-reports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reports }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setPurchaseReports(reports);
+        message.success('定时推送配置已保存');
+      } else {
+        message.error('保存失败: ' + json.message);
+      }
+    } catch (e: any) {
+      message.error('保存失败: ' + e.message);
+    } finally {
+      setReportsSaving(false);
+    }
+  }, []);
+
+  const triggerReport = useCallback(async (id: string) => {
+    setTriggering(prev => ({ ...prev, [id]: true }));
+    try {
+      const res = await fetch('/api/notify/purchase-reports/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const json = await res.json();
+      if (json.success) message.success(json.message || '发送成功');
+      else message.error(json.message || '发送失败');
+    } catch (e: any) {
+      message.error('发送失败: ' + e.message);
+    } finally {
+      setTriggering(prev => ({ ...prev, [id]: false }));
+    }
+  }, []);
+
+  const addReport = useCallback(() => {
+    const id = `rpt-${Date.now()}`;
+    const newReport: ScheduledPurchaseReport = {
+      id,
+      label: '购买统计定时推送',
+      time: '09:00',
+      enabled: true,
+      tasks: [{ groupBy: 'project', includeRegions: true, includeBlocked: true }],
+    };
+    const updated = [...purchaseReports, newReport];
+    savePurchaseReports(updated);
+  }, [purchaseReports, savePurchaseReports]);
+
+  const removeReport = useCallback((id: string) => {
+    savePurchaseReports(purchaseReports.filter(r => r.id !== id));
+  }, [purchaseReports, savePurchaseReports]);
+
+  const updateReport = useCallback((id: string, changes: Partial<ScheduledPurchaseReport>) => {
+    const updated = purchaseReports.map(r => r.id === id ? { ...r, ...changes } : r);
+    savePurchaseReports(updated);
+  }, [purchaseReports, savePurchaseReports]);
+
+  const addTask = useCallback((reportId: string) => {
+    const updated = purchaseReports.map(r =>
+      r.id === reportId
+        ? { ...r, tasks: [...r.tasks, { groupBy: 'project' as const }] }
+        : r,
+    );
+    savePurchaseReports(updated);
+  }, [purchaseReports, savePurchaseReports]);
+
+  const removeTask = useCallback((reportId: string, taskIdx: number) => {
+    const updated = purchaseReports.map(r =>
+      r.id === reportId
+        ? { ...r, tasks: r.tasks.filter((_, i) => i !== taskIdx) }
+        : r,
+    );
+    savePurchaseReports(updated);
+  }, [purchaseReports, savePurchaseReports]);
+
+  const updateTask = useCallback((reportId: string, taskIdx: number, changes: Partial<PurchaseReportTask>) => {
+    const updated = purchaseReports.map(r =>
+      r.id === reportId
+        ? {
+            ...r,
+            tasks: r.tasks.map((t, i) => i === taskIdx ? { ...t, ...changes } : t),
+          }
+        : r,
+    );
+    savePurchaseReports(updated);
+  }, [purchaseReports, savePurchaseReports]);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -113,7 +247,8 @@ const NotifyConfig: React.FC = () => {
 
   useEffect(() => {
     loadConfig();
-  }, [loadConfig]);
+    loadPurchaseReports();
+  }, [loadConfig, loadPurchaseReports]);
 
   const handleSave = async (values: any) => {
     setSaving(true);
@@ -283,6 +418,184 @@ const NotifyConfig: React.FC = () => {
           </Descriptions>
         </Card>
       )}
+
+      {/* 购买统计定时推送 */}
+      <Card
+        style={{ marginBottom: 24 }}
+        title={<Space><BarChartOutlined />购买统计定时推送</Space>}
+        extra={
+          <Button
+            type="primary"
+            ghost
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={addReport}
+            loading={reportsSaving}
+            disabled={!config?.googleChatWebhook}
+          >
+            添加任务
+          </Button>
+        }
+      >
+        {!config?.googleChatWebhook && (
+          <Alert type="warning" showIcon message="请先配置 Google Chat Webhook URL 后再添加定时推送任务" style={{ marginBottom: 12 }} />
+        )}
+        {purchaseReports.length === 0 ? (
+          <Empty description="暂无定时推送任务" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        ) : (
+          <Space direction="vertical" style={{ width: '100%' }} size={16}>
+            {purchaseReports.map((report) => (
+              <div
+                key={report.id}
+                style={{
+                  border: '1px solid #d9d9d9',
+                  borderRadius: 8,
+                  padding: '12px 16px',
+                  background: report.enabled ? '#fafafa' : '#f5f5f5',
+                }}
+              >
+                {/* 报告头部 */}
+                <Row gutter={8} align="middle" style={{ marginBottom: 10 }}>
+                  <Col>
+                    <Switch
+                      size="small"
+                      checked={report.enabled}
+                      onChange={(v) => updateReport(report.id, { enabled: v })}
+                    />
+                  </Col>
+                  <Col flex="auto">
+                    <Input
+                      size="small"
+                      defaultValue={report.label}
+                      style={{ fontWeight: 600, maxWidth: 220 }}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim() || '购买统计定时推送';
+                        if (v !== report.label) updateReport(report.id, { label: v });
+                      }}
+                    />
+                  </Col>
+                  <Col>
+                    <Space size={4}>
+                      <span style={{ fontSize: 12, color: '#666' }}>发送时间</span>
+                      <TimePicker
+                        size="small"
+                        format="HH:mm"
+                        minuteStep={5}
+                        value={dayjs(report.time, 'HH:mm')}
+                        onChange={(v) => v && updateReport(report.id, { time: v.format('HH:mm') })}
+                        allowClear={false}
+                        style={{ width: 90 }}
+                      />
+                    </Space>
+                  </Col>
+                  <Col>
+                    <Tooltip title="立即按当前配置发送">
+                      <Button
+                        size="small"
+                        icon={<ThunderboltOutlined />}
+                        loading={triggering[report.id]}
+                        onClick={() => triggerReport(report.id)}
+                        disabled={!report.tasks.length}
+                      >
+                        立即发送
+                      </Button>
+                    </Tooltip>
+                  </Col>
+                  <Col>
+                    <Popconfirm
+                      title="确认删除此定时任务？"
+                      onConfirm={() => removeReport(report.id)}
+                      okText="删除"
+                      cancelText="取消"
+                    >
+                      <Button size="small" danger icon={<DeleteOutlined />} />
+                    </Popconfirm>
+                  </Col>
+                </Row>
+
+                {/* 任务列表 */}
+                <div style={{ marginLeft: 8 }}>
+                  <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>发送内容：</div>
+                  <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                    {report.tasks.map((task, taskIdx) => (
+                      <Row
+                        key={taskIdx}
+                        gutter={8}
+                        align="middle"
+                        style={{
+                          background: '#fff',
+                          border: '1px solid #e8e8e8',
+                          borderRadius: 6,
+                          padding: '6px 10px',
+                        }}
+                      >
+                        <Col>
+                          <Select
+                            size="small"
+                            value={task.groupBy}
+                            options={GROUP_BY_OPTIONS}
+                            onChange={(v) => updateTask(report.id, taskIdx, { groupBy: v })}
+                            style={{ width: 120 }}
+                          />
+                        </Col>
+                        <Col>
+                          <Checkbox
+                            checked={task.includeRegions ?? false}
+                            onChange={(e) => updateTask(report.id, taskIdx, { includeRegions: e.target.checked })}
+                          >
+                            <span style={{ fontSize: 12 }}>包含计费地区</span>
+                          </Checkbox>
+                        </Col>
+                        <Col>
+                          <Checkbox
+                            checked={task.includeBlocked ?? false}
+                            onChange={(e) => updateTask(report.id, taskIdx, { includeBlocked: e.target.checked })}
+                          >
+                            <span style={{ fontSize: 12 }}>包含被墙信息</span>
+                          </Checkbox>
+                        </Col>
+                        <Col flex="auto" />
+                        <Col>
+                          <Popconfirm
+                            title="删除此发送项？"
+                            onConfirm={() => removeTask(report.id, taskIdx)}
+                            okText="删除"
+                            cancelText="取消"
+                          >
+                            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                          </Popconfirm>
+                        </Col>
+                      </Row>
+                    ))}
+                  </Space>
+                  <Button
+                    size="small"
+                    type="dashed"
+                    icon={<PlusOutlined />}
+                    style={{ marginTop: 8 }}
+                    onClick={() => addTask(report.id)}
+                  >
+                    添加发送项
+                  </Button>
+                </div>
+
+                {/* 上次发送 */}
+                {report.lastSentDate && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+                    上次发送：{report.lastSentDate}
+                  </div>
+                )}
+              </div>
+            ))}
+          </Space>
+        )}
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginTop: 16 }}
+          message="每条任务在指定时间（北京时间）按顺序发送每个发送项，多项之间间隔 1.5 秒。定时任务由服务端执行，无需浏览器保持打开。"
+        />
+      </Card>
 
       {/* 编辑表单 */}
       <Card title="编辑配置" loading={loading}>

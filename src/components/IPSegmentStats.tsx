@@ -899,10 +899,29 @@ const IPSegmentStats: React.FC = () => {
           totalFee: period.segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
           groups: groupKeys.map(key => {
             const segs = period.byGroup.get(key)!;
+            // 计费地区统计（取前 4 个高频地区）
+            const regionMap = new Map<string, number>();
+            segs.forEach((seg: any) =>
+              (seg.serverLocations || []).forEach((l: any) => {
+                if (l.region) regionMap.set(l.region, (regionMap.get(l.region) || 0) + 1);
+              }),
+            );
+            const regions = [...regionMap.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 4)
+              .map(([region, count]) => ({ region, count }));
+            // 被墙信息
+            const blockedSegs = segs.filter((s: any) => (s.blockedCountries || []).length > 0);
+            const blockedCountries = [...new Set(
+              segs.flatMap((s: any) => s.blockedCountries || []),
+            )] as string[];
             return {
               key,
               count: segs.length,
               fee: segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
+              regions,
+              blockedCount: blockedSegs.length,
+              blockedCountries,
             };
           }),
         };
