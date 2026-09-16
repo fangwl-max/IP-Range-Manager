@@ -4,6 +4,7 @@ import { GlobalOutlined, StopOutlined, LockOutlined } from '@ant-design/icons';
 import ZenByoipAnnounceTab from './ZenByoipAnnounceTab';
 import ZenByoipWithdrawTab from './ZenByoipWithdrawTab';
 import { useAuth } from '../contexts/AuthContext';
+import { useUrlTab } from '../hooks/useUrlTab';
 
 interface RegionOption { regionId: string; label: string; }
 
@@ -26,9 +27,12 @@ const PermGate: React.FC<{ perm: string; children: React.ReactNode }> = ({ perm,
   return <>{children}</>;
 };
 
-const ZenVobTab: React.FC<Props> = ({ regionOptions, onRegionsLoaded }) => (
+const ZenVobTab: React.FC<Props> = ({ regionOptions, onRegionsLoaded }) => {
+  const [tab, setTab] = useUrlTab(2, ['vob-announce', 'vob-withdraw'] as const, 'vob-announce');
+  return (
   <Tabs
-    defaultActiveKey="vob-announce"
+    activeKey={tab}
+    onChange={setTab}
     size="small"
     items={[
       {
@@ -50,6 +54,7 @@ const ZenVobTab: React.FC<Props> = ({ regionOptions, onRegionsLoaded }) => (
       },
     ]}
   />
-);
+  );
+};
 
 export default ZenVobTab;

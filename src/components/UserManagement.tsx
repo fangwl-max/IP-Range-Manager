@@ -6,7 +6,7 @@ import {
 import { PlusOutlined, UserOutlined, KeyOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import type { User } from '../types/auth';
-import { buildPermTree, ROLE_DEFAULTS } from '../lib/permissions';
+import { buildPermTree, ROLE_DEFAULTS, PAGE_PERMS } from '../lib/permissions';
 
 const ROLE_LABELS: Record<string, string> = {
   admin: '管理员',
@@ -16,7 +16,8 @@ const ROLE_LABELS: Record<string, string> = {
 
 const PERM_TREE_DATA = buildPermTree();
 
-const ADMIN_ONLY_KEYS = new Set(['user-management', 'remote-sync']);
+// Bug 3 fix: remote-sync 不是管理员专属，编辑者可拥有此权限
+const ADMIN_ONLY_KEYS = new Set(['user-management']);
 
 function allTreeKeys(): string[] {
   const keys: string[] = [];
@@ -122,13 +123,25 @@ const UserManagement: React.FC = () => {
 
   const openPermDrawer = (record: User) => {
     setPermTargetUser(record);
-    const initial = record.permissions ?? ROLE_DEFAULTS[record.role] ?? [];
-    setCheckedKeys(initial.filter(k => !ADMIN_ONLY_KEYS.has(k)));
+    const raw = record.permissions ?? ROLE_DEFAULTS[record.role] ?? [];
+    const permsSet = new Set(raw.filter((k: string) => !ADMIN_ONLY_KEYS.has(k)));
+    // Bug 2 backward-compat fix: 若历史数据只存了页面 key 而无任何功能 key，
+    // 自动补全所有功能 key（仅对显式设置过的 permissions 执行，ROLE_DEFAULTS 本身已正确）
+    if (Array.isArray(record.permissions)) {
+      for (const [pageKey, node] of Object.entries(PAGE_PERMS)) {
+        if (!node.features || !permsSet.has(pageKey)) continue;
+        const hasAnyFeature = Object.keys(node.features).some(fk => permsSet.has(`${pageKey}.${fk}`));
+        if (!hasAnyFeature) {
+          Object.keys(node.features).forEach(fk => permsSet.add(`${pageKey}.${fk}`));
+        }
+      }
+    }
+    setCheckedKeys([...permsSet]);
     setPermDrawerOpen(true);
   };
 
   const applyRolePreset = (role: string) => {
-    const preset = (ROLE_DEFAULTS[role] ?? []).filter(k => !ADMIN_ONLY_KEYS.has(k));
+    const preset = (ROLE_DEFAULTS[role] ?? []).filter((k: string) => !ADMIN_ONLY_KEYS.has(k));
     setCheckedKeys(preset);
   };
 
@@ -347,11 +360,37 @@ const UserManagement: React.FC = () => {
 
         <Tree
           checkable
+          checkStrictly
           defaultExpandAll
           treeData={PERM_TREE_DATA}
           checkedKeys={checkedKeys}
-          onCheck={(keys: any) => {
-            setCheckedKeys(Array.isArray(keys) ? keys : (keys as { checked: string[] }).checked);
+          onCheck={(rawKeys: any) => {
+            // checkStrictly 模式下 rawKeys 为 { checked, halfChecked }
+            const newKeys: string[] = Array.isArray(rawKeys) ? rawKeys : rawKeys.checked;
+            const prevSet = new Set(checkedKeys);
+            const newSet = new Set(newKeys);
+
+            // 级联：勾选/取消页面 → 同步其所有功能 key
+            for (const [pageKey, node] of Object.entries(PAGE_PERMS)) {
+              if (!node.features || node.adminOnly) continue;
+              const featureKeys = Object.keys(node.features).map(fk => `${pageKey}.${fk}`);
+              if (newSet.has(pageKey) && !prevSet.has(pageKey)) {
+                featureKeys.forEach(k => newSet.add(k));
+              } else if (!newSet.has(pageKey) && prevSet.has(pageKey)) {
+                featureKeys.forEach(k => newSet.delete(k));
+              }
+            }
+
+            // 保证：有任意功能 key → 父页面 key 必须存在
+            for (const [pageKey, node] of Object.entries(PAGE_PERMS)) {
+              if (!node.features || node.adminOnly) continue;
+              const featureKeys = Object.keys(node.features).map(fk => `${pageKey}.${fk}`);
+              if (featureKeys.some(k => newSet.has(k)) && !newSet.has(pageKey)) {
+                newSet.add(pageKey);
+              }
+            }
+
+            setCheckedKeys([...newSet]);
           }}
         />
 

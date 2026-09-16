@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useUrlTab } from '../hooks/useUrlTab';
 import { Tabs, Table, Tag, Space, Input, Select, Button, message, Spin, Row, Col, Statistic, Card, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 
@@ -304,9 +305,12 @@ const VobTab: React.FC = () => {
 };
 
 const ZenAnnouncedList: React.FC = () => {
+  const [tab, setTab] = useUrlTab(2, ['zec', 'vob'] as const, 'zec');
   return (
     <Tabs
       size="small"
+      activeKey={tab}
+      onChange={setTab}
       items={[
         { key: 'zec', label: 'ZEC-IP段', children: <ZecTab /> },
         { key: 'vob', label: 'VOB-IP段', children: <VobTab /> },

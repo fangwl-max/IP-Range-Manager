@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Tabs, Result, Button } from 'antd';
+import { useUrlTab } from '../hooks/useUrlTab';
 import { LockOutlined } from '@ant-design/icons';
 import {
   SoundOutlined, DeleteOutlined, GlobalOutlined, ScissorOutlined,
@@ -30,18 +31,22 @@ const PermGate: React.FC<{ perm: string; children: React.ReactNode }> = ({ perm,
 
 const ZenAnnounce: React.FC = () => {
   const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
+  const [outerTab, setOuterTab] = useUrlTab(1, ['announce', 'vob', 'announced'] as const, 'announce');
+  const [innerTab, setInnerTab] = useUrlTab(2, ['zec-announce', 'zec-eip-delete', 'zec-cidr-delete'] as const, 'zec-announce');
 
   return (
     <div style={{ background: '#fff', borderRadius: 8, padding: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
       <Tabs
-        defaultActiveKey="announce"
+        activeKey={outerTab}
+        onChange={setOuterTab}
         items={[
           {
             key: 'announce',
             label: <span><SoundOutlined /> ZEC 宣告</span>,
             children: (
               <Tabs
-                defaultActiveKey="zec-announce"
+                activeKey={innerTab}
+                onChange={setInnerTab}
                 size="small"
                 items={[
                   {

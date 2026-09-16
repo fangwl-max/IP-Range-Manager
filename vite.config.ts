@@ -2255,6 +2255,10 @@ function loadLarusConfig(): { cookie: string; cacheHours: number } | null {
   } catch { return null; }
 }
 
+function saveLarusConfig(data: any): void {
+  fs.writeFileSync(larusConfigPath, JSON.stringify(data, null, 2), 'utf-8');
+}
+
 function loadLarusCache(): any | null {
   try {
     if (!fs.existsSync(larusCachePath)) return null;
@@ -2264,6 +2268,119 @@ function loadLarusCache(): any | null {
 
 function saveLarusCache(data: any): void {
   fs.writeFileSync(larusCachePath, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+// ─── Larus LOA 共享工具 ──────────────────────────────────────────────────────
+
+async function downloadLarusLoa(
+  loaPath: string,
+  cookie: string,
+): Promise<{ buffer: Buffer; fileName: string } | null> {
+  const upstream = await fetch(`https://larus.net${loaPath}`, {
+    headers: { Cookie: cookie, Referer: 'https://larus.net/ipv4/manage-leased-ips', 'User-Agent': 'Mozilla/5.0' },
+  });
+  if (!upstream.ok) return null;
+  const buffer = Buffer.from(await upstream.arrayBuffer());
+  const contentDisp = upstream.headers.get('content-disposition') || '';
+  const fnMatch = contentDisp.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+  const fileName = fnMatch?.[1]?.replace(/['"]/g, '') || `loa_larus.pdf`;
+  return { buffer, fileName };
+}
+
+async function uploadLoaToCds(
+  buffer: Buffer,
+  fileName: string,
+  cidr: string,
+  asn: string,
+): Promise<{ ok: boolean; message?: string }> {
+  const cdsPort = loadCdsConfig()?.port || 9010;
+  const boundary = `----FormBoundary${crypto.randomBytes(8).toString('hex')}`;
+  const parts: Buffer[] = [];
+  const field = (name: string, value: string) =>
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+  field('cidr', cidr);
+  if (asn) field('asn', asn);
+  field('permanent', '1');
+  parts.push(Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: application/pdf\r\n\r\n`),
+    buffer,
+    Buffer.from('\r\n'),
+  ]));
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+  const formData = Buffer.concat(parts);
+  try {
+    const r = await fetch(`http://127.0.0.1:${cdsPort}/api/loa/upload`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': String(formData.length),
+        'X-Internal-Token': CDS_INTERNAL_TOKEN,
+      },
+      body: formData,
+    });
+    const j = await r.json() as any;
+    return j.ok ? { ok: true } : { ok: false, message: j.error || '上传失败' };
+  } catch (e: any) {
+    return { ok: false, message: e.message };
+  }
+}
+
+interface SyncLoaResult {
+  cidr: string; asn: string; loaPath: string; ok: boolean; message?: string;
+}
+
+async function checkLoaExistsInCds(cidr: string, asn: string): Promise<boolean> {
+  try {
+    const cdsPort = loadCdsConfig()?.port || 9010;
+    const params = new URLSearchParams({ cidr });
+    if (asn) params.set('asn', asn);
+    const r = await fetch(`http://127.0.0.1:${cdsPort}/api/loa/status?${params}`, {
+      headers: { 'X-Internal-Token': CDS_INTERNAL_TOKEN },
+    });
+    const j = await r.json() as any;
+    return !!(j.ok && j.ready);
+  } catch {
+    return false;
+  }
+}
+
+async function syncAllLarusLoaToCds(): Promise<{ total: number; synced: number; skipped: number; failed: number; results: SyncLoaResult[] }> {
+  const cache = loadLarusCache();
+  const cfg = loadLarusConfig();
+  if (!cache?.items?.length || !cfg) return { total: 0, synced: 0, skipped: 0, failed: 0, results: [] };
+
+  const tasks: Array<{ cidr: string; asn: string; loaPath: string }> = [];
+  for (const item of cache.items) {
+    const allocs: any[] = Array.isArray(item.allocations) ? item.allocations : [];
+    if (allocs.length) {
+      for (const a of allocs) {
+        if (a.loa_path) tasks.push({ cidr: item.ip_cidr, asn: String(a.asn ?? ''), loaPath: a.loa_path });
+      }
+    } else if (item.loa_path) {
+      tasks.push({ cidr: item.ip_cidr, asn: item.asn ? String(item.asn) : '', loaPath: item.loa_path });
+    }
+  }
+
+  const results: SyncLoaResult[] = await Promise.all(tasks.map(async task => {
+    try {
+      const exists = await checkLoaExistsInCds(task.cidr, task.asn);
+      if (exists) return { ...task, ok: true, skipped: true, message: '已存在，跳过' };
+      const dl = await downloadLarusLoa(task.loaPath, cfg.cookie);
+      if (!dl) return { ...task, ok: false, message: '从 Larus 下载失败' };
+      const up = await uploadLoaToCds(dl.buffer, dl.fileName, task.cidr, task.asn);
+      return { ...task, ok: up.ok, message: up.message };
+    } catch (e: any) {
+      return { ...task, ok: false, message: e.message };
+    }
+  }));
+
+  return {
+    total: results.length,
+    synced: results.filter(r => r.ok && !(r as any).skipped).length,
+    skipped: results.filter(r => (r as any).skipped).length,
+    failed: results.filter(r => !r.ok).length,
+    results,
+  };
 }
 
 function mergeLarusCookies(existing: string, setCookieHeaders: string[]): { cookie: string; changed: boolean } {
@@ -2294,16 +2411,36 @@ function mergeLarusCookies(existing: string, setCookieHeaders: string[]): { cook
   return { cookie: order.map(n => `${n}=${cookieMap.get(n)}`).join('; '), changed };
 }
 
-async function larusRequest(path: string, cookie: string): Promise<{ body: any; updatedCookie?: string }> {
-  const resp = await fetch(`https://larus.net${path}`, {
+async function larusRequest(path: string, cookie: string, opts?: { method?: string; body?: any; formEncoded?: boolean }): Promise<{ body: any; updatedCookie?: string }> {
+  const method = opts?.method || 'GET';
+  let reqBody: string | undefined;
+  let ctHeader: Record<string, string> = {};
+  if (opts?.body) {
+    if (opts.formEncoded) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(opts.body as Record<string, string>)) {
+        params.set(k, String(v ?? ''));
+      }
+      reqBody = params.toString();
+      ctHeader = { 'Content-Type': 'application/x-www-form-urlencoded' };
+    } else {
+      reqBody = JSON.stringify(opts.body);
+      ctHeader = { 'Content-Type': 'application/json' };
+    }
+  }
+  const fetchOpts: RequestInit = {
+    method,
     headers: {
       Cookie: cookie,
       Accept: 'application/json',
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       Referer: 'https://larus.net/ipv4/manage-leased-ips',
       'X-Requested-With': 'XMLHttpRequest',
+      ...ctHeader,
     },
-  });
+    ...(reqBody ? { body: reqBody } : {}),
+  };
+  const resp = await fetch(`https://larus.net${path}`, fetchOpts);
   // 自动续期：捕获 Set-Cookie 并合并
   let updatedCookie: string | undefined;
   try {
@@ -2313,7 +2450,16 @@ async function larusRequest(path: string, cookie: string): Promise<{ body: any; 
       if (changed) updatedCookie = merged;
     }
   } catch { /* ignore */ }
-  if (!resp.ok) throw new Error(`Larus HTTP ${resp.status}`);
+  if (!resp.ok) {
+    let errDetail = '';
+    try {
+      const ct = resp.headers.get('content-type') || '';
+      errDetail = ct.includes('json')
+        ? JSON.stringify(await resp.json())
+        : (await resp.text()).slice(0, 200);
+    } catch { /* ignore */ }
+    throw new Error(`Larus HTTP ${resp.status}${errDetail ? `: ${errDetail}` : ''}`);
+  }
   const contentType = resp.headers.get('content-type') || '';
   const body = contentType.includes('json') ? await resp.json() as any : { _html: await resp.text() };
   return { body, updatedCookie };
@@ -2839,6 +2985,79 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 })();
 </script>`;
           html = html.replace(/<\/head>/i, interceptScript + '</head>');
+          // 在宣告页注入"LoA拉取"按钮：先查本地，找不到则回落 IPXO
+          const larusScript = `
+<script>
+(function(){
+  function setLoa(row, ok, msg){
+    var s = row.querySelector('.loa-summary');
+    if(!s) return;
+    s.className = 'loa-summary ' + (ok===true?'ok':ok===false?'err':'');
+    s.textContent = msg;
+  }
+  function addLoaBtn(row){
+    if(!row || row.querySelector('.btn-loa-fetch')) return;
+    var la = row.querySelector('.loa-actions');
+    if(!la) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-secondary btn-loa-fetch';
+    btn.title = '检查本地 LOA，不存在则从 IPXO 拉取';
+    btn.textContent = 'LoA拉取';
+    var downloadBtn = la.querySelector('.btn-download-loa');
+    if(downloadBtn) la.insertBefore(btn, downloadBtn); else la.appendChild(btn);
+    btn.onclick = async function(){
+      var cidr = (row.querySelector('.cidr').value||'').trim();
+      if(!cidr){ alert('请先填写 CIDR'); return; }
+      var asnEl = row.querySelector('.asn');
+      var asn = asnEl ? (asnEl.value||'').trim().replace(/^[Aa][Ss]/,'') : '';
+      btn.disabled = true;
+      try{
+        // 1. 先检查本地是否已有 LOA
+        setLoa(row, null, '正在检查本地 LOA...');
+        var params = '/api/loa/status?cidr='+encodeURIComponent(cidr)+(asn?'&asn='+encodeURIComponent(asn):'');
+        var sr = await fetch(params);
+        var sd = await sr.json();
+        if(sd.ready){
+          setLoa(row, true, '本地已有 LOA'+(sd.location==='permanent'?' (正式)':' (临时)'));
+          return;
+        }
+        // 2. 本地没有，回落 IPXO
+        setLoa(row, null, '正在从 IPXO 拉取...');
+        var resp = await fetch('/api/loa/fetch-ipxo',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({cidr:cidr, asn:asn, permanent:true})
+        });
+        var data = await resp.json();
+        if(resp.ok && data.ok){
+          setLoa(row, true, 'IPXO LOA 拉取成功');
+        } else {
+          setLoa(row, false, data.error||'本地与 IPXO 均未找到 LOA');
+        }
+      }catch(e){ setLoa(row, false, 'LOA 拉取失败：'+(e.message||String(e))); }
+      finally{ btn.disabled = false; }
+    };
+  }
+  function init(){
+    var container = document.getElementById('rowsContainer');
+    if(!container) return;
+    container.querySelectorAll('.announce-row').forEach(addLoaBtn);
+    new MutationObserver(function(muts){
+      muts.forEach(function(mut){
+        mut.addedNodes.forEach(function(n){
+          if(n.nodeType!==1) return;
+          if(n.classList && n.classList.contains('announce-row')) addLoaBtn(n);
+          else if(n.querySelectorAll) n.querySelectorAll('.announce-row').forEach(addLoaBtn);
+        });
+      });
+    }).observe(container, {childList:true, subtree:true});
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>`;
+          html = html.replace(/<\/body>/i, larusScript + '</body>');
           res.end(html);
         });
       } else {
@@ -8310,6 +8529,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
       const payload = { cachedAt: new Date().toISOString(), items: enrichedItems };
       saveLarusCache(payload);
+      // 后台同步所有 LOA 到首都在线（不阻塞响应）
+      syncAllLarusLoaToCds().catch(() => {});
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, fromCache: false, cookieAutoRenewed: !!(result.updatedCookie || enrichCookie), cachedAt: payload.cachedAt, items: enrichedItems }));
     } catch (e: any) {
@@ -8343,7 +8564,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const body = JSON.parse(await readRequestBody(req));
         if (!body.cookie) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '请提供 cookie' })); return; }
         const existing = loadLarusConfig() || {};
-        fs.writeFileSync(larusConfigPath, JSON.stringify({ ...existing, cookie: body.cookie, cacheHours: body.cacheHours ?? existing.cacheHours ?? 2 }, null, 2), 'utf-8');
+        const updated: any = { ...existing, cookie: body.cookie, cacheHours: body.cacheHours ?? existing.cacheHours ?? 2 };
+        if (body.loa_contact) updated.loa_contact = body.loa_contact;
+        fs.writeFileSync(larusConfigPath, JSON.stringify(updated, null, 2), 'utf-8');
         // 不删除旧缓存：保留历史数据，新 cookie 拉取成功后会自动覆盖
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true }));
@@ -8352,6 +8575,68 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         res.end(JSON.stringify({ success: false, message: e.message }));
       }
     }
+  });
+
+  // ─── Larus LOA 联系信息读写 ──────────────────────────────────────
+  server.middlewares.use('/api/larus/loa-contact', async (req: any, res: any, _next: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method === 'GET') {
+      const cfg = loadLarusConfig();
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, contact: cfg?.loa_contact || {} }));
+      return;
+    }
+    if (req.method === 'POST') {
+      try {
+        const body = JSON.parse(await readRequestBody(req));
+        const existing = loadLarusConfig() || {};
+        saveLarusConfig({ ...existing, loa_contact: body });
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true }));
+      } catch (e: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+      return;
+    }
+    res.statusCode = 405; res.end('{}');
+  });
+
+  // ─── 检查 CIDR 是否为 Larus IP 并返回 LOA 信息（供首都在线宣告自动拉取 LOA）────────────
+  server.middlewares.use('/api/larus/check-cidr', (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    const qs = new URLSearchParams((req.url || '').split('?')[1] || '');
+    const cidr = (qs.get('cidr') || '').trim();
+    if (!cidr) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ found: false, message: '缺少 cidr 参数' }));
+      return;
+    }
+    const cache = loadLarusCache();
+    if (!cache?.items?.length) {
+      res.statusCode = 200;
+      res.end(JSON.stringify({ found: false, message: 'Larus 缓存为空，请先在 Larus 管理页刷新数据' }));
+      return;
+    }
+    const item = cache.items.find((it: any) => it.ip_cidr === cidr);
+    if (!item) {
+      res.statusCode = 200;
+      res.end(JSON.stringify({ found: false }));
+      return;
+    }
+    const allocations: any[] = Array.isArray(item.allocations) ? item.allocations : [];
+    const firstWithLoa = allocations.find((a: any) => a.loa_path) || null;
+    res.statusCode = 200;
+    res.end(JSON.stringify({
+      found: true,
+      cidr: item.ip_cidr,
+      asn: firstWithLoa?.asn ?? item.asn ?? null,
+      loa_path: firstWithLoa?.loa_path ?? item.loa_path ?? null,
+      allocations,
+    }));
   });
 
   // ─── Larus IP 详情代理：/ipv4/lease-in/allocation/{route_id} 返回该路由下的分配明细（含 ASN / LOA）────────
@@ -8424,53 +8709,165 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     const cfg = loadLarusConfig();
     if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Larus Cookie 未配置' })); return; }
     try {
-      // 1. 从 Larus 下载 LOA 文件
-      const upstream = await fetch(`https://larus.net${loa_path}`, {
-        headers: { Cookie: cfg.cookie, Referer: 'https://larus.net/ipv4/manage-leased-ips', 'User-Agent': 'Mozilla/5.0' },
+      const dl = await downloadLarusLoa(loa_path, cfg.cookie);
+      if (!dl) { res.statusCode = 502; res.end(JSON.stringify({ success: false, message: '从 Larus 下载 LOA 失败' })); return; }
+      const up = await uploadLoaToCds(dl.buffer, dl.fileName, cidr, asn || '');
+      if (!up.ok) { res.statusCode = 502; res.end(JSON.stringify({ success: false, message: `CDS 上传失败: ${up.message}` })); return; }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, message: 'LOA 已保存至本地并同步至首都在线宣告系统' }));
+    } catch (e: any) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── 批量同步 Larus 全部 LOA 到首都在线 ──────────────────────────────────
+  server.middlewares.use('/api/larus/sync-loa', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: '仅支持 POST' })); return; }
+    if (!loadLarusConfig()) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ success: false, message: 'Larus Cookie 未配置' }));
+      return;
+    }
+    try {
+      const result = await syncAllLarusLoaToCds();
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, ...result }));
+    } catch (e: any) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── Larus IP段统计 ─────────────────────────────────────────────
+  server.middlewares.use('/api/larus/stats', (_req: any, res: any, _next: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    try {
+      const cacheFile = path.join(__dirname, 'larus-cache.json');
+      const raw = fs.existsSync(cacheFile) ? JSON.parse(fs.readFileSync(cacheFile, 'utf-8')) : {};
+      // larus-cache.json 结构：{ cachedAt, items: [...] }
+      const cacheItems: any[] = Array.isArray(raw) ? raw : (raw.items || []);
+      const totalSegments = cacheItems.length;
+      const totalIps = cacheItems.reduce((s: number, it: any) => s + (it.total_ips || 0), 0);
+      const announced = cacheItems.filter((it: any) => it.route_status === 2).length;
+      const notAnnounced = totalSegments - announced;
+      const activeSegments = cacheItems.filter((it: any) => it.status === 3).length;
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, totalSegments, totalIps, announced, notAnnounced, activeSegments }));
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── Larus ASN 设置 ──────────────────────────────────────────────
+  server.middlewares.use('/api/larus/asn-set', async (req: any, res: any, _next: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end('{}'); return; }
+    const cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Cookie 未配置' })); return; }
+    try {
+      const body = await new Promise<any>((resolve, reject) => {
+        let data = '';
+        req.on('data', (chunk: any) => { data += chunk; });
+        req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { reject(new Error('JSON 解析失败')); } });
       });
-      if (!upstream.ok) {
-        res.statusCode = 502;
-        res.end(JSON.stringify({ success: false, message: `从 Larus 下载 LOA 失败 (${upstream.status})` }));
+      const { route_id, asn } = body;
+      if (!route_id || !asn) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_id 或 asn' })); return; }
+      // 合并请求中的联系信息与 config 中存储的默认值
+      const contact = cfg.loa_contact || {};
+      const formBody: Record<string, string> = {
+        route_id: String(route_id),
+        asn: String(asn),
+        country_code: String(body.country_code || contact.country_code || ''),
+        country_name: String(body.country_name || contact.country_name || ''),
+        name: String(body.name || contact.name || ''),
+        company: String(body.company || contact.company || ''),
+        phone: String(body.phone || contact.phone || ''),
+        email: String(body.email || contact.email || ''),
+        address: String(body.address || contact.address || ''),
+      };
+      const { body: apiBody, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation/${route_id}`, cfg.cookie, {
+        method: 'POST',
+        formEncoded: true,
+        body: formBody,
+      });
+      if (updatedCookie) saveLarusConfig({ ...cfg, cookie: updatedCookie });
+      if (!apiBody?.status) throw new Error(apiBody?.msg || apiBody?.message || JSON.stringify(apiBody));
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, data: apiBody.data }));
+    } catch (e: any) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── Larus ASN 取消 ──────────────────────────────────────────────
+  server.middlewares.use('/api/larus/asn-cancel', async (req: any, res: any, _next: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end('{}'); return; }
+    const cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Cookie 未配置' })); return; }
+    try {
+      const body = await new Promise<any>((resolve, reject) => {
+        let data = '';
+        req.on('data', (chunk: any) => { data += chunk; });
+        req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { reject(new Error('JSON 解析失败')); } });
+      });
+      const { alloc_id } = body;
+      if (!alloc_id) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 alloc_id' })); return; }
+      const { body: apiBody, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation/${alloc_id}`, cfg.cookie, { method: 'DELETE' });
+      if (updatedCookie) saveLarusConfig({ ...cfg, cookie: updatedCookie });
+      if (!apiBody?.status) throw new Error(apiBody?.msg || 'Larus API 返回失败');
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true }));
+    } catch (e: any) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── Larus 按 route_id 取消所有 ASN 分配 ────────────────────────
+  server.middlewares.use('/api/larus/asn-cancel-by-route', async (req: any, res: any, _next: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end('{}'); return; }
+    const cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Cookie 未配置' })); return; }
+    try {
+      const body = await new Promise<any>((resolve, reject) => {
+        let data = '';
+        req.on('data', (chunk: any) => { data += chunk; });
+        req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { reject(new Error('JSON 解析失败')); } });
+      });
+      const { route_id } = body;
+      if (!route_id) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_id' })); return; }
+      const { body: detailBody, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation/${route_id}`, cfg.cookie);
+      if (updatedCookie) saveLarusConfig({ ...cfg, cookie: updatedCookie });
+      const lists: any[] = detailBody?.data?.lists || [];
+      if (!lists.length) {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, cancelled: 0, total: 0 }));
         return;
       }
-      const loaBuffer = Buffer.from(await upstream.arrayBuffer());
-      const contentDisp = upstream.headers.get('content-disposition') || '';
-      const fnMatch = contentDisp.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-      const fileName = fnMatch?.[1]?.replace(/['"]/g, '') || `loa_${asn || 'larus'}.pdf`;
-      // 2. 通过 CDS Flask /api/loa/upload 上传
-      const cdsPort = loadCdsConfig()?.port || 9010;
-      const boundary = `----FormBoundary${crypto.randomBytes(8).toString('hex')}`;
-      const fieldParts: Buffer[] = [];
-      const addField = (name: string, value: string) => {
-        fieldParts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
-      };
-      addField('cidr', cidr);
-      if (asn) addField('asn', asn);
-      addField('permanent', '1');
-      const filePart = Buffer.concat([
-        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: application/pdf\r\n\r\n`),
-        loaBuffer,
-        Buffer.from('\r\n'),
-      ]);
-      const closing = Buffer.from(`--${boundary}--\r\n`);
-      const formData = Buffer.concat([...fieldParts, filePart, closing]);
-      const cdsResp = await fetch(`http://127.0.0.1:${cdsPort}/api/loa/upload`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': String(formData.length),
-          'X-Internal-Token': CDS_INTERNAL_TOKEN,
-        },
-        body: formData,
-      });
-      const cdsJson = await cdsResp.json() as any;
-      if (!cdsJson.ok) {
-        res.statusCode = 502;
-        res.end(JSON.stringify({ success: false, message: `CDS 上传失败: ${cdsJson.error || '未知错误'}` }));
-        return;
+      let cancelled = 0;
+      const errors: string[] = [];
+      for (const alloc of lists) {
+        try {
+          const { body: cancelBody } = await larusRequest(`/ipv4/lease-in/allocation/${alloc.id}`, cfg.cookie, { method: 'DELETE' });
+          if (!cancelBody?.status) throw new Error(cancelBody?.msg || '取消失败');
+          cancelled++;
+        } catch (e: any) {
+          errors.push(`alloc_id=${alloc.id}: ${e.message}`);
+        }
       }
       res.statusCode = 200;
-      res.end(JSON.stringify({ success: true, message: 'LOA 已推送至首都在线宣告系统' }));
+      res.end(JSON.stringify({ success: errors.length === 0, cancelled, total: lists.length, errors }));
     } catch (e: any) {
       res.statusCode = 502;
       res.end(JSON.stringify({ success: false, message: e.message }));
@@ -8497,6 +8894,26 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.end(Buffer.from(await upstream.arrayBuffer()));
     } catch (e: any) { res.statusCode = 502; res.end(e.message); }
   });
+
+  // ─── SPA 回落：未匹配的 HTML 请求一律返回 index.html ─────────────
+  server.middlewares.use((req: any, res: any, next: any) => {
+    if (req.method !== 'GET') { next(); return; }
+    const url: string = (req.url || '/').split('?')[0];
+    // 有扩展名的静态资源、API 路径、代理路径、Vite 内部路径不处理
+    if (
+      url.includes('.') ||
+      url.startsWith('/api/') ||
+      url.startsWith('/cds-proxy/') ||
+      url.startsWith('/@') ||
+      url.startsWith('/__vite') ||
+      url.startsWith('/node_modules/')
+    ) { next(); return; }
+    const indexPath = path.join(__dirname, 'index.html');
+    if (!fs.existsSync(indexPath)) { next(); return; }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.statusCode = 200;
+    res.end(fs.readFileSync(indexPath, 'utf-8'));
+  });
 }
 
 const dataPersistencePlugin = () => ({
@@ -8519,7 +8936,7 @@ export default defineConfig({
     host: '0.0.0.0',
     open: false,
     strictPort: true,
-    allowedHosts: ['ip-rm.dulvora.xyz'],
+    allowedHosts: ['localhost', '127.0.0.1', 'ip-rm.dulvora.xyz'],
     hmr: false,
     watch: {
       usePolling: false,

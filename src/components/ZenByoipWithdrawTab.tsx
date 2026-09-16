@@ -1,4 +1,5 @@
 ﻿import React, { useState, useRef, useEffect } from 'react';
+import { useUrlTab } from '../hooks/useUrlTab';
 import { getAuthHeaders } from '../contexts/AuthContext';
 import {
   Button, Input, Switch, Space, Alert,
@@ -34,6 +35,7 @@ interface IdProgress {
 }
 
 const ZenByoipWithdrawTab: React.FC<{ regionOptions?: any[] }> = () => {
+  const [tab, setTab] = useUrlTab(3, ['by-cidr', 'by-id'] as const, 'by-cidr');
   const [batchInput, setBatchInput] = useState('');
   const [dryRun, setDryRun] = useState(true);
   const [running, setRunning] = useState(false);
@@ -221,7 +223,8 @@ const ZenByoipWithdrawTab: React.FC<{ regionOptions?: any[] }> = () => {
       />
 
       <Tabs
-        defaultActiveKey="by-cidr"
+        activeKey={tab}
+        onChange={setTab}
         items={[
           {
             key: 'by-cidr',

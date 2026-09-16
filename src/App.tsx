@@ -21,6 +21,7 @@ import {
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import './App.css';
+import { PAGE_PERMS } from './lib/permissions';
 import IPManagement from './components/IPManagement';
 import CostAnalysis from './components/CostAnalysis';
 import ProjectGroupConfigPage from './components/config/ProjectGroupConfigPage';
@@ -50,6 +51,14 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const SELECTED_MENU_KEY = 'ip-management-platform-selected-menu';
+const GATED_PAGES = Object.keys(PAGE_PERMS).filter(k => k !== 'ip-management');
+
+function pathToMenuKey(pathname: string): string | null {
+  const first = pathname.replace(/^\/|\/$/g, '').split('/')[0];
+  if (!first) return null;
+  if ((VALID_MENU_KEYS as readonly string[]).includes(first)) return first;
+  return null;
+}
 const CONFIG_SUB_KEYS = [
   'config-project-groups',
   'config-suppliers',
@@ -94,6 +103,10 @@ const isIpxoSubKey = (k: string) => IPXO_SUB_KEYS.includes(k as (typeof IPXO_SUB
 const AppContent: React.FC = () => {
   const { user, logout, loading, hasPermission } = useAuth();
   const [selectedMenu, setSelectedMenu] = useState<string>(() => {
+    // 优先从 URL 路径还原页面
+    const fromPath = pathToMenuKey(window.location.pathname);
+    if (fromPath) return fromPath;
+    // 回退到 localStorage
     const saved = localStorage.getItem(SELECTED_MENU_KEY);
     if (saved === 'gateway-ping') return 'irr-detection';
     if (saved === 'configuration') return 'config-project-groups';
@@ -116,7 +129,21 @@ const AppContent: React.FC = () => {
 
   useEffect(() => {
     localStorage.setItem(SELECTED_MENU_KEY, selectedMenu);
+    const newPath = '/' + selectedMenu + '/';
+    if (window.location.pathname !== newPath) {
+      history.pushState(null, '', newPath);
+    }
   }, [selectedMenu]);
+
+  // 浏览器前进/后退时同步菜单
+  useEffect(() => {
+    const handlePop = () => {
+      const key = pathToMenuKey(window.location.pathname);
+      if (key) setSelectedMenu(key);
+    };
+    window.addEventListener('popstate', handlePop);
+    return () => window.removeEventListener('popstate', handlePop);
+  }, []);
 
   useEffect(() => {
     setMenuOpenKeys((k) => {
@@ -155,10 +182,10 @@ const AppContent: React.FC = () => {
     });
   }, [selectedMenu]);
 
-  // 上次选中的「用户与权限」在降权或无权限时会导致主内容区无任何页面，表现为白屏
+  // 当前页面无权限时（降权 / URL 直访 / localStorage 残留）跳回首页
   useEffect(() => {
     if (!user) return;
-    if (selectedMenu === 'user-management' && !hasPermission('user-management')) {
+    if (GATED_PAGES.includes(selectedMenu) && !hasPermission(selectedMenu)) {
       setSelectedMenu('ip-management');
     }
   }, [user, selectedMenu, hasPermission]);
@@ -177,56 +204,42 @@ const AppContent: React.FC = () => {
     document.body.style.removeProperty('padding-right');
   }, [loading, user]);
 
+  const ipxoItems = [
+    ...(hasPermission('pre-purchase-check') ? [{ key: 'pre-purchase-check', label: '购前检测' }] : []),
+    ...(hasPermission('ipxo-services') ? [{ key: 'ipxo-services', label: '已租用IP' }] : []),
+    ...(hasPermission('ipxo-invoices') ? [{ key: 'ipxo-invoices', label: '发票' }] : []),
+  ];
+  const costItems = [
+    ...(hasPermission('cost-analysis-main') ? [{ key: 'cost-analysis-main', label: '费用分析' }] : []),
+    ...(hasPermission('cost-analysis-ipxo') ? [{ key: 'cost-analysis-ipxo', label: 'IP段续费管理' }] : []),
+    ...(hasPermission('ip-segment-stats') ? [{ key: 'ip-segment-stats', label: 'IP 段统计' }] : []),
+  ];
+  const configItems = [
+    ...(hasPermission('config-project-groups') ? [{ key: 'config-project-groups', icon: <TeamOutlined />, label: '项目组' }] : []),
+    ...(hasPermission('config-suppliers') ? [{ key: 'config-suppliers', icon: <ShopOutlined />, label: '供应商' }] : []),
+    ...(hasPermission('config-usage-areas') ? [{ key: 'config-usage-areas', icon: <GlobalOutlined />, label: '宣告地区' }] : []),
+    ...(hasPermission('notify-config') ? [{ key: 'notify-config', icon: <MailOutlined />, label: '通知配置' }] : []),
+    ...(hasPermission('remote-sync') ? [{ key: 'remote-sync', icon: <CloudDownloadOutlined />, label: '远程数据同步' }] : []),
+  ];
+  const asnItems = [
+    ...(hasPermission('asn-management') ? [{ key: 'asn-management', icon: <NumberOutlined />, label: 'ASN 管理' }] : []),
+    ...(hasPermission('asn-standby-a') ? [{ key: 'asn-standby-a', icon: <StarOutlined />, label: 'A 组备用 AS' }] : []),
+    ...(hasPermission('asn-standby-b') ? [{ key: 'asn-standby-b', icon: <StarOutlined />, label: 'B 组备用 AS' }] : []),
+  ];
+
   const menuItems: MenuProps['items'] = [
     { key: 'ip-management', icon: <DatabaseOutlined />, label: 'IP段管理' },
-    {
-      key: 'ipxo',
-      icon: <ApiOutlined />,
-      label: 'IPXO管理',
-      children: [
-        ...(hasPermission('pre-purchase-check') ? [{ key: 'pre-purchase-check', label: '购前检测' }] : []),
-        { key: 'ipxo-services', label: '已租用IP' },
-        { key: 'ipxo-invoices', label: '发票' },
-      ],
-    },
-    { key: 'larus-management', icon: <CloudDownloadOutlined />, label: 'Larus 管理' },
+    ...(ipxoItems.length ? [{ key: 'ipxo', icon: <ApiOutlined />, label: 'IPXO管理', children: ipxoItems }] : []),
+    ...(hasPermission('larus-management') ? [{ key: 'larus-management', icon: <CloudDownloadOutlined />, label: 'Larus 管理' }] : []),
     {
       key: 'ip-detection',
       icon: <SearchOutlined />,
       label: 'IP段检测',
-      children: [
-        { key: 'irr-detection', label: '综合检测' },
-      ],
+      children: [{ key: 'irr-detection', label: '综合检测' }],
     },
-    { key: 'cost-analysis', icon: <BarChartOutlined />, label: '费用统计',
-      children: [
-        { key: 'cost-analysis-main', label: '费用分析' },
-        { key: 'cost-analysis-ipxo', label: 'IP段续费管理' },
-        { key: 'ip-segment-stats', label: 'IP 段统计' },
-      ],
-    },
-    {
-      key: 'configuration',
-      icon: <SettingOutlined />,
-      label: '配置管理',
-      children: [
-        { key: 'config-project-groups', icon: <TeamOutlined />, label: '项目组' },
-        { key: 'config-suppliers', icon: <ShopOutlined />, label: '供应商' },
-        { key: 'config-usage-areas', icon: <GlobalOutlined />, label: '宣告地区' },
-        { key: 'notify-config', icon: <MailOutlined />, label: '通知配置' },
-        ...(hasPermission('remote-sync') ? [{ key: 'remote-sync', icon: <CloudDownloadOutlined />, label: '远程数据同步' }] : []),
-      ],
-    },
-    {
-      key: 'asn',
-      icon: <SafetyCertificateOutlined />,
-      label: 'ASN',
-      children: [
-        { key: 'asn-management', icon: <NumberOutlined />, label: 'ASN 管理' },
-        { key: 'asn-standby-a', icon: <StarOutlined />, label: 'A 组备用 AS' },
-        { key: 'asn-standby-b', icon: <StarOutlined />, label: 'B 组备用 AS' },
-      ],
-    },
+    ...(costItems.length ? [{ key: 'cost-analysis', icon: <BarChartOutlined />, label: '费用统计', children: costItems }] : []),
+    ...(configItems.length ? [{ key: 'configuration', icon: <SettingOutlined />, label: '配置管理', children: configItems }] : []),
+    ...(asnItems.length ? [{ key: 'asn', icon: <SafetyCertificateOutlined />, label: 'ASN', children: asnItems }] : []),
     ...(hasPermission('user-management') ? [{ key: 'user-management', icon: <UserOutlined />, label: '用户与权限' }] : []),
     {
       key: 'announce',

@@ -26,6 +26,7 @@ export const PAGE_PERMS: Record<string, PermNode> = {
   'cost-analysis-main': { label: '费用分析' },
   'cost-analysis-ipxo': { label: 'IPXO 账单' },
   'ip-segment-stats': { label: 'IP 段统计' },
+  'larus-management': { label: 'Larus 管理' },
   'config-project-groups': {
     label: '项目组配置',
     features: { 'edit': '新增 / 编辑 / 删除' },
@@ -66,6 +67,7 @@ export const PAGE_PERMS: Record<string, PermNode> = {
     features: {
       'announce': '执行批量宣告',
       'withdraw': '执行批量撤播',
+      'loa-delete': 'LOA 管理删除',
     },
   },
   'remote-sync': { label: '远程数据同步' },
@@ -79,27 +81,11 @@ const ALL_KEYS: string[] = Object.entries(PAGE_PERMS).flatMap(([pageKey, node]) 
 
 export const ROLE_DEFAULTS: Record<string, string[]> = {
   admin: ALL_KEYS,
-  editor: [
-    'ip-management', 'ip-management.edit', 'ip-management.delete', 'ip-management.import', 'ip-management.export',
-    'irr-detection', 'irr-detection.ssh-manage',
-    'pre-purchase-check',
-    'ipxo-services', 'ipxo-invoices',
-    'cost-analysis-main', 'cost-analysis-ipxo', 'ip-segment-stats',
-    'config-project-groups', 'config-project-groups.edit',
-    'config-suppliers', 'config-suppliers.edit',
-    'config-usage-areas', 'config-usage-areas.edit',
-    'asn-management', 'asn-management.edit',
-    'asn-standby-a', 'asn-standby-a.edit',
-    'asn-standby-b', 'asn-standby-b.edit',
-    'notify-config', 'notify-config.edit',
-    'announce-zen', 'announce-zen.announce', 'announce-zen.withdraw',
-    'announce-capital-online', 'announce-capital-online.announce', 'announce-capital-online.withdraw',
-    'remote-sync',
-  ],
+  editor: ALL_KEYS.filter(k => !k.startsWith('user-management')),
   viewer: [
     'ip-management', 'ip-management.export',
     'irr-detection',
-    'cost-analysis-main', 'ip-segment-stats',
+    'asn-management',
     'asn-standby-a', 'asn-standby-a.edit',
     'asn-standby-b', 'asn-standby-b.edit',
     'announce-zen', 'announce-zen.announce',

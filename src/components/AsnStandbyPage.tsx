@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useUrlTab } from '../hooks/useUrlTab';
 import {
   Card,
   Table,
@@ -171,7 +172,7 @@ const AsnStandbyPage: React.FC<Props> = ({ group }) => {
   const [blockedForm] = Form.useForm();
 
   // Tab 状态
-  const [activeTab, setActiveTab] = useState<'list' | 'available' | 'used'>('list');
+  const [activeTab, setActiveTab] = useUrlTab(1, ['list', 'available', 'used'] as const, 'list');
 
   // 批量编辑使用状态
   const [selectedAvailableKeys, setSelectedAvailableKeys] = useState<string[]>([]);

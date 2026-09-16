@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useUrlTab } from '../hooks/useUrlTab';
 import {
   Table,
   Button,
@@ -33,6 +34,7 @@ import {
   UploadOutlined,
   DownloadOutlined,
   HistoryOutlined,
+  CopyOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -287,7 +289,7 @@ const IPManagement: React.FC = () => {
   const [allSegmentsSelectedKeys, setAllSegmentsSelectedKeys] = useState<React.Key[]>([]);
   const [previewSelectedRowKeys, setPreviewSelectedRowKeys] = useState<React.Key[]>([]);
   const [isPreviewBatchEditVisible, setIsPreviewBatchEditVisible] = useState(false);
-  const [activeTabKey, setActiveTabKey] = useState<string>('active');
+  const [activeTabKey, setActiveTabKey] = useUrlTab(1, ['active', 'cancelledButNotExpired', 'cancelled', 'all'] as const, 'active');
   const [editingSegment, setEditingSegment] = useState<IPSegment | null>(null);
   const [batchTableData, setBatchTableData] = useState<Partial<IPSegment>[]>([]);
   const [textImportValue, setTextImportValue] = useState('');
@@ -2062,6 +2064,29 @@ const IPManagement: React.FC = () => {
   };
 
 
+  // 批量复制选中 IP 段
+  const batchCopySegments = async (selectedKeys: React.Key[]) => {
+    const texts = ipSegments
+      .filter(s => selectedKeys.includes(s.id))
+      .map(s => s.segment)
+      .filter(Boolean);
+    if (!texts.length) return;
+    const combined = texts.join('\n');
+    try {
+      await navigator.clipboard.writeText(combined);
+      message.success(`已复制 ${texts.length} 个IP段`);
+    } catch {
+      const el = document.createElement('textarea');
+      el.value = combined;
+      el.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+      document.body.appendChild(el);
+      el.select();
+      try { document.execCommand('copy'); message.success(`已复制 ${texts.length} 个IP段`); }
+      catch { message.error('复制失败，请手动复制'); }
+      document.body.removeChild(el);
+    }
+  };
+
   // 复制文本到剪贴板
   const copyToClipboard = async (text: string) => {
     try {
@@ -3043,6 +3068,7 @@ const IPManagement: React.FC = () => {
         
         return (
           <Space size={4}>
+            <Tooltip title="点击复制" mouseEnterDelay={0.5}>
             <Tag
               color={tagColor}
               onClick={() => copyToClipboard(text)}
@@ -3062,6 +3088,7 @@ const IPManagement: React.FC = () => {
             >
               {text}
             </Tag>
+            </Tooltip>
             {record.syncSource === 'ipxo_api' && (
               <Tooltip title={`IPXO API 同步${record.ipxoLastSyncAt ? `\n${record.ipxoLastSyncAt.slice(0, 10)}` : ''}`}>
                 <Tag
@@ -3744,6 +3771,12 @@ const IPManagement: React.FC = () => {
                       </Button>
                     </Popconfirm>
                     )}
+                    <Button
+                      icon={<CopyOutlined />}
+                      onClick={() => batchCopySegments(currentSelectedKeys)}
+                    >
+                      复制IP段 ({currentSelectedKeys.length})
+                    </Button>
                     <Button
                       icon={<DownloadOutlined />}
                       onClick={handleExportSelected}

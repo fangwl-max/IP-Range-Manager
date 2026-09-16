@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useDeferredValue } from 'react';
+import { useUrlTab } from '../hooks/useUrlTab';
 import {
   Card, Row, Col, Spin, Typography, Tag, Modal, Table, Space,
   Empty, Badge, Select, Tooltip, Button, message, Radio, DatePicker, Tabs,
@@ -423,7 +424,7 @@ const IPSegmentStats: React.FC = () => {
 
   // 图表类型
   const [chartType, setChartType] = useState<'pie' | 'treemap'>('pie');
-  const [statsTab, setStatsTab] = useState<'distribution' | 'purchase'>('distribution');
+  const [statsTab, setStatsTab] = useUrlTab(1, ['distribution', 'purchase'] as const, 'distribution');
 
   // 时间筛选
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
@@ -1229,7 +1230,7 @@ const IPSegmentStats: React.FC = () => {
       <Spin spinning={loading}>
         <Tabs
           activeKey={statsTab}
-          onChange={k => setStatsTab(k as 'distribution' | 'purchase')}
+          onChange={setStatsTab}
           size="small"
           style={{ marginBottom: 8 }}
           items={[

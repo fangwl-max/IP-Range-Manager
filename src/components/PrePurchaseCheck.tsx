@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useUrlTab } from '../hooks/useUrlTab';
 import {
   Card, Row, Col, Button, Table, Tag, Space, Input, Select, InputNumber,
   Typography, Spin, Alert, Tooltip, Badge, Modal, message, Divider,
@@ -131,6 +132,7 @@ const COUNTRY_OPTIONS = [
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 
 const PrePurchaseCheck: React.FC = () => {
+  const [activeTab, setActiveTab] = useUrlTab(1, ['market', 'leased'] as const, 'market');
   // 搜索参数
   const [prefixLength, setPrefixLength] = useState(24);
   const [registry, setRegistry] = useState('');
@@ -883,7 +885,8 @@ const PrePurchaseCheck: React.FC = () => {
       )}
 
       <Tabs
-        defaultActiveKey="market"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'market',

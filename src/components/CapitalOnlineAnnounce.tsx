@@ -1,12 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Alert, Spin, Typography, Tabs, Result, Select, Button, Space, Tag, message } from 'antd';
-import { LockOutlined, SoundOutlined, StopOutlined, UnorderedListOutlined, FileTextOutlined, DownloadOutlined, SendOutlined } from '@ant-design/icons';
-import { useAuth } from '../contexts/AuthContext';
+import { Alert, Spin, Tabs, Result, Typography } from 'antd';
+import { useUrlTab } from '../hooks/useUrlTab';
 
 const { Text } = Typography;
-
-interface LarusAllocation { asn: string; loa_path: string | null; alloc_id: number; }
-interface LarusItem { id: number; ip_cidr: string; asn?: string; loa_path?: string; allocations?: LarusAllocation[]; }
+import { LockOutlined, SoundOutlined, StopOutlined, UnorderedListOutlined, FileTextOutlined } from '@ant-design/icons';
+import { useAuth } from '../contexts/AuthContext';
 
 const CDS_PAGES = [
   { key: 'announce',     label: '批量宣告',     icon: <SoundOutlined />,         path: '/cds-proxy/',              adminOnly: false },
@@ -24,59 +22,11 @@ const CDS_PAGES = [
 const CapitalOnlineAnnounce: React.FC = () => {
   const { hasPermission } = useAuth();
   const canWithdraw = hasPermission('announce-capital-online.withdraw');
+  const canLOADelete = hasPermission('announce-capital-online.loa-delete');
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [errMsg, setErrMsg] = useState('');
-  const [activeTab, setActiveTab] = useState('announce');
-
-  // Larus LOA picker 状态
-  const [larusItems, setLarusItems] = useState<LarusItem[]>([]);
-  const [selectedCidr, setSelectedCidr] = useState<string>('');
-  const [selectedAlloc, setSelectedAlloc] = useState<string>(''); // "asn|loa_path"
-  const [pushing, setPushing] = useState(false);
-
-  useEffect(() => {
-    fetch('/api/larus/ips').then(r => r.json()).then(d => {
-      if (d.success) setLarusItems(d.items || []);
-    }).catch(() => {});
-  }, []);
-
-  const selectedItem = larusItems.find(it => it.ip_cidr === selectedCidr);
-  const allocOptions = (() => {
-    if (!selectedItem) return [];
-    if (selectedItem.allocations?.length) {
-      return selectedItem.allocations
-        .filter(a => a.loa_path)
-        .map(a => ({ label: `AS${a.asn}`, value: `${a.asn}|${a.loa_path}` }));
-    }
-    if (selectedItem.loa_path) {
-      return [{ label: `AS${selectedItem.asn || '—'}`, value: `${selectedItem.asn || ''}|${selectedItem.loa_path}` }];
-    }
-    return [];
-  })();
-
-  const pushLoa = async () => {
-    if (!selectedCidr || !selectedAlloc) return;
-    const [asn, loa_path] = selectedAlloc.split('|');
-    setPushing(true);
-    try {
-      const res = await fetch('/api/larus/loa-to-cds', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cidr: selectedCidr, asn, loa_path }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        message.success('LOA 已推送至首都在线宣告系统');
-      } else {
-        message.error(data.message || '推送失败');
-      }
-    } catch (e: any) {
-      message.error(e.message || '推送失败');
-    } finally {
-      setPushing(false);
-    }
-  };
+  const [activeTab, setActiveTab] = useUrlTab(1, ['announce', 'withdraw', 'announced', 'loa-manager'] as const, 'announce');
 
   // 检查 CDS 服务是否可用
   useEffect(() => {
@@ -95,13 +45,12 @@ const CapitalOnlineAnnounce: React.FC = () => {
       });
   }, []);
 
-  // iframe 加载后注入 CSS 隐藏 Flask 原有导航栏
+  // iframe 加载后注入 CSS：隐藏 Flask 导航栏，以及无 loa-delete 权限时隐藏删除按钮
   const handleLoad = useCallback(() => {
     try {
       const doc = iframeRef.current?.contentDocument;
-      if (doc) {
-        const existing = doc.getElementById('__cds_hide_nav__');
-        if (existing) return;
+      if (!doc) return;
+      if (!doc.getElementById('__cds_hide_nav__')) {
         const style = doc.createElement('style');
         style.id = '__cds_hide_nav__';
         style.textContent = `
@@ -111,10 +60,20 @@ const CapitalOnlineAnnounce: React.FC = () => {
         `;
         doc.head?.appendChild(style);
       }
+      if (activeTab === 'loa-manager' && !canLOADelete && !doc.getElementById('__cds_hide_delete__')) {
+        const style = doc.createElement('style');
+        style.id = '__cds_hide_delete__';
+        style.textContent = `
+          #batchDeleteBtn { display: none !important; }
+          th.col-check, td.col-check { display: none !important; }
+          .btn.btn-danger { display: none !important; }
+        `;
+        doc.head?.appendChild(style);
+      }
     } catch {
       // 跨域时无法操作，忽略
     }
-  }, []);
+  }, [activeTab, canLOADelete]);
 
   const currentPage = CDS_PAGES.find(p => p.key === activeTab) ?? CDS_PAGES[0];
 
@@ -132,7 +91,7 @@ const CapitalOnlineAnnounce: React.FC = () => {
       <div style={{ borderBottom: '1px solid #f0f0f0', padding: '0 16px', flexShrink: 0 }}>
         <Tabs
           activeKey={activeTab}
-          onChange={key => setActiveTab(key)}
+          onChange={setActiveTab}
           size="small"
           style={{ marginBottom: 0 }}
           items={CDS_PAGES.map(p => ({
@@ -178,67 +137,6 @@ const CapitalOnlineAnnounce: React.FC = () => {
           </div>
         ) : (
           <>
-            {activeTab === 'announce' && larusItems.length > 0 && (
-              <div style={{
-                padding: '8px 16px',
-                borderBottom: '1px solid #f0f0f0',
-                background: '#fafafa',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                flexWrap: 'wrap',
-                flexShrink: 0,
-              }}>
-                <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>Larus LOA：</Text>
-                <Select
-                  showSearch
-                  placeholder="选择 IP 段"
-                  style={{ width: 200 }}
-                  size="small"
-                  allowClear
-                  value={selectedCidr || undefined}
-                  onChange={v => { setSelectedCidr(v || ''); setSelectedAlloc(''); }}
-                  options={larusItems.map(it => ({ label: it.ip_cidr, value: it.ip_cidr }))}
-                  filterOption={(input, opt) => (opt?.label as string || '').includes(input)}
-                />
-                {selectedItem && allocOptions.length === 0 && (
-                  <Tag color="warning">该 IP 段无 LOA（可先在 Larus 管理页获取）</Tag>
-                )}
-                {allocOptions.length > 0 && (
-                  <Select
-                    placeholder="选择 ASN"
-                    style={{ width: 130 }}
-                    size="small"
-                    value={selectedAlloc || undefined}
-                    onChange={v => setSelectedAlloc(v)}
-                    options={allocOptions}
-                  />
-                )}
-                {selectedAlloc && (
-                  <>
-                    <Button
-                      size="small"
-                      icon={<DownloadOutlined />}
-                      onClick={() => {
-                        const lp = selectedAlloc.split('|')[1];
-                        if (lp) window.open(`/api/larus/loa?path=${encodeURIComponent(lp)}`, '_blank');
-                      }}
-                    >
-                      下载 LOA
-                    </Button>
-                    <Button
-                      size="small"
-                      type="primary"
-                      icon={<SendOutlined />}
-                      loading={pushing}
-                      onClick={pushLoa}
-                    >
-                      推送至首都在线
-                    </Button>
-                  </>
-                )}
-              </div>
-            )}
             <iframe
               key={currentPage.path}
               ref={iframeRef}

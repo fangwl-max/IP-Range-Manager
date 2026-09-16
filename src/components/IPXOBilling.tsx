@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useUrlTab } from '../hooks/useUrlTab';
 import {
   Card,
   Table,
@@ -172,7 +173,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   const [servicesCachedAt, setServicesCachedAt] = useState('');
   const [invoicesCachedAt, setInvoicesCachedAt] = useState('');
 
-  const [activeTab, setActiveTab] = useState(forcedTab ?? 'upcoming');
+  const [activeTab, setActiveTab] = useUrlTab(1, ['upcoming', 'services', 'invoices'] as const, 'upcoming');
 
   // 同步发票（全量从 IPXO API 拉取，约数秒）
   const handleInvoiceSync = async () => {
@@ -741,16 +742,6 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       title: 'RIR',
       key: 'registry',
       width: 90,
-      filters: [
-        { text: 'ARIN', value: 'arin' },
-        { text: 'RIPE NCC', value: 'ripencc' },
-        { text: 'APNIC', value: 'apnic' },
-        { text: 'AFRINIC', value: 'afrinic' },
-        { text: 'LACNIC', value: 'lacnic' },
-      ],
-      filteredValue: servicesTableFilters['registry'] || null,
-      onFilter: (value: any, r: any) =>
-        (r.market_service?.registry || '').toLowerCase() === value,
       render: (_: any, r: any) => {
         const reg = r.market_service?.registry;
         if (!reg) return '-';
@@ -784,12 +775,6 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       title: '续费状态',
       key: 'renewalStatus',
       width: 110,
-      filters: [
-        { text: '未取消', value: 'active' },
-        { text: '到期取消', value: 'cancelled' },
-      ],
-      filteredValue: servicesTableFilters['renewalStatus'] || null,
-      onFilter: (value: any, r: any) => r._renewalStatus === value,
       render: (_: any, r: any) => {
         const v = r._renewalStatus;
         if (v === 'cancelled') return <Tag color="warning">到期取消</Tag>;
@@ -1520,6 +1505,37 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                           style={{ width: 110 }}
                         />
                       )}
+                      <Select
+                        value={servicesTableFilters['registry']?.[0] || undefined}
+                        placeholder="RIR: 全部"
+                        allowClear
+                        style={{ width: 120 }}
+                        onChange={(v) => {
+                          setServicesTableFilters(f => ({ ...f, registry: v ? [v] : [] }));
+                          setServicesSelectedKeys([]);
+                        }}
+                        options={[
+                          { label: 'ARIN', value: 'arin' },
+                          { label: 'RIPE NCC', value: 'ripencc' },
+                          { label: 'APNIC', value: 'apnic' },
+                          { label: 'AFRINIC', value: 'afrinic' },
+                          { label: 'LACNIC', value: 'lacnic' },
+                        ]}
+                      />
+                      <Select
+                        value={servicesTableFilters['renewalStatus']?.[0] || undefined}
+                        placeholder="续费状态: 全部"
+                        allowClear
+                        style={{ width: 140 }}
+                        onChange={(v) => {
+                          setServicesTableFilters(f => ({ ...f, renewalStatus: v ? [v] : [] }));
+                          setServicesSelectedKeys([]);
+                        }}
+                        options={[
+                          { label: '未取消', value: 'active' },
+                          { label: '到期取消', value: 'cancelled' },
+                        ]}
+                      />
                     </Space>
                   </div>
                   <div style={{ marginBottom: 12 }}>
@@ -1552,7 +1568,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                     loading={servicesLoading}
                     dataSource={filteredServices}
                     columns={serviceColumns}
-                    rowKey={(r, i) => r.market_service?.uuid || r.billing_service?.uuid || `svc-${i}`}
+                    rowKey={(r) => r.market_service?.uuid || r.billing_service?.uuid || `${r.billing_service?.address || ''}/${r.billing_service?.cidr ?? ''}`}
                     rowSelection={{
                       selectedRowKeys: servicesSelectedKeys,
                       onChange: (keys) => setServicesSelectedKeys(keys as string[]),
@@ -1560,12 +1576,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                     size="small"
                     scroll={{ x: 1100 }}
                     pagination={false}
-                    onChange={(_p, filters) => {
-                      setServicesTableFilters({
-                        registry: (filters['registry'] as string[]) || [],
-                        renewalStatus: (filters['renewalStatus'] as string[]) || [],
-                      });
-                    }}
+                    onChange={() => {}}
                   />
                 </>
               ),
