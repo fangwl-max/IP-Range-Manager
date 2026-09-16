@@ -2994,9 +2994,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     if(!s) return;
     s.className = 'loa-summary ' + (ok===true?'ok':ok===false?'err':'');
     s.textContent = msg;
+    var foot = row.querySelector('.announce-row-foot');
+    if(foot) foot.classList.toggle('is-visible', !!(msg && msg.trim()));
   }
   function addLoaBtn(row){
-    if(!row || row.querySelector('.btn-loa-fetch')) return;
+    if(!row || row.querySelector('.btn-loa-fetch') || row.querySelector('.btn-fetch-ipxo-loa')) return;
     var la = row.querySelector('.loa-actions');
     if(!la) return;
     var btn = document.createElement('button');
