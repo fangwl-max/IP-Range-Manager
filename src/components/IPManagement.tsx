@@ -1314,13 +1314,10 @@ const IPManagement: React.FC = () => {
 
   // 计算续费时间（当前时间下个月的同一日）
   const calculateRenewalDate = (purchaseDate: dayjs.Dayjs | null): dayjs.Dayjs => {
-    // 续费时间基于当前时间和购买时间计算，为下个月的购买日
-    const now = dayjs();
     if (purchaseDate && purchaseDate.isValid()) {
-      const purchaseDay = purchaseDate.date(); // 购买时间的"日"（1-31）
-      return now.date(purchaseDay).add(1, 'month');
+      return purchaseDate.add(1, 'month');
     }
-    return now.add(1, 'month');
+    return dayjs().add(1, 'month');
   };
 
   // 处理购买时间变化
