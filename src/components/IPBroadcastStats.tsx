@@ -49,7 +49,6 @@ function blockCol(title: string, country: BlockedCountry): ColumnType<IPSegment>
     filters: BLOCK_FILTERS,
     filterMultiple: true,
     onFilter: (v, seg) => blockLabel(seg, country) === v,
-    sorter: (a, b) => blockLabel(a, country).localeCompare(blockLabel(b, country)),
     render: (_: unknown, seg: IPSegment) => <BlockTag seg={seg} country={country} />,
   };
 }
@@ -81,43 +80,43 @@ function cidrToSlash24Equiv(cidr: string): number {
 
 // ─── Tab 排序 Modal ──────────────────────────────────────────────────────────
 
+interface TabSortItem { key: string; label: string; }
 interface TabSortModalProps {
   open: boolean;
-  areas: string[];
+  items: TabSortItem[];
   onConfirm: (order: string[]) => void;
   onCancel: () => void;
 }
 
-const TabSortModal: React.FC<TabSortModalProps> = ({ open, areas, onConfirm, onCancel }) => {
-  const [draft, setDraft] = useState<string[]>([]);
+const TabSortModal: React.FC<TabSortModalProps> = ({ open, items, onConfirm, onCancel }) => {
+  const [draft, setDraft] = useState<TabSortItem[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [step, setStep] = useState<number>(1);
 
   useEffect(() => {
-    if (open) { setDraft([...areas]); setSelected(new Set()); setStep(1); }
-  }, [open, areas]);
+    if (open) { setDraft([...items]); setSelected(new Set()); setStep(1); }
+  }, [open, items]);
 
-  const toggleItem = useCallback((area: string) => {
+  const toggleItem = useCallback((key: string) => {
     setSelected(prev => {
       const next = new Set(prev);
-      next.has(area) ? next.delete(area) : next.add(area);
+      next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
   }, []);
 
   const toggleAll = useCallback(() => {
-    setSelected(prev => prev.size === draft.length ? new Set() : new Set(draft));
+    setSelected(prev => prev.size === draft.length ? new Set() : new Set(draft.map(x => x.key)));
   }, [draft]);
 
   // 将选中项作为一组整体移动 delta 步（在未选中项中的插入位置偏移 delta）
   const moveSelected = useCallback((delta: number) => {
     setDraft(prev => {
       if (selected.size === 0) return prev;
-      const sel = prev.filter(x => selected.has(x));
-      const unsel = prev.filter(x => !selected.has(x));
-      // 第一个选中项在原数组中的位置，计算其在 unsel 中的插入点
-      const firstIdx = prev.findIndex(x => selected.has(x));
-      let ip = prev.slice(0, firstIdx).filter(x => !selected.has(x)).length;
+      const sel = prev.filter(x => selected.has(x.key));
+      const unsel = prev.filter(x => !selected.has(x.key));
+      const firstIdx = prev.findIndex(x => selected.has(x.key));
+      let ip = prev.slice(0, firstIdx).filter(x => !selected.has(x.key)).length;
       ip = Math.max(0, Math.min(unsel.length, ip + delta));
       const result = [...unsel];
       result.splice(ip, 0, ...sel);
@@ -151,7 +150,7 @@ const TabSortModal: React.FC<TabSortModalProps> = ({ open, areas, onConfirm, onC
     <Modal
       title="调整 Tab 排序"
       open={open}
-      onOk={() => onConfirm(draft)}
+      onOk={() => onConfirm(draft.map(x => x.key))}
       onCancel={onCancel}
       okText="应用"
       cancelText="取消"
@@ -187,18 +186,18 @@ const TabSortModal: React.FC<TabSortModalProps> = ({ open, areas, onConfirm, onC
         header={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 2px' }}>
             <Checkbox indeterminate={indeterminate} checked={allChecked} onChange={toggleAll} />
-            <span style={{ fontSize: 13, color: '#555' }}>全选（共 {draft.length} 个宣告地区）</span>
+            <span style={{ fontSize: 13, color: '#555' }}>全选（共 {draft.length} 个 Tab）</span>
           </div>
         }
         dataSource={draft}
-        renderItem={(area, idx) => (
+        renderItem={(item, idx) => (
           <List.Item
             style={{
               padding: '5px 12px',
-              background: selected.has(area) ? '#f0f5ff' : undefined,
+              background: selected.has(item.key) ? '#f0f5ff' : undefined,
               cursor: 'pointer',
             }}
-            onClick={() => toggleItem(area)}
+            onClick={() => toggleItem(item.key)}
             actions={[
               <Button
                 size="small"
@@ -215,8 +214,8 @@ const TabSortModal: React.FC<TabSortModalProps> = ({ open, areas, onConfirm, onC
             ]}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} onClick={e => e.stopPropagation()}>
-              <Checkbox checked={selected.has(area)} onChange={() => toggleItem(area)} />
-              <span style={{ fontWeight: 500 }}>{idx + 1}. {area}</span>
+              <Checkbox checked={selected.has(item.key)} onChange={() => toggleItem(item.key)} />
+              <span style={{ fontWeight: 500 }}>{idx + 1}. {item.label}</span>
             </div>
           </List.Item>
         )}
@@ -246,24 +245,37 @@ const IPBroadcastStats: React.FC = () => {
       .finally(() => setLoading(false));
   }, []);
 
-  // 从数据中取所有 usageArea，按自定义顺序排列，未在 tabOrder 中的追加到末尾
-  const areas = useMemo(() => {
-    const all = [...new Set(segments.map(s => s.usageArea).filter(Boolean))];
-    const ordered = tabOrder.filter(k => all.includes(k));
-    const rest = all.filter(k => !tabOrder.includes(k)).sort((a, b) => a.localeCompare(b, 'zh-CN'));
-    return [...ordered, ...rest];
-  }, [segments, tabOrder]);
-
   const offlineSegments = useMemo(
     () => segments.filter(s => s.renewalStatus === 'cancelled' || s.renewalStatus === 'refunded'),
     [segments],
   );
 
-  const tabItems = useMemo(() => [
-    { key: 'all', label: '全部' },
-    { key: '__offline__', label: `已下架IP段 (${offlineSegments.length})` },
-    ...areas.map(area => ({ key: area, label: area })),
-  ], [areas, offlineSegments.length]);
+  // 所有可用的 tab keys（含固定 + 宣告地区）
+  const allTabKeys = useMemo(() => {
+    const areas = [...new Set(segments.map(s => s.usageArea).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+    return ['all', '__offline__', ...areas];
+  }, [segments]);
+
+  // 按 tabOrder 排列，未在 tabOrder 中的追加到末尾
+  const orderedKeys = useMemo(() => {
+    const ordered = tabOrder.filter(k => allTabKeys.includes(k));
+    const rest = allTabKeys.filter(k => !tabOrder.includes(k));
+    return [...ordered, ...rest];
+  }, [allTabKeys, tabOrder]);
+
+  const tabItems = useMemo(() => {
+    const labelMap: Record<string, string> = {
+      all: '全部',
+      '__offline__': `已下架IP段 (${offlineSegments.length})`,
+    };
+    return orderedKeys.map(k => ({ key: k, label: labelMap[k] ?? k }));
+  }, [orderedKeys, offlineSegments.length]);
+
+  // 传给排序弹窗的 items（使用静态标签，不带计数）
+  const modalSortItems = useMemo<TabSortItem[]>(() => {
+    const labelMap: Record<string, string> = { all: '全部', '__offline__': '已下架IP段' };
+    return orderedKeys.map(k => ({ key: k, label: labelMap[k] ?? k }));
+  }, [orderedKeys]);
 
   const tableData = useMemo(() => {
     if (activeTab === 'all') return segments;
@@ -325,7 +337,6 @@ const IPBroadcastStats: React.FC = () => {
       title: 'IP属地',
       key: 'ipLocation',
       width: 90,
-      sorter: () => 0,
       render: () => <Text type="secondary">—</Text>,
     },
     {
@@ -336,7 +347,6 @@ const IPBroadcastStats: React.FC = () => {
       filters: supplierFilters,
       filterMultiple: true,
       onFilter: (v, seg) => seg.supplier === v,
-      sorter: (a, b) => (a.supplier || '').localeCompare(b.supplier || ''),
       render: (v: string) => v || '—',
     },
     {
@@ -348,7 +358,7 @@ const IPBroadcastStats: React.FC = () => {
         <Tooltip title="点击复制" mouseEnterDelay={0.5}>
           <Text
             code
-            style={{ whiteSpace: 'nowrap', fontSize: 12, cursor: 'pointer' }}
+            style={{ whiteSpace: 'nowrap', fontSize: 14, cursor: 'pointer' }}
             onClick={() => copyToClipboard(v)}
           >
             {v}
@@ -366,7 +376,6 @@ const IPBroadcastStats: React.FC = () => {
       ],
       filterMultiple: false,
       onFilter: (v, seg) => String(seg.primaryAsnInBgp === true) === v,
-      sorter: (a, b) => Number(b.primaryAsnInBgp ?? false) - Number(a.primaryAsnInBgp ?? false),
       render: (_: unknown, seg: IPSegment) =>
         seg.primaryAsnInBgp === true
           ? <Tag color="blue" style={{ margin: 0 }}>宣告中</Tag>
@@ -380,7 +389,6 @@ const IPBroadcastStats: React.FC = () => {
       filters: asnFilters,
       filterMultiple: true,
       onFilter: (v, seg) => seg.asn === v,
-      sorter: (a, b) => (a.asn || '').localeCompare(b.asn || ''),
       render: (v: string) => v
         ? <Text code style={{ fontSize: 12 }}>AS{v.replace(/^AS/i, '')}</Text>
         : '—',
@@ -392,7 +400,6 @@ const IPBroadcastStats: React.FC = () => {
       filters: usageFilters,
       filterMultiple: true,
       onFilter: (v, seg) => usageText(seg) === v,
-      sorter: (a, b) => usageText(a).localeCompare(usageText(b), 'zh-CN'),
       render: (_: unknown, seg: IPSegment) => usageText(seg),
     },
     blockCol('伊朗封锁', 'iran'),
@@ -413,7 +420,6 @@ const IPBroadcastStats: React.FC = () => {
         if (v === 'active') return seg.renewalStatus !== 'cancelled' && seg.renewalStatus !== 'refunded';
         return seg.renewalStatus === v;
       },
-      sorter: (a, b) => (a.renewalStatus || '').localeCompare(b.renewalStatus || ''),
       render: (_: unknown, seg: IPSegment) => {
         const cfg = RENEWAL_TAG[seg.renewalStatus] ?? { text: '未下架', color: 'green' };
         return <Tag color={cfg.color} style={{ margin: 0 }}>{cfg.text}</Tag>;
@@ -491,7 +497,7 @@ const IPBroadcastStats: React.FC = () => {
       {/* Tab 排序 Modal */}
       <TabSortModal
         open={sortModalOpen}
-        areas={areas}
+        items={modalSortItems}
         onConfirm={handleTabOrderConfirm}
         onCancel={() => setSortModalOpen(false)}
       />
