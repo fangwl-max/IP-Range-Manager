@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Card, Input, Button, Space, Typography, Tag, Collapse, Alert, message,
   Select, Modal, Form, InputNumber, Popconfirm, Checkbox, Table, Tooltip,
@@ -8,7 +8,7 @@ import {
   PlayCircleOutlined, CheckCircleOutlined, CloseCircleOutlined,
   LoadingOutlined, NodeIndexOutlined, SettingOutlined,
   PlusOutlined, DeleteOutlined, EditOutlined,
-  CloudServerOutlined, DesktopOutlined, CopyOutlined,
+  CloudServerOutlined, DesktopOutlined, CopyOutlined, SyncOutlined,
 } from '@ant-design/icons';
 import { deriveGatewayIPv4 } from './GatewayPingDetection';
 
@@ -84,6 +84,16 @@ const TracerouteDetection: React.FC<Props> = () => {
   // 服务器验证
   const [testingServer, setTestingServer] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; output?: string; message?: string; serverName?: string } | null>(null);
+  const [autoRetry, setAutoRetry] = useState(false);
+  const [autoRetryInterval, setAutoRetryInterval] = useState(3);
+  const [retryCountdown, setRetryCountdown] = useState<number | null>(null);
+
+  const autoRetryRef = useRef(false);
+  const autoRetryIntervalRef = useRef(30);
+  const resultsRef = useRef<TracerouteResult[]>([]);
+  const prevRunningRef = useRef(false);
+  const currentServerParamRef = useRef('');
+  const currentServerLabelRef = useRef('');
 
   const loadServers = useCallback(async () => {
     try {
@@ -94,6 +104,9 @@ const TracerouteDetection: React.FC<Props> = () => {
   }, []);
 
   useEffect(() => { loadServers(); }, [loadServers]);
+  useEffect(() => { autoRetryRef.current = autoRetry; }, [autoRetry]);
+  useEffect(() => { autoRetryIntervalRef.current = autoRetryInterval; }, [autoRetryInterval]);
+  useEffect(() => { resultsRef.current = results; }, [results]);
 
   const handleSaveServer = async () => {
     try {
@@ -167,66 +180,97 @@ const TracerouteDetection: React.FC<Props> = () => {
     }
   };
 
+  const executeTraceroute = useCallback(async (targetIp: string, index: number) => {
+    setResults(prev => prev.map((r, idx) => idx === index ? { ...r, status: 'running' } : r));
+    try {
+      const res = await fetch(`/api/traceroute/run?ip=${encodeURIComponent(targetIp)}${currentServerParamRef.current}`);
+      const data = await res.json();
+      if (data.success) {
+        setResults(prev => prev.map((r, idx) =>
+          idx === index ? {
+            ...r,
+            status: 'done',
+            hops: data.hops || [],
+            rawOutput: data.raw || '',
+            partial: data.partial,
+            reachable: data.reachable,
+            serverName: data.serverName || currentServerLabelRef.current,
+          } : r
+        ));
+      } else {
+        setResults(prev => prev.map((r, idx) =>
+          idx === index ? { ...r, status: 'error', error: data.message } : r
+        ));
+      }
+    } catch (e: any) {
+      setResults(prev => prev.map((r, idx) =>
+        idx === index ? { ...r, status: 'error', error: e.message } : r
+      ));
+    }
+  }, []);
+
   const handleRun = async () => {
     const targets = parseInputs(inputText);
     if (targets.length === 0) {
       message.warning('请输入至少一个有效的 IP 段');
       return;
     }
-
-    const serverParam = selectedServer !== 'local' ? `&server=${encodeURIComponent(selectedServer)}` : '';
-    const serverLabel = selectedServer !== 'local'
+    setRetryCountdown(null);
+    currentServerParamRef.current = selectedServer !== 'local' ? `&server=${encodeURIComponent(selectedServer)}` : '';
+    currentServerLabelRef.current = selectedServer !== 'local'
       ? servers.find(s => s.id === selectedServer)?.name || selectedServer
       : '';
-
     const initResults: TracerouteResult[] = targets.map(t => ({
       raw: t.raw,
       targetIp: t.targetIp,
       status: 'pending',
       hops: [],
       rawOutput: '',
-      serverName: serverLabel,
+      serverName: currentServerLabelRef.current,
     }));
     setResults(initResults);
     setCheckedSet(new Set());
     setRunning(true);
-
     for (let i = 0; i < targets.length; i++) {
-      const target = targets[i];
-
-      setResults(prev => prev.map((r, idx) =>
-        idx === i ? { ...r, status: 'running' } : r
-      ));
-
-      try {
-        const res = await fetch(`/api/traceroute/run?ip=${encodeURIComponent(target.targetIp)}${serverParam}`);
-        const data = await res.json();
-        if (data.success) {
-          setResults(prev => prev.map((r, idx) =>
-            idx === i ? {
-              ...r,
-              status: 'done',
-              hops: data.hops || [],
-              rawOutput: data.raw || '',
-              partial: data.partial,
-              reachable: data.reachable,
-              serverName: data.serverName || serverLabel,
-            } : r
-          ));
-        } else {
-          setResults(prev => prev.map((r, idx) =>
-            idx === i ? { ...r, status: 'error', error: data.message } : r
-          ));
-        }
-      } catch (e: any) {
-        setResults(prev => prev.map((r, idx) =>
-          idx === i ? { ...r, status: 'error', error: e.message } : r
-        ));
-      }
+      await executeTraceroute(targets[i].targetIp, i);
     }
-
     setRunning(false);
   };
+
+  const handleRetryFailed = useCallback(async () => {
+    const cur = resultsRef.current;
+    const failedIndices = cur.reduce<number[]>((acc, r, i) => {
+      if (r.status === 'error') acc.push(i);
+      return acc;
+    }, []);
+    if (failedIndices.length === 0) return;
+    setRunning(true);
+    for (const i of failedIndices) {
+      await executeTraceroute(cur[i].targetIp, i);
+    }
+    setRunning(false);
+  }, [executeTraceroute]);
+
+  useEffect(() => {
+    if (prevRunningRef.current && !running) {
+      const failures = resultsRef.current.filter(r => r.status === 'error').length;
+      if (autoRetryRef.current && failures > 0) {
+        setRetryCountdown(autoRetryIntervalRef.current);
+      }
+    }
+    prevRunningRef.current = running;
+  }, [running]);
+
+  useEffect(() => {
+    if (retryCountdown === null) return;
+    if (retryCountdown <= 0) {
+      setRetryCountdown(null);
+      handleRetryFailed();
+      return;
+    }
+    const timer = setTimeout(() => setRetryCountdown(prev => prev !== null ? prev - 1 : null), 1000);
+    return () => clearTimeout(timer);
+  }, [retryCountdown, handleRetryFailed]);
 
   // ── 勾选逻辑 ──
   const doneResults = results.filter(r => r.status === 'done' || r.status === 'error');
@@ -410,15 +454,58 @@ const TracerouteDetection: React.FC<Props> = () => {
           />
         )}
 
-        <Button
-          type="primary"
-          icon={<PlayCircleOutlined />}
-          loading={running}
-          onClick={handleRun}
-          style={{ borderRadius: 6, height: 36, padding: '0 24px' }}
-        >
-          开始检测
-        </Button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <Button
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              loading={running}
+              onClick={handleRun}
+              style={{ borderRadius: 6, height: 36, padding: '0 24px' }}
+            >
+              开始检测
+            </Button>
+            {results.some(r => r.status === 'error') && !running && (
+              <Button
+                icon={<SyncOutlined />}
+                onClick={handleRetryFailed}
+                style={{ borderRadius: 6, height: 36 }}
+              >
+                仅重试失败项 ({results.filter(r => r.status === 'error').length})
+              </Button>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <Checkbox
+              checked={autoRetry}
+              onChange={e => { setAutoRetry(e.target.checked); if (!e.target.checked) setRetryCountdown(null); }}
+            >
+              自动循环重试失败项
+            </Checkbox>
+            {autoRetry && (
+              <>
+                <Text type="secondary" style={{ fontSize: 13 }}>间隔</Text>
+                <InputNumber
+                  min={1}
+                  max={300}
+                  value={autoRetryInterval}
+                  onChange={v => setAutoRetryInterval(Math.max(1, v ?? 30))}
+                  style={{ width: 72 }}
+                  size="small"
+                />
+                <Text type="secondary" style={{ fontSize: 13 }}>秒</Text>
+                {retryCountdown !== null && (
+                  <>
+                    <Tag color="orange" icon={<SyncOutlined spin />}>
+                      {retryCountdown}s 后自动重试
+                    </Tag>
+                    <Button size="small" onClick={() => setRetryCountdown(null)}>取消</Button>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
 
         {results.length > 0 && (
           <div>

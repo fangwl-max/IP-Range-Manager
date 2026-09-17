@@ -373,8 +373,10 @@ const ipxoCachePath = path.resolve(__dirname, 'ipxo-cache.json');
 const notifyConfigPath = path.resolve(__dirname, 'notify-config.json');
 /** 近期续费页独立状态文件（续费状态+备注，不同步到IP段管理） */
 const upcomingStatusPath = path.resolve(__dirname, 'ipxo-upcoming-status.json');
-/** SSH 远程服务器配置文件 */
+/** SSH 远程服务器配置文件（traceroute 检测节点） */
 const sshServersPath = path.resolve(__dirname, 'ssh-servers.json');
+/** 远程数据同步服务器配置文件（与 traceroute 节点相互独立） */
+const syncServersPath = path.resolve(__dirname, 'sync-servers.json');
 
 // ===================== Larus 配置存储 =====================
 const larusConfigPath = path.resolve(__dirname, 'larus-config.json');
@@ -405,6 +407,24 @@ function loadSshServers(): SshServerConfig[] {
 
 function saveSshServers(servers: SshServerConfig[]): void {
   fs.writeFileSync(sshServersPath, JSON.stringify(servers, null, 2), 'utf-8');
+}
+
+function loadSyncServers(): SshServerConfig[] {
+  try {
+    if (fs.existsSync(syncServersPath)) {
+      const raw = fs.readFileSync(syncServersPath, 'utf-8').trim();
+      if (!raw) return [];
+      const data = JSON.parse(raw);
+      return Array.isArray(data) ? data : [];
+    }
+  } catch (e) {
+    console.error('[SyncServers] Load config error:', e);
+  }
+  return [];
+}
+
+function saveSyncServers(servers: SshServerConfig[]): void {
+  fs.writeFileSync(syncServersPath, JSON.stringify(servers, null, 2), 'utf-8');
 }
 
 /** 近期续费页独立状态：每个 IP 段的本地续费标记和备注 */
@@ -2475,6 +2495,7 @@ async function fetchLarusAllocationDetail(routeId: number, cookie: string): Prom
   allocations: Array<{ asn: string; loa_path: string | null; alloc_id: number }>;
   asn: string | null;
   loa_path: string | null;
+  purchase_date: string | null;
   updatedCookie?: string;
 }> {
   const { body, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation/${routeId}`, cookie);
@@ -2485,41 +2506,62 @@ async function fetchLarusAllocationDetail(routeId: number, cookie: string): Prom
     alloc_id: item.id,
   }));
   const first = allocations[0] ?? null;
+  // 购买日期：取最早 LOA 的 created_at（unix 时间戳，秒）
+  const sortedByCreated = [...lists].sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+  const earliestTs: number | undefined = sortedByCreated[0]?.created_at;
+  const purchase_date = earliestTs ? new Date(earliestTs * 1000).toISOString().slice(0, 10) : null;
   return {
     allocations,
     asn: first?.asn ?? null,
     loa_path: first?.loa_path ?? null,
+    purchase_date,
     updatedCookie,
   };
+}
+
+/** 尝试从 Larus 合同/路由详情接口获取到期日期。
+ *  先试 /ipv4/lease-in/detail/{routeId}，再试 /ipv4/contract/{contractId}。
+ *  两者若都未返回日期字段，则返回 null。
+ */
+async function fetchLarusExpiryDate(routeId: number, contractId: number, cookie: string): Promise<string | null> {
+  const tryParse = (ts: any): string | null => {
+    if (!ts) return null;
+    const num = Number(ts);
+    if (!isNaN(num) && num > 0) return new Date(num * 1000).toISOString().slice(0, 10);
+    if (typeof ts === 'string' && ts.match(/^\d{4}-\d{2}-\d{2}/)) return ts.slice(0, 10);
+    return null;
+  };
+  const candidates = (data: any): string | null =>
+    tryParse(data?.end_date) ?? tryParse(data?.expire_date) ?? tryParse(data?.expiry_date) ??
+    tryParse(data?.due_date) ?? tryParse(data?.next_due_date) ?? tryParse(data?.contract_end_date) ?? null;
+
+  try {
+    const { body } = await larusRequest(`/ipv4/lease-in/detail/${routeId}`, cookie);
+    const d = body?.data || body;
+    const result = candidates(d) ?? candidates(d?.contract);
+    if (result) return result;
+  } catch { /* try next */ }
+
+  try {
+    const { body } = await larusRequest(`/ipv4/contract/${contractId}`, cookie);
+    const d = body?.data || body;
+    const result = candidates(d) ?? candidates(d?.contract);
+    if (result) return result;
+  } catch { /* ignore */ }
+
+  return null;
 }
 
 async function enrichLarusItems(
   items: any[],
   cookie: string,
-  fallback?: Map<string, { allocations?: any[]; asn?: string; loa_path?: string }>,
-): Promise<{ items: any[]; updatedCookie?: string; skipped: number }> {
+  fallback?: Map<string, { allocations?: any[]; asn?: string; loa_path?: string; irr_data?: any; purchase_date?: string | null; expiry_date?: string | null }>,
+): Promise<{ items: any[]; updatedCookie?: string }> {
   let latestCookie = cookie;
   const concurrency = 10;
 
-  // 增量策略：id 相同且 status 未变的 item 直接复用缓存，避免无效网络请求
-  const needFetch: any[] = [];
-  const preResolved = new Map<number, any>();
-  for (const item of items) {
-    const cached = fallback?.get(String(item.id));
-    if (cached && cached.status === item.status && cached.allocations) {
-      preResolved.set(item.id, {
-        ...item,
-        allocations: cached.allocations,
-        asn: cached.asn,
-        loa_path: cached.loa_path,
-      });
-    } else {
-      needFetch.push(item);
-    }
-  }
-
-  const results: any[] = [...preResolved.values()];
-  const queue = [...needFetch];
+  const results: any[] = [];
+  const queue = [...items];
   async function worker() {
     while (queue.length > 0) {
       const item = queue.shift();
@@ -2527,11 +2569,19 @@ async function enrichLarusItems(
       try {
         const detail = await fetchLarusAllocationDetail(item.id, latestCookie);
         if (detail.updatedCookie) latestCookie = detail.updatedCookie;
+        const prev = fallback?.get(String(item.id));
+        // purchase_date: 优先用刚取到的（allocation created_at），回退已缓存值
+        const purchase_date = detail.purchase_date ?? prev?.purchase_date ?? null;
+        // expiry_date: 保留已缓存值（需手动刷新才更新）
+        const expiry_date = prev?.expiry_date ?? null;
         results.push({
           ...item,
           allocations: detail.allocations,
           asn: detail.asn,
           loa_path: detail.loa_path,
+          irr_data: prev?.irr_data ?? null,
+          purchase_date,
+          expiry_date,
         });
       } catch {
         const prev = fallback?.get(String(item.id));
@@ -2539,14 +2589,13 @@ async function enrichLarusItems(
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, needFetch.length || 1) }, worker));
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length || 1) }, worker));
 
   const order = new Map(items.map((it, i) => [it.id, i]));
   results.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   return {
     items: results,
     updatedCookie: latestCookie !== cookie ? latestCookie : undefined,
-    skipped: preResolved.size,
   };
 }
 
@@ -4135,6 +4184,109 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.end();
     });
 
+    // ─── 远程数据同步专用服务器管理（与 traceroute 节点完全独立） ──────────
+    server.middlewares.use('/api/sync-servers', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+
+      const reqUrl = new URL(req.url || '/', 'http://localhost');
+      const subPath = (req.url || '').split('?')[0].replace(/^\/+/, '');
+
+      // ── /api/sync-servers/test — GET 验证连接
+      if (subPath === 'test' || subPath === '/test') {
+        if (req.method !== 'GET') { res.statusCode = 405; res.end(); return; }
+        const serverId = (reqUrl.searchParams.get('id') || '').trim();
+        if (!serverId) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 id 参数' })); return; }
+        const servers = loadSyncServers();
+        const srvCfg = servers.find(s => s.id === serverId);
+        if (!srvCfg) { res.end(JSON.stringify({ success: false, message: `未找到服务器配置: ${serverId}` })); return; }
+        try {
+          const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+            const conn = new SSHClient();
+            const timer = setTimeout(() => { conn.end(); reject(new Error('SSH 连接超时 (15s)')); }, 15000);
+            conn.on('ready', () => {
+              conn.exec('curl -s cip.cc', (err: any, stream: any) => {
+                if (err) { clearTimeout(timer); conn.end(); reject(err); return; }
+                let stdout = '', stderr = '';
+                stream.on('data', (d: any) => { stdout += d.toString(); });
+                stream.stderr.on('data', (d: any) => { stderr += d.toString(); });
+                stream.on('close', () => { clearTimeout(timer); conn.end(); resolve({ stdout, stderr }); });
+              });
+            });
+            conn.on('error', (err: any) => { clearTimeout(timer); reject(err); });
+            conn.on('keyboard-interactive', (_n: any, _i: any, _l: any, _p: any, finish: any) => { finish([srvCfg.password]); });
+            conn.connect({
+              host: srvCfg.host, port: srvCfg.port || 22, username: srvCfg.username, password: srvCfg.password,
+              tryKeyboard: true, readyTimeout: 10000,
+              algorithms: { kex: ['diffie-hellman-group14-sha256','diffie-hellman-group14-sha1','ecdh-sha2-nistp256','ecdh-sha2-nistp384','ecdh-sha2-nistp521','diffie-hellman-group-exchange-sha256'] },
+            });
+          });
+          res.end(JSON.stringify({ success: true, output: result.stdout, stderr: result.stderr, serverName: srvCfg.name }));
+        } catch (e: any) {
+          res.end(JSON.stringify({ success: false, message: `SSH 连接失败: ${e?.message || '未知错误'}`, serverName: srvCfg.name }));
+        }
+        return;
+      }
+
+      // ── GET 列表
+      if (req.method === 'GET') {
+        const servers = loadSyncServers();
+        res.end(JSON.stringify({ success: true, servers: servers.map(s => ({ ...s, password: s.password ? '******' : '' })) }));
+        return;
+      }
+
+      // ── POST 添加/更新
+      if (req.method === 'POST') {
+        const _chunks: Buffer[] = [];
+        req.on('data', (chunk: any) => { _chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', () => {
+          try {
+            const data = JSON.parse(Buffer.concat(_chunks).toString('utf-8'));
+            const servers = loadSyncServers();
+            const item: SshServerConfig = {
+              id: data.id || `sync_${Date.now()}`,
+              name: data.name || '', host: data.host || '',
+              port: data.port || 22, username: data.username || '', password: data.password || '',
+            };
+            if (!item.name || !item.host || !item.username) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '名称、地址、用户名不能为空' }));
+              return;
+            }
+            const idx = servers.findIndex(s => s.id === item.id);
+            if (idx >= 0) {
+              if (item.password === '******') item.password = servers[idx].password;
+              servers[idx] = item;
+            } else {
+              servers.push(item);
+            }
+            saveSyncServers(servers);
+            res.end(JSON.stringify({ success: true, server: { ...item, password: '******' } }));
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: e?.message || '请求解析失败' }));
+          }
+        });
+        return;
+      }
+
+      // ── DELETE
+      if (req.method === 'DELETE') {
+        const deleteId = reqUrl.searchParams.get('id') || '';
+        if (!deleteId) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 id 参数' })); return; }
+        const servers = loadSyncServers();
+        saveSyncServers(servers.filter(s => s.id !== deleteId));
+        res.end(JSON.stringify({ success: true }));
+        return;
+      }
+
+      res.statusCode = 405;
+      res.end();
+    });
+
     server.middlewares.use('/api/traceroute/run', async (req: any, res: any, _next: any) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -4233,7 +4385,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           return;
         }
 
-        const servers = loadSshServers();
+        const servers = loadSyncServers();
         const srvCfg = servers.find(s => s.id === serverId);
         if (!srvCfg) {
           res.statusCode = 404;
@@ -5940,6 +6092,94 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const result = await callIpxoApi(`/billing/v1/{tenant_uuid}/market/search${params ? '?' + params : ''}`);
         res.statusCode = result.status === 200 ? 200 : (result.status ?? 500);
         res.end(JSON.stringify({ success: result.status === 200, data: result.body }));
+      } catch (e: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+    });
+
+    // ─── 购前检测：精准查询指定 IP 段是否在 IPXO 市场可租用 ───────────────
+    // POST { notations: string[] }  →  { results: [{ notation, available, item }] }
+    server.middlewares.use('/api/ipxo/market/lookup', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' })); return; }
+      try {
+        const config = loadIpxoConfig();
+        if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
+
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: any) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        req.on('end', async () => {
+          try {
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+            const notations: string[] = (body.notations || []).map((n: string) => n.trim()).filter(Boolean);
+            if (notations.length === 0) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '未提供 IP 段' }));
+              return;
+            }
+
+            const results: any[] = [];
+            for (const notation of notations) {
+              const parts = notation.split('/');
+              const address = parts[0]?.trim() || '';
+              const prefixLength = parseInt(parts[1] || '24', 10);
+              if (!address || isNaN(prefixLength)) {
+                results.push({ notation, available: false, error: 'IP段格式无效' });
+                continue;
+              }
+              // 策略：先尝试 notation 精确搜索，再 fallback 到 address_string 过滤
+              let found: any = null;
+              // 尝试 1：直接传 notation 参数
+              const r1 = await callIpxoApi(
+                `/billing/v1/{tenant_uuid}/market/search?notation=${encodeURIComponent(notation)}&prefix_length=${prefixLength}&limit=10`
+              );
+              if (r1.status === 200) {
+                const items: any[] = r1.body?.data || r1.body?.items || [];
+                found = items.find((i: any) => (i.notation || `${i.address_string}/${i.prefix_length}`) === notation);
+              }
+              // 尝试 2：address_string + prefix_length
+              if (!found) {
+                const r2 = await callIpxoApi(
+                  `/billing/v1/{tenant_uuid}/market/search?address_string=${encodeURIComponent(address)}&prefix_length=${prefixLength}&limit=20`
+                );
+                if (r2.status === 200) {
+                  const items2: any[] = r2.body?.data || r2.body?.items || [];
+                  found = items2.find((i: any) => {
+                    const n = i.notation || `${i.address_string}/${i.prefix_length}`;
+                    return n === notation;
+                  });
+                }
+              }
+              if (found) {
+                const geoSources = found.geo_data ? Object.values(found.geo_data) : [];
+                const geoFirst: any = (geoSources.find((s: any) => (s as any)?.country_name) || geoSources[0] || {}) as any;
+                results.push({
+                  notation,
+                  available: true,
+                  price: found.pricing?.price || 0,
+                  registry: (found.registrar || '').toUpperCase(),
+                  country: geoFirst?.country_name || geoFirst?.country_code || '',
+                  city: geoFirst?.city_name || '',
+                  serviceUuid: found.pricing?.uuid || '',
+                });
+              } else {
+                results.push({ notation, available: false });
+              }
+              // 控速：避免触发 IPXO API 频率限制
+              if (notations.length > 1) await new Promise(r => setTimeout(r, 300));
+            }
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, results }));
+          } catch (e: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ success: false, message: e.message }));
+          }
+        });
       } catch (e: any) {
         res.statusCode = 500;
         res.end(JSON.stringify({ success: false, message: e.message }));
@@ -8319,9 +8559,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         cfg = { ...cfg, cookie: result.updatedCookie };
         fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
       }
-      // 增量补全 allocation（只拉新增或状态变化的 item，其余复用缓存）
-      const { items: enrichedItems, updatedCookie: enrichCookie, skipped } = await enrichLarusItems(result.items, cfg.cookie, fallback);
-      console.log(`[Larus] enrich 完成: 共 ${result.items.length} 条，跳过(复用缓存) ${skipped} 条，实际请求 ${result.items.length - skipped} 条`);
+      // 全量补全 allocation（每次刷新都请求所有 item 的 ASN/LOA，保证数据最新）
+      const { items: enrichedItems, updatedCookie: enrichCookie } = await enrichLarusItems(result.items, cfg.cookie, fallback);
+      console.log(`[Larus] enrich 完成: 共 ${result.items.length} 条`);
       if (enrichCookie) {
         cfg = { ...cfg, cookie: enrichCookie };
         fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
@@ -8484,6 +8724,101 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }));
     } catch (e: any) {
       res.statusCode = 502;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── Larus IRR 状态刷新（全量或指定 route_ids，结果写入缓存）────────────────────
+  server.middlewares.use('/api/larus/irr-refresh', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: '仅支持 POST' })); return; }
+    let cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Cookie 未配置' })); return; }
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const routeIds: number[] = body.route_ids || [];
+      if (!routeIds.length) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_ids' })); return; }
+
+      const cache = loadLarusCache();
+      const cacheMap = new Map<string, any>((cache?.items || []).map((it: any) => [String(it.id), it]));
+      const results: Array<{ id: number; irr_data: any }> = [];
+
+      for (const routeId of routeIds) {
+        try {
+          const { body: apiBody, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation/${routeId}`, cfg.cookie);
+          if (updatedCookie) { cfg = { ...cfg, cookie: updatedCookie }; saveLarusConfig(cfg); }
+          const lists: any[] = apiBody?.data?.lists || [];
+          const irr_data = lists[0]?.irr_data ?? null;
+          const cached = cacheMap.get(String(routeId));
+          if (cached) cacheMap.set(String(routeId), { ...cached, irr_data });
+          results.push({ id: routeId, irr_data });
+        } catch (e: any) {
+          results.push({ id: routeId, irr_data: cacheMap.get(String(routeId))?.irr_data ?? null });
+        }
+      }
+
+      if (cache?.items) {
+        cache.items = cache.items.map((it: any) => {
+          const updated = cacheMap.get(String(it.id));
+          return updated ?? it;
+        });
+        saveLarusCache(cache);
+      }
+
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, results }));
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── Larus 合同日期刷新（purchase_date / expiry_date）────────────────────────────
+  server.middlewares.use('/api/larus/dates-refresh', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: '仅支持 POST' })); return; }
+    let cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Cookie 未配置' })); return; }
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const routeIds: number[] = body.route_ids || [];
+      if (!routeIds.length) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_ids' })); return; }
+
+      const cache = loadLarusCache();
+      const cacheMap = new Map<string, any>((cache?.items || []).map((it: any) => [String(it.id), it]));
+      const results: Array<{ id: number; purchase_date: string | null; expiry_date: string | null }> = [];
+
+      for (const routeId of routeIds) {
+        const cached = cacheMap.get(String(routeId));
+        try {
+          // 重新拉取 allocation detail 以获取最新 purchase_date
+          const detail = await fetchLarusAllocationDetail(routeId, cfg.cookie);
+          if (detail.updatedCookie) { cfg = { ...cfg, cookie: detail.updatedCookie }; saveLarusConfig(cfg); }
+          const purchase_date = detail.purchase_date ?? cached?.purchase_date ?? null;
+          // 尝试从合同/路由详情接口获取到期日期
+          const contractId: number = cached?.contract_id ?? 0;
+          const expiry_date = await fetchLarusExpiryDate(routeId, contractId, cfg.cookie);
+          const updated = { ...(cached || { id: routeId }), purchase_date, expiry_date };
+          cacheMap.set(String(routeId), updated);
+          results.push({ id: routeId, purchase_date, expiry_date });
+        } catch (e: any) {
+          results.push({ id: routeId, purchase_date: cached?.purchase_date ?? null, expiry_date: cached?.expiry_date ?? null });
+        }
+      }
+
+      if (cache?.items) {
+        cache.items = cache.items.map((it: any) => cacheMap.get(String(it.id)) ?? it);
+        saveLarusCache(cache);
+      }
+
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, results }));
+    } catch (e: any) {
+      res.statusCode = 500;
       res.end(JSON.stringify({ success: false, message: e.message }));
     }
   });

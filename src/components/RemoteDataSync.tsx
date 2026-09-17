@@ -80,7 +80,7 @@ const RemoteDataSync: React.FC = () => {
 
   const loadServers = useCallback(async () => {
     try {
-      const res = await fetch('/api/ssh-servers');
+      const res = await fetch('/api/sync-servers');
       const data = await res.json();
       if (data.success) setServers(data.servers || []);
     } catch { /* ignore */ }
@@ -100,7 +100,7 @@ const RemoteDataSync: React.FC = () => {
         username: values.username,
         password: values.password,
       };
-      const res = await fetch('/api/ssh-servers', {
+      const res = await fetch('/api/sync-servers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -125,7 +125,7 @@ const RemoteDataSync: React.FC = () => {
 
   const handleDeleteServer = async (id: string) => {
     try {
-      const res = await fetch(`/api/ssh-servers?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/sync-servers?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         antMessage.success('已删除');
@@ -141,7 +141,7 @@ const RemoteDataSync: React.FC = () => {
     setTestingId(id);
     setTestResults(prev => ({ ...prev, [id]: undefined as any }));
     try {
-      const res = await fetch(`/api/ssh-servers/test?id=${encodeURIComponent(id)}`);
+      const res = await fetch(`/api/sync-servers/test?id=${encodeURIComponent(id)}`);
       const data = await res.json();
       setTestResults(prev => ({ ...prev, [id]: data }));
     } catch (e: any) {

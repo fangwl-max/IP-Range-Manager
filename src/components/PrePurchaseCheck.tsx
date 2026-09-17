@@ -3,13 +3,13 @@ import { useUrlTab } from '../hooks/useUrlTab';
 import {
   Card, Row, Col, Button, Table, Tag, Space, Input, Select, InputNumber,
   Typography, Spin, Alert, Tooltip, Badge, Modal, message, Divider,
-  Checkbox, Tabs, Form, Switch, Popconfirm, Radio, List, Result,
+  Checkbox, Tabs, Form, Switch, Popconfirm, Radio, List, Result, Empty,
 } from 'antd';
 import {
   SearchOutlined, ShoppingCartOutlined, FilterOutlined, BugOutlined,
   ReloadOutlined, CheckCircleOutlined,
   WarningOutlined, CloudServerOutlined, TeamOutlined, CopyOutlined, LinkOutlined,
-  DeleteOutlined, StopOutlined, ExclamationCircleOutlined,
+  DeleteOutlined, StopOutlined, ExclamationCircleOutlined, CheckOutlined, CloseOutlined,
 } from '@ant-design/icons';
 
 const { Text, Title, Link } = Typography;
@@ -132,7 +132,7 @@ const COUNTRY_OPTIONS = [
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 
 const PrePurchaseCheck: React.FC = () => {
-  const [activeTab, setActiveTab] = useUrlTab(1, ['market', 'leased'] as const, 'market');
+  const [activeTab, setActiveTab] = useUrlTab(1, ['market', 'lookup', 'leased'] as const, 'market');
   // 搜索参数
   const [prefixLength, setPrefixLength] = useState(24);
   const [registry, setRegistry] = useState('');
@@ -221,6 +221,34 @@ const PrePurchaseCheck: React.FC = () => {
   const [cancelType, setCancelType] = useState<'end_of_period' | 'immediate'>('end_of_period');
   const [cancelReason, setCancelReason] = useState('End of project');
   const [cancelResults, setCancelResults] = useState<{ subnet: string; ok: boolean; message: string }[]>([]);
+
+  // ── 精准查询 state ────────────────────────────────────────────────────
+  const [lookupInput, setLookupInput] = useState('');
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupResults, setLookupResults] = useState<{
+    notation: string; available: boolean; price?: number;
+    registry?: string; country?: string; city?: string; serviceUuid?: string; error?: string;
+  }[]>([]);
+  const [lookupSelectedKeys, setLookupSelectedKeys] = useState<string[]>([]);
+  const [addingLookupToCart, setAddingLookupToCart] = useState(false);
+
+  // ── 通用复制工具 ─────────────────────────────────────────────────────
+  const copyText = useCallback((text: string, label?: string) => {
+    const doFallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta);
+      message.success(label ? `已复制: ${label}` : '已复制');
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => message.success(label ? `已复制: ${label}` : '已复制'))
+        .catch(doFallback);
+    } else {
+      doFallback();
+    }
+  }, []);
 
   // ── 加载已有 IP 段的 AB 段统计（包含所有历史购买段，含已取消） ────────
   const loadExistingSegments = useCallback(async () => {
@@ -422,6 +450,69 @@ const PrePurchaseCheck: React.FC = () => {
       if (selected.length > 1) await new Promise(r => setTimeout(r, 500));
     }
   }, [selectedKeys, items, handleCheckAbuse]);
+
+  // ── 精准查询：查询指定 IP 段是否在 IPXO 市场可租用 ────────────────────
+  const handleLookup = useCallback(async () => {
+    const lines = lookupInput.split(/[\n,，；; ]+/).map(s => s.trim()).filter(s => /^[\d.]+\/\d+$/.test(s));
+    if (lines.length === 0) { message.warning('请输入至少一个有效 IP 段，格式如 1.2.3.0/24'); return; }
+    setLookupLoading(true);
+    setLookupResults([]);
+    setLookupSelectedKeys([]);
+    try {
+      const res = await fetch('/api/ipxo/market/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notations: lines }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setLookupResults(json.results || []);
+        const available = (json.results || []).filter((r: any) => r.available).length;
+        if (available > 0) message.success(`找到 ${available}/${lines.length} 个 IP 段可租用`);
+        else message.info(`查询完成，${lines.length} 个 IP 段均未在市场中找到`);
+      } else {
+        message.error('查询失败: ' + json.message);
+      }
+    } catch (e: any) {
+      message.error('查询异常: ' + e.message);
+    } finally {
+      setLookupLoading(false);
+    }
+  }, [lookupInput]);
+
+  const handleAddLookupToCart = useCallback(async () => {
+    const selected = lookupResults.filter(r => r.available && lookupSelectedKeys.includes(r.notation));
+    if (selected.length === 0) { message.warning('请先勾选可租用的 IP 段'); return; }
+    setAddingLookupToCart(true);
+    try {
+      const res = await fetch('/api/ipxo/cart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(selected.map(i => ({
+          address: i.notation.split('/')[0],
+          cidr: parseInt(i.notation.split('/')[1] || '24', 10),
+          price: i.price || 0,
+          registry: i.registry || '',
+        }))),
+      });
+      const json = await res.json();
+      if (json.success) {
+        const succeeded = json.results?.filter((r: any) => (r.status >= 200 && r.status < 300) || r.uncertain).length || 0;
+        if (succeeded > 0) {
+          message.success(`成功添加 ${succeeded} 个 IP 段到购物车`);
+          setLookupSelectedKeys([]);
+        } else {
+          message.warning('添加失败，可能已在购物车或不可购买');
+        }
+      } else {
+        message.error('添加失败: ' + json.message);
+      }
+    } catch (e: any) {
+      message.error('添加失败: ' + e.message);
+    } finally {
+      setAddingLookupToCart(false);
+    }
+  }, [lookupResults, lookupSelectedKeys]);
 
   // ── 智能筛选：多条件组合 ────────────────────────────────────────────────
   const smartFilteredItems = useMemo(() => {
@@ -697,26 +788,12 @@ const PrePurchaseCheck: React.FC = () => {
       width: 160,
       render: (v: string) => (
         <Tooltip title="点击复制">
-          <Text
-            style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
-            onClick={() => {
-              if (navigator.clipboard?.writeText) {
-                navigator.clipboard.writeText(v).then(() => message.success(`已复制: ${v}`)).catch(() => {
-                  const ta = document.createElement('textarea');
-                  ta.value = v; ta.style.position = 'fixed'; ta.style.opacity = '0';
-                  document.body.appendChild(ta); ta.select(); document.execCommand('copy');
-                  document.body.removeChild(ta); message.success(`已复制: ${v}`);
-                });
-              } else {
-                const ta = document.createElement('textarea');
-                ta.value = v; ta.style.position = 'fixed'; ta.style.opacity = '0';
-                document.body.appendChild(ta); ta.select(); document.execCommand('copy');
-                document.body.removeChild(ta); message.success(`已复制: ${v}`);
-              }
-            }}
+          <span
+            style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: 13, cursor: 'pointer', userSelect: 'none' }}
+            onClick={(e) => { e.stopPropagation(); copyText(v, v); }}
           >
             {v} <CopyOutlined style={{ fontSize: 11, color: '#999' }} />
-          </Text>
+          </span>
         </Tooltip>
       ),
     },
@@ -973,6 +1050,7 @@ const PrePurchaseCheck: React.FC = () => {
                         {selectedKeys.length > 0 && <>
                           <Text type="secondary">已选 {selectedKeys.length} 个，月费：<strong>${totalSelectedFee.toFixed(2)}</strong></Text>
                           <Button onClick={() => setSelectedKeys([])}>取消全选</Button>
+                          <Button icon={<CopyOutlined />} onClick={() => copyText(selectedKeys.join('\n'), `${selectedKeys.length} 个IP段`)}>复制IP段</Button>
                           <Button icon={<BugOutlined />} onClick={handleCheckAbuseSelected}>批量检测滥用</Button>
                           <Button type="primary" icon={<ShoppingCartOutlined />} loading={addingToCart} onClick={handleAddToCart}>加入购物车 ({selectedKeys.length})</Button>
                         </>}
@@ -1011,6 +1089,149 @@ const PrePurchaseCheck: React.FC = () => {
                     />
                   )}
                 </Card>
+              </div>
+            ),
+          },
+          {
+            key: 'lookup',
+            label: <Space><SearchOutlined />精准查询</Space>,
+            children: (
+              <div>
+                <Card size="small" style={{ marginBottom: 16 }}>
+                  <Row gutter={[12, 8]} align="top">
+                    <Col flex="1">
+                      <Input.TextArea
+                        value={lookupInput}
+                        onChange={e => setLookupInput(e.target.value)}
+                        placeholder={'输入要查询的 IP 段，每行一个或用逗号/空格分隔，格式如 1.2.3.0/24\n例如：\n1.2.3.0/24\n4.5.6.0/23\n7.8.9.0/22'}
+                        autoSize={{ minRows: 4, maxRows: 12 }}
+                        style={{ fontFamily: 'monospace', fontSize: 13 }}
+                        allowClear
+                        onPressEnter={e => { if (e.ctrlKey || e.metaKey) handleLookup(); }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12 }}>支持每行一个、逗号、空格分隔；Ctrl+Enter 快捷查询</Text>
+                    </Col>
+                    <Col>
+                      <Button
+                        type="primary"
+                        icon={<SearchOutlined />}
+                        loading={lookupLoading}
+                        onClick={handleLookup}
+                        style={{ height: 36 }}
+                      >
+                        查询是否可租
+                      </Button>
+                    </Col>
+                  </Row>
+                </Card>
+
+                {lookupResults.length > 0 && (
+                  <Card
+                    size="small"
+                    title={
+                      <Space>
+                        <span>查询结果</span>
+                        <Tag color="blue">{lookupResults.length} 个</Tag>
+                        <Tag color="green">{lookupResults.filter(r => r.available).length} 个可租</Tag>
+                        <Tag color="default">{lookupResults.filter(r => !r.available).length} 个不可用</Tag>
+                      </Space>
+                    }
+                    extra={
+                      lookupSelectedKeys.length > 0 && (
+                        <Space>
+                          <Button
+                            icon={<CopyOutlined />}
+                            size="small"
+                            onClick={() => copyText(lookupSelectedKeys.join('\n'), `${lookupSelectedKeys.length} 个IP段`)}
+                          >
+                            复制IP段 ({lookupSelectedKeys.length})
+                          </Button>
+                          <Button
+                            type="primary"
+                            icon={<ShoppingCartOutlined />}
+                            size="small"
+                            loading={addingLookupToCart}
+                            onClick={handleAddLookupToCart}
+                          >
+                            加入购物车 ({lookupSelectedKeys.length})
+                          </Button>
+                          <Button size="small" onClick={() => setLookupSelectedKeys([])}>取消选择</Button>
+                        </Space>
+                      )
+                    }
+                  >
+                    <Table
+                      dataSource={lookupResults}
+                      rowKey="notation"
+                      size="small"
+                      pagination={false}
+                      rowSelection={{
+                        selectedRowKeys: lookupSelectedKeys,
+                        onChange: keys => setLookupSelectedKeys(keys as string[]),
+                        getCheckboxProps: (r: any) => ({ disabled: !r.available }),
+                      }}
+                      columns={[
+                        {
+                          title: 'IP 段',
+                          dataIndex: 'notation',
+                          key: 'notation',
+                          width: 165,
+                          render: (v: string) => (
+                            <Tooltip title="点击复制">
+                              <span
+                                style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: 13, cursor: 'pointer', userSelect: 'none' }}
+                                onClick={(e) => { e.stopPropagation(); copyText(v, v); }}
+                              >
+                                {v} <CopyOutlined style={{ fontSize: 11, color: '#999' }} />
+                              </span>
+                            </Tooltip>
+                          ),
+                        },
+                        {
+                          title: '状态',
+                          key: 'available',
+                          width: 100,
+                          render: (_: any, r: any) => r.available
+                            ? <Tag color="green" icon={<CheckOutlined />}>可租用</Tag>
+                            : <Tag color="default" icon={<CloseOutlined />}>{r.error || '不可用'}</Tag>,
+                        },
+                        {
+                          title: '月费 (USD)',
+                          key: 'price',
+                          width: 110,
+                          align: 'right' as const,
+                          render: (_: any, r: any) => r.available && r.price != null
+                            ? <Text style={{ fontWeight: 600, color: '#1677ff' }}>${Number(r.price).toFixed(2)}</Text>
+                            : <Text type="secondary">—</Text>,
+                        },
+                        {
+                          title: 'RIR',
+                          key: 'registry',
+                          width: 80,
+                          render: (_: any, r: any) => r.registry ? <Tag>{r.registry}</Tag> : <Text type="secondary">—</Text>,
+                        },
+                        {
+                          title: '地区',
+                          key: 'geo',
+                          width: 150,
+                          render: (_: any, r: any) => {
+                            const geo = [r.country, r.city].filter(Boolean).join(' / ');
+                            return geo ? <Text style={{ fontSize: 12 }}>{geo}</Text> : <Text type="secondary">—</Text>;
+                          },
+                        },
+                      ]}
+                    />
+                  </Card>
+                )}
+
+                {lookupResults.length === 0 && !lookupLoading && (
+                  <Card>
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={<Text type="secondary">输入 IP 段后点击「查询是否可租」检测 IPXO 市场中是否有对应段可租用</Text>}
+                    />
+                  </Card>
+                )}
               </div>
             ),
           },

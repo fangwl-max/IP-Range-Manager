@@ -1,12 +1,13 @@
 ﻿import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Button, Input, Select, Switch, Space, Alert,
-  Typography, Divider, Tag, message, Card, Tooltip, Badge, Table,
+  Typography, Divider, Tag, message, Card, Tooltip, Badge, Table, Modal,
 } from "antd";
 import {
   PlusOutlined, DeleteOutlined, PlayCircleOutlined,
   CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined,
   SyncOutlined, DownOutlined, RightOutlined, CopyOutlined,
+  ImportOutlined, ThunderboltOutlined,
 } from "@ant-design/icons";
 
 const { Text } = Typography;
@@ -86,6 +87,16 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
 
+  // ── 批量导入弹窗 state ──
+  const [batchVisible, setBatchVisible] = useState(false);
+  const [batchCidrs, setBatchCidrs] = useState("");
+  const [batchAsn, setBatchAsn] = useState<number | "">("");
+  const [batchZone, setBatchZone] = useState<ZoneId | "">("");
+
+  // ── 统一应用 state ──
+  const [applyAsn, setApplyAsn] = useState<number | "">("");
+  const [applyZone, setApplyZone] = useState<ZoneId | "">("");
+
   const checkConfig = useCallback(async () => {
     try {
       const r = await fetch("/api/zen/config");
@@ -122,6 +133,37 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
       }
       return updated;
     }));
+
+  // ── 批量导入 ──
+  const handleBatchImport = () => {
+    const lines = batchCidrs.split(/[\n,，\s]+/).map(s => s.trim()).filter(s => s.includes("/"));
+    if (lines.length === 0) { message.warning("请输入至少一个有效的 CIDR 段"); return; }
+    const newRows: FormRow[] = lines.map(cidr => ({
+      key: String(Date.now() + Math.random()),
+      cidrBlock: cidr,
+      asn: batchAsn,
+      zoneId: batchZone,
+      publicVirtualInterfaceId: getVlanForZone(batchZone),
+    }));
+    setRows(prev => {
+      const isEmpty = prev.length === 1 && !prev[0].cidrBlock.trim() && prev[0].asn === "" && !prev[0].zoneId;
+      return isEmpty ? newRows : [...prev, ...newRows];
+    });
+    message.success(`已导入 ${lines.length} 条 IP 段`);
+    setBatchVisible(false);
+    setBatchCidrs("");
+  };
+
+  // ── 统一应用到全部行 ──
+  const handleApplyAll = () => {
+    if (applyAsn === "" && !applyZone) { message.warning("请至少设置 ASN 或可用区"); return; }
+    setRows(prev => prev.map(r => ({
+      ...r,
+      ...(applyAsn !== "" ? { asn: applyAsn } : {}),
+      ...(applyZone ? { zoneId: applyZone, publicVirtualInterfaceId: getVlanForZone(applyZone) } : {}),
+    })));
+    message.success("已应用到全部行");
+  };
 
   const handleRun = async () => {
     const validRows = rows.filter(r => r.cidrBlock.trim() && r.asn !== "" && r.zoneId);
@@ -244,6 +286,40 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
         style={{ padding: "6px 12px" }}
       />
 
+      {/* ── 统一应用工具栏 ── */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+        padding: "10px 14px", borderRadius: 6,
+        border: "1.5px dashed #1677ff", background: "rgba(22,119,255,0.04)",
+      }}>
+        <ThunderboltOutlined style={{ color: "#1677ff", fontSize: 16 }} />
+        <span style={{ fontSize: 14, color: "rgba(0,0,0,0.65)", fontWeight: 500 }}>统一应用到全部行</span>
+        <Input
+          placeholder="ASN（如 138789）"
+          value={applyAsn !== "" ? String(applyAsn) : ""}
+          onChange={e => {
+            const raw = e.target.value.replace(/^[Aa][Ss]\s*/, "").replace(/[^\d]/g, "");
+            setApplyAsn(raw === "" ? "" : Number(raw));
+          }}
+          style={{ width: 150 }}
+          size="small"
+        />
+        <Select
+          value={applyZone || undefined}
+          placeholder="可用区"
+          onChange={v => setApplyZone(v as ZoneId)}
+          allowClear
+          onClear={() => setApplyZone("")}
+          size="small"
+          style={{ width: 180 }}
+        >
+          {FIXED_ZONES.map(z => <Option key={z.zoneId} value={z.zoneId}>{z.label}</Option>)}
+        </Select>
+        <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={handleApplyAll}>
+          应用到全部行
+        </Button>
+      </div>
+
       {/* 宣告任务列表 */}
       <div>
         {/* 表头 */}
@@ -337,9 +413,14 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
         ))}
       </div>
 
-      <Button type="dashed" icon={<PlusOutlined />} onClick={addRow} style={{ width: "100%" }}>
-        添加 IP 段
-      </Button>
+      <div style={{ display: "flex", gap: 8 }}>
+        <Button type="dashed" icon={<PlusOutlined />} onClick={addRow} style={{ flex: 1 }}>
+          添加 IP 段
+        </Button>
+        <Button icon={<ImportOutlined />} onClick={() => setBatchVisible(true)}>
+          批量导入
+        </Button>
+      </div>
 
       <Card size="small" style={{ borderRadius: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
@@ -382,6 +463,55 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
           {jobs.map(job => <JobCard key={job.index} job={job} />)}
         </Card>
       )}
+      {/* ── 批量导入 Modal ── */}
+      <Modal
+        title={<Space><ImportOutlined />批量导入 IP 段</Space>}
+        open={batchVisible}
+        onCancel={() => { setBatchVisible(false); setBatchCidrs(""); }}
+        onOk={handleBatchImport}
+        okText="导入"
+        cancelText="取消"
+        width={520}
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size={14}>
+          <div>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>IP 段列表</div>
+            <Input.TextArea
+              rows={8}
+              value={batchCidrs}
+              onChange={e => setBatchCidrs(e.target.value)}
+              placeholder={"每行一个 CIDR，或用逗号/空格分隔\n如：\n1.2.3.0/24\n5.6.7.0/23\n10.0.0.0/22"}
+              style={{ fontFamily: "monospace", fontSize: 13 }}
+            />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4, fontWeight: 500 }}>ASN（可选）</div>
+              <Input
+                placeholder="如 138789"
+                value={batchAsn !== "" ? String(batchAsn) : ""}
+                onChange={e => {
+                  const raw = e.target.value.replace(/^[Aa][Ss]\s*/, "").replace(/[^\d]/g, "");
+                  setBatchAsn(raw === "" ? "" : Number(raw));
+                }}
+              />
+            </div>
+            <div>
+              <div style={{ marginBottom: 4, fontWeight: 500 }}>可用区（可选）</div>
+              <Select
+                value={batchZone || undefined}
+                placeholder="选择可用区"
+                onChange={v => setBatchZone(v as ZoneId)}
+                allowClear
+                onClear={() => setBatchZone("")}
+                style={{ width: "100%" }}
+              >
+                {FIXED_ZONES.map(z => <Option key={z.zoneId} value={z.zoneId}>{z.label}</Option>)}
+              </Select>
+            </div>
+          </div>
+        </Space>
+      </Modal>
     </div>
   );
 };

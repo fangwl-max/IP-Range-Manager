@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Button, Input, Select, Switch, Space, Alert,
   Typography, Divider, Progress, Tag, message,
-  Card, Tooltip, Badge,
+  Card, Tooltip, Badge, Modal,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, PlayCircleOutlined,
   CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined,
-  CopyOutlined, SyncOutlined,
+  CopyOutlined, SyncOutlined, ImportOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 
 const { Text } = Typography;
@@ -66,6 +66,17 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [configSource, setConfigSource] = useState<'config' | 'env' | 'none' | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
+
+  // ── 批量导入弹窗 state ──
+  const [batchVisible, setBatchVisible] = useState(false);
+  const [batchCidrs, setBatchCidrs] = useState('');
+  const [batchAsn, setBatchAsn] = useState<number | ''>('');
+  const [batchRegion, setBatchRegion] = useState('');
+  const [batchNetworkType, setBatchNetworkType] = useState<NetworkType>('StandardBGP');
+
+  // ── 统一应用 state ──
+  const [applyAsn, setApplyAsn] = useState<number | ''>('');
+  const [applyRegion, setApplyRegion] = useState('');
 
   // 关闭优质 BGP 时，将所有 PremiumBGP 行重置为 StandardBGP
   useEffect(() => {
@@ -133,6 +144,38 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
     const nets = (networksForRegion[regionId] || []) as NetworkType[];
     const all: NetworkType[] = nets.length ? nets : ['StandardBGP', 'PremiumBGP'];
     return allowPremiumBGP ? all : ['StandardBGP'];
+  };
+
+  // ── 批量导入 ──
+  const handleBatchImport = () => {
+    const lines = batchCidrs.split(/[\n,，\s]+/).map(s => s.trim()).filter(s => s.includes('/'));
+    if (lines.length === 0) { message.warning('请输入至少一个有效的 CIDR 段'); return; }
+    const newRows: FormRow[] = lines.map(cidr => ({
+      key: String(Date.now() + Math.random()),
+      cidrBlock: cidr,
+      networkType: batchNetworkType,
+      regionId: batchRegion,
+      asn: batchAsn,
+    }));
+    setRows(prev => {
+      // 若只有一行空行则替换，否则追加
+      const isEmpty = prev.length === 1 && !prev[0].cidrBlock.trim() && !prev[0].regionId && prev[0].asn === '';
+      return isEmpty ? newRows : [...prev, ...newRows];
+    });
+    message.success(`已导入 ${lines.length} 条 IP 段`);
+    setBatchVisible(false);
+    setBatchCidrs('');
+  };
+
+  // ── 统一应用到全部行 ──
+  const handleApplyAll = () => {
+    if (applyAsn === '' && !applyRegion) { message.warning('请至少设置 ASN 或地域'); return; }
+    setRows(prev => prev.map(r => ({
+      ...r,
+      ...(applyAsn !== '' ? { asn: applyAsn } : {}),
+      ...(applyRegion ? { regionId: applyRegion } : {}),
+    })));
+    message.success('已应用到全部行');
   };
 
   // ── 执行流水线 ──
@@ -232,9 +275,66 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
       <Card
         size="small"
         title={<span>任务列表 <Text type="secondary" style={{ fontSize: 13, fontWeight: 400 }}>（每行一个 IP 段）</Text></span>}
-        extra={<Button icon={<PlusOutlined />} onClick={addRow}>添加行</Button>}
+        extra={
+          <Space>
+            <Button icon={<ImportOutlined />} onClick={() => { setBatchCidrs(''); setBatchAsn(''); setBatchRegion(''); setBatchNetworkType('StandardBGP'); setBatchVisible(true); }}>
+              批量导入
+            </Button>
+            <Button icon={<PlusOutlined />} onClick={addRow}>添加行</Button>
+          </Space>
+        }
         style={{ borderRadius: 8 }}
       >
+        {/* 统一应用工具栏 */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          padding: '8px 10px', marginBottom: 8,
+          background: '#f0f7ff', borderRadius: 6, border: '1px dashed #91caff',
+        }}>
+          <ThunderboltOutlined style={{ color: '#1677ff' }} />
+          <span style={{ fontSize: 13, color: '#1677ff', fontWeight: 500 }}>统一应用：</span>
+          {asnOptions.length > 0 ? (
+            <Select
+              showSearch placeholder="选 ASN"
+              value={applyAsn !== '' ? applyAsn : undefined}
+              onChange={v => setApplyAsn(v)}
+              style={{ width: 160 }}
+              size="small"
+              allowClear
+              onClear={() => setApplyAsn('')}
+              filterOption={(input, opt) => String(opt?.children || '').toLowerCase().includes(input.toLowerCase())}
+            >
+              {asnOptions.map(a => <Option key={a.value} value={a.value}>{a.label}</Option>)}
+            </Select>
+          ) : (
+            <Input
+              placeholder="ASN（如 138789）"
+              value={applyAsn !== '' ? String(applyAsn) : ''}
+              onChange={e => {
+                const raw = e.target.value.replace(/^[Aa][Ss]\s*/, '').replace(/[^\d]/g, '');
+                setApplyAsn(raw === '' ? '' : Number(raw));
+              }}
+              size="small" style={{ width: 130 }} allowClear
+            />
+          )}
+          <Select
+            showSearch placeholder="选地域"
+            value={applyRegion || undefined}
+            onChange={v => setApplyRegion(v)}
+            style={{ width: 200 }}
+            size="small"
+            allowClear
+            onClear={() => setApplyRegion('')}
+            loading={metaLoading}
+            filterOption={(input, opt) => String(opt?.children || '').toLowerCase().includes(input.toLowerCase())}
+          >
+            {regionOptions.map(r => <Option key={r.regionId} value={r.regionId}>{r.label}</Option>)}
+          </Select>
+          <Button size="small" type="primary" ghost onClick={handleApplyAll}>
+            应用到全部行
+          </Button>
+        </div>
+
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
@@ -393,7 +493,80 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
         </Card>
       )}
 
-      {/* 配置弹窗已移除 */}
+      {/* 批量导入弹窗 */}
+      <Modal
+        title={<Space><ImportOutlined />批量导入 IP 段（ZEC 宣告）</Space>}
+        open={batchVisible}
+        onCancel={() => setBatchVisible(false)}
+        onOk={handleBatchImport}
+        okText={`生成任务（${batchCidrs.split(/[\n,，\s]+/).filter(s => s.trim().includes('/')).length} 条）`}
+        cancelText="取消"
+        width={540}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={14}>
+          <div>
+            <div style={{ marginBottom: 6, fontWeight: 500 }}>CIDR 段列表</div>
+            <Input.TextArea
+              value={batchCidrs}
+              onChange={e => setBatchCidrs(e.target.value)}
+              placeholder={'每行一个 CIDR，例如：\n203.0.113.0/24\n198.51.100.0/24\n192.0.2.0/23'}
+              autoSize={{ minRows: 5, maxRows: 12 }}
+              style={{ fontFamily: 'monospace', fontSize: 13 }}
+            />
+            <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+              支持换行、逗号、空格分隔；共检测到 <strong>{batchCidrs.split(/[\n,，\s]+/).filter(s => s.trim().includes('/')).length}</strong> 个有效段
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 6, fontWeight: 500 }}>统一 ASN（可留空后手动填）</div>
+              {asnOptions.length > 0 ? (
+                <Select
+                  showSearch placeholder="选择 ASN" allowClear
+                  value={batchAsn !== '' ? batchAsn : undefined}
+                  onChange={v => setBatchAsn(v ?? '')}
+                  style={{ width: '100%' }}
+                  filterOption={(input, opt) => String(opt?.children || '').toLowerCase().includes(input.toLowerCase())}
+                >
+                  {asnOptions.map(a => <Option key={a.value} value={a.value}>{a.label}</Option>)}
+                </Select>
+              ) : (
+                <Input
+                  placeholder="如 138789"
+                  value={batchAsn !== '' ? String(batchAsn) : ''}
+                  onChange={e => {
+                    const raw = e.target.value.replace(/^[Aa][Ss]\s*/, '').replace(/[^\d]/g, '');
+                    setBatchAsn(raw === '' ? '' : Number(raw));
+                  }}
+                  allowClear
+                />
+              )}
+            </div>
+            <div>
+              <div style={{ marginBottom: 6, fontWeight: 500 }}>统一地域（可留空后手动填）</div>
+              <Select
+                showSearch placeholder="选择地域" allowClear
+                value={batchRegion || undefined}
+                onChange={v => setBatchRegion(v ?? '')}
+                style={{ width: '100%' }}
+                loading={metaLoading}
+                filterOption={(input, opt) => String(opt?.children || '').toLowerCase().includes(input.toLowerCase())}
+              >
+                {regionOptions.map(r => <Option key={r.regionId} value={r.regionId}>{r.label}</Option>)}
+              </Select>
+            </div>
+          </div>
+          {allowPremiumBGP && (
+            <div>
+              <div style={{ marginBottom: 6, fontWeight: 500 }}>统一线路类型</div>
+              <Select value={batchNetworkType} onChange={v => setBatchNetworkType(v)} style={{ width: 160 }}>
+                <Option value="StandardBGP">标准 BGP</Option>
+                <Option value="PremiumBGP">优质 BGP</Option>
+              </Select>
+            </div>
+          )}
+        </Space>
+      </Modal>
     </div>
   );
 };

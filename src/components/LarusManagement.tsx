@@ -5,6 +5,7 @@ import {
 } from 'antd';
 import { ReloadOutlined, SearchOutlined, SyncOutlined, DownloadOutlined, CloudUploadOutlined, PlusOutlined, DeleteOutlined, SettingOutlined, CheckCircleOutlined, WarningOutlined, CopyOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { useAuth } from '../contexts/AuthContext';
 
 const { Text, Link } = Typography;
 
@@ -12,6 +13,12 @@ interface LarusAllocation {
   asn: string;
   loa_path: string | null;
   alloc_id: number;
+}
+
+interface LarusIrrData {
+  rpki?: string | null;
+  whois?: string | null;
+  radb?: string | null;
 }
 
 interface LarusItem {
@@ -27,6 +34,9 @@ interface LarusItem {
   asn?: string;
   loa_path?: string;
   allocations?: LarusAllocation[];
+  irr_data?: LarusIrrData | null;
+  purchase_date?: string | null;
+  expiry_date?: string | null;
 }
 
 const routeTag = (status: number, text?: string) => {
@@ -56,6 +66,8 @@ interface LarusStats {
 }
 
 const LarusManagement: React.FC = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [items, setItems] = useState<LarusItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [cachedAt, setCachedAt] = useState('');
@@ -90,6 +102,69 @@ const LarusManagement: React.FC = () => {
   const [loaContact, setLoaContact] = useState<LoaContact>(emptyContact);
   const [loaContactDraft, setLoaContactDraft] = useState<LoaContact>(emptyContact);
   const [savingContact, setSavingContact] = useState(false);
+  const [loaContactModalOpen, setLoaContactModalOpen] = useState(false);
+
+  // 日期刷新
+  const [datesLoading, setDatesLoading] = useState<Set<number>>(new Set());
+
+  const refreshDates = useCallback(async (routeIds: number[]) => {
+    if (!routeIds.length) return;
+    setDatesLoading(prev => new Set([...prev, ...routeIds]));
+    try {
+      const res = await fetch('/api/larus/dates-refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ route_ids: routeIds }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setItems(prev => prev.map(it => {
+        const updated = (data.results as Array<{ id: number; purchase_date: string | null; expiry_date: string | null }>)
+          .find(r => r.id === it.id);
+        return updated !== undefined ? { ...it, purchase_date: updated.purchase_date, expiry_date: updated.expiry_date } : it;
+      }));
+      antdMessage.success(`日期已刷新（${data.results?.length ?? routeIds.length} 条）`);
+    } catch (e: any) {
+      antdMessage.error(e.message || '日期刷新失败');
+    } finally {
+      setDatesLoading(prev => {
+        const next = new Set(prev);
+        routeIds.forEach(id => next.delete(id));
+        return next;
+      });
+    }
+  }, []);
+
+  // IRR 刷新
+  const [irrLoading, setIrrLoading] = useState<Set<number>>(new Set());
+
+  const refreshIrr = useCallback(async (routeIds: number[]) => {
+    if (!routeIds.length) return;
+    setIrrLoading(prev => new Set([...prev, ...routeIds]));
+    try {
+      const res = await fetch('/api/larus/irr-refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ route_ids: routeIds }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setItems(prev => prev.map(it => {
+        const updated = (data.results as Array<{ id: number; irr_data: LarusIrrData | null }>)
+          .find(r => r.id === it.id);
+        return updated !== undefined ? { ...it, irr_data: updated.irr_data } : it;
+      }));
+      antdMessage.success(`IRR 状态已刷新（${data.results?.length ?? routeIds.length} 条）`);
+    } catch (e: any) {
+      antdMessage.error(e.message || 'IRR 刷新失败');
+    } finally {
+      setIrrLoading(prev => {
+        const next = new Set(prev);
+        routeIds.forEach(id => next.delete(id));
+        return next;
+      });
+    }
+  }, []);
 
   // 批量操作
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
@@ -392,7 +467,7 @@ const LarusManagement: React.FC = () => {
       fixed: 'left',
       render: (v: string) => (
         <Tooltip title="点击复制" mouseEnterDelay={0.5}>
-          <Text code style={{ whiteSpace: 'nowrap', fontSize: 13, cursor: 'pointer' }} onClick={() => copyToClipboard(v)}>{v}</Text>
+          <Text code style={{ whiteSpace: 'nowrap', fontSize: 14, cursor: 'pointer' }} onClick={() => copyToClipboard(v)}>{v}</Text>
         </Tooltip>
       ),
       sorter: (a, b) => a.ip_cidr.localeCompare(b.ip_cidr),
@@ -410,6 +485,73 @@ const LarusManagement: React.FC = () => {
       dataIndex: 'contract_id',
       key: 'contract_id',
       width: 90,
+    },
+    {
+      title: '购买时间',
+      key: 'purchase_date',
+      width: 110,
+      sorter: (a, b) => (a.purchase_date || '').localeCompare(b.purchase_date || ''),
+      render: (_: any, r: LarusItem) => r.purchase_date
+        ? <Text style={{ fontSize: 12 }}>{r.purchase_date}</Text>
+        : <Text type="secondary" style={{ fontSize: 12 }}>—</Text>,
+    },
+    {
+      title: '到期时间',
+      key: 'expiry_date',
+      width: 125,
+      sorter: (a, b) => (a.expiry_date || '').localeCompare(b.expiry_date || ''),
+      render: (_: any, r: LarusItem) => {
+        const expiry = r.expiry_date;
+        const loading = datesLoading.has(r.id);
+        if (!expiry) {
+          return (
+            <Space size={4}>
+              <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
+              <Button size="small" icon={<SyncOutlined />} loading={loading} style={{ fontSize: 11, height: 20, padding: '0 6px' }} onClick={() => refreshDates([r.id])}>刷新</Button>
+            </Space>
+          );
+        }
+        const daysLeft = Math.ceil((new Date(expiry).getTime() - Date.now()) / 86400000);
+        const color = daysLeft < 0 ? 'red' : daysLeft <= 30 ? 'orange' : undefined;
+        return (
+          <Space size={4}>
+            <Text style={{ fontSize: 12, color }}>{expiry}</Text>
+            <Button size="small" icon={<SyncOutlined />} loading={loading} style={{ fontSize: 11, height: 20, padding: '0 6px' }} onClick={() => refreshDates([r.id])} />
+          </Space>
+        );
+      },
+    },
+    {
+      title: '续费状态',
+      dataIndex: 'status',
+      key: 'renewal_status',
+      width: 90,
+      filters: [
+        { text: '生效中', value: 3 },
+        { text: '即将到期', value: 'soon' },
+        { text: '已过期', value: 4 },
+        { text: '已失效', value: 5 },
+      ],
+      onFilter: (val, r) => {
+        if (val === 'soon') {
+          if (r.status !== 3 || !r.expiry_date) return false;
+          return Math.ceil((new Date(r.expiry_date).getTime() - Date.now()) / 86400000) <= 30;
+        }
+        return r.status === Number(val);
+      },
+      render: (_: any, r: LarusItem) => {
+        if (r.status === 3 && r.expiry_date) {
+          const daysLeft = Math.ceil((new Date(r.expiry_date).getTime() - Date.now()) / 86400000);
+          if (daysLeft <= 30) return <Tag color="orange">即将到期 {daysLeft}d</Tag>;
+        }
+        const map: Record<number, { label: string; color: string }> = {
+          3: { label: '生效中', color: 'green' },
+          4: { label: '已过期', color: 'red' },
+          5: { label: '已失效', color: 'default' },
+        };
+        const s = map[r.status];
+        return s ? <Tag color={s.color}>{s.label}</Tag> : <Tag>{`状态${r.status}`}</Tag>;
+      },
     },
     {
       title: '路由状态',
@@ -444,11 +586,19 @@ const LarusManagement: React.FC = () => {
         if (allocs?.length) {
           return (
             <Space direction="vertical" size={2}>
-              {allocs.map(a => <Text key={a.alloc_id} code style={{ fontSize: 12 }}>AS{a.asn}</Text>)}
+              {allocs.map(a => (
+                <Tooltip key={a.alloc_id} title="点击复制" mouseEnterDelay={0.5}>
+                  <Text code style={{ fontSize: 14, cursor: 'pointer' }} onClick={() => copyToClipboard(`AS${a.asn}`)}>AS{a.asn}</Text>
+                </Tooltip>
+              ))}
             </Space>
           );
         }
-        return r.asn ? <Text code>AS{r.asn}</Text> : <Text type="secondary" style={{ fontSize: 12 }}>—</Text>;
+        return r.asn ? (
+          <Tooltip title="点击复制" mouseEnterDelay={0.5}>
+            <Text code style={{ fontSize: 14, cursor: 'pointer' }} onClick={() => copyToClipboard(`AS${r.asn}`)}>AS{r.asn}</Text>
+          </Tooltip>
+        ) : <Text type="secondary" style={{ fontSize: 14 }}>—</Text>;
       },
     },
     {
@@ -478,6 +628,31 @@ const LarusManagement: React.FC = () => {
       },
     },
     {
+      title: 'IRR状态',
+      key: 'irr',
+      width: 200,
+      render: (_: any, r: LarusItem) => (
+        <Space direction="vertical" size={2}>
+          {r.irr_data ? (
+            <Space size={3} wrap>
+              <Tag color={r.irr_data.rpki === 'valid' ? 'green' : 'default'} style={{ margin: 0, fontSize: 11 }}>RPKI: {r.irr_data.rpki ?? '—'}</Tag>
+              <Tag color={r.irr_data.whois === 'valid' ? 'green' : 'default'} style={{ margin: 0, fontSize: 11 }}>Whois: {r.irr_data.whois ?? '—'}</Tag>
+              <Tag color={r.irr_data.radb === 'valid' ? 'green' : 'default'} style={{ margin: 0, fontSize: 11 }}>RADB: {r.irr_data.radb ?? '—'}</Tag>
+            </Space>
+          ) : (
+            <Text type="secondary" style={{ fontSize: 12 }}>未获取</Text>
+          )}
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            loading={irrLoading.has(r.id)}
+            onClick={() => refreshIrr([r.id])}
+            style={{ fontSize: 11, height: 20, padding: '0 6px', lineHeight: '18px' }}
+          >刷新</Button>
+        </Space>
+      ),
+    },
+    {
       title: '标记',
       key: 'flags',
       width: 80,
@@ -491,11 +666,10 @@ const LarusManagement: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 140,
       fixed: 'right',
       render: (_: any, r: LarusItem) => (
         <Space size={4}>
-          <Button size="small" onClick={() => openDetail(r)}>详情</Button>
           <Button
             size="small"
             icon={<PlusOutlined />}
@@ -539,9 +713,6 @@ const LarusManagement: React.FC = () => {
           >
             取消ASN
           </Button>
-          <Link href="https://larus.net/ipv4/manage-leased-ips" target="_blank" style={{ fontSize: 12 }}>
-            平台
-          </Link>
         </Space>
       ),
     },
@@ -619,14 +790,18 @@ const LarusManagement: React.FC = () => {
           </Text>
         )}
         <Button icon={<ReloadOutlined />} onClick={() => loadIps(true)} loading={loading}>刷新</Button>
+        <Button icon={<SyncOutlined />} onClick={() => refreshIrr(items.map(it => it.id))} loading={irrLoading.size > 0 && selectedRowKeys.length === 0}>IRR刷新</Button>
+        <Button icon={<SyncOutlined />} onClick={() => refreshDates(items.map(it => it.id))} loading={datesLoading.size > 0 && selectedRowKeys.length === 0}>日期刷新</Button>
         <Button icon={<CloudUploadOutlined />} onClick={syncLoa} loading={syncing}>同步LOA到首都在线</Button>
         <Button icon={<SyncOutlined />} onClick={() => setCookieDrawerOpen(true)}>更新 Cookie</Button>
-        <Button
-          icon={loaContact.name ? <CheckCircleOutlined style={{ color: '#52c41a' }} /> : <WarningOutlined style={{ color: '#faad14' }} />}
-          onClick={() => { setLoaContactDraft(loaContact); setCookieDrawerOpen(true); }}
-        >
-          LOA 联系信息{loaContact.name ? '' : '（未配置）'}
-        </Button>
+        {isAdmin && (
+          <Button
+            icon={loaContact.name ? <CheckCircleOutlined style={{ color: '#52c41a' }} /> : <WarningOutlined style={{ color: '#faad14' }} />}
+            onClick={() => { setLoaContactDraft(loaContact); setLoaContactModalOpen(true); }}
+          >
+            LOA 联系信息{loaContact.name ? '' : '（未配置）'}
+          </Button>
+        )}
       </div>
 
       {/* 批量操作栏 */}
@@ -679,6 +854,36 @@ const LarusManagement: React.FC = () => {
             }}
           >
             复制IP段 ({selectedRowKeys.length})
+          </Button>
+          <Button
+            size="small"
+            icon={<CopyOutlined />}
+            onClick={() => {
+              const selected = filtered.filter(item => selectedRowKeys.includes(item.id));
+              const lines = selected.map(item => {
+                const asn = item.allocations?.[0]?.asn ?? item.asn;
+                return asn ? `AS${asn}` : '';
+              });
+              navigator.clipboard.writeText(lines.join('\n')).then(() => antdMessage.success(`已复制 ${selected.length} 行 ASN`));
+            }}
+          >
+            复制ASN
+          </Button>
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            loading={irrLoading.size > 0 && selectedRowKeys.length > 0}
+            onClick={() => refreshIrr(selectedRowKeys as number[])}
+          >
+            刷新IRR ({selectedRowKeys.length})
+          </Button>
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            loading={datesLoading.size > 0 && selectedRowKeys.length > 0}
+            onClick={() => refreshDates(selectedRowKeys as number[])}
+          >
+            刷新日期 ({selectedRowKeys.length})
           </Button>
           <Button size="small" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
         </div>
@@ -756,7 +961,21 @@ const LarusManagement: React.FC = () => {
           如 30 天内无访问导致 remember_me token 失效时才需重新粘贴。
         </Text>
 
-        <Divider style={{ margin: '20px 0 14px' }}>LOA 联系信息（设置 ASN 时使用）</Divider>
+      </Drawer>
+
+      {/* LOA 联系信息 Modal */}
+      <Modal
+        title="LOA 联系信息（设置 ASN 时使用）"
+        open={loaContactModalOpen}
+        onCancel={() => setLoaContactModalOpen(false)}
+        footer={
+          <Space>
+            <Button onClick={() => setLoaContactModalOpen(false)}>取消</Button>
+            <Button type="primary" loading={savingContact} onClick={saveLoaContact}>保存联系信息</Button>
+          </Space>
+        }
+        width={480}
+      >
         <Alert
           type="info"
           showIcon
@@ -802,10 +1021,7 @@ const LarusManagement: React.FC = () => {
             </Col>
           </Row>
         </Form>
-        <Button type="primary" loading={savingContact} onClick={saveLoaContact} style={{ marginBottom: 8 }}>
-          保存联系信息
-        </Button>
-      </Drawer>
+      </Modal>
 
       {/* 详情抽屉 */}
       <Drawer
@@ -968,7 +1184,7 @@ const LarusManagement: React.FC = () => {
               message={
                 <span style={{ fontSize: 12 }}>
                   LOA 联系信息未配置，API 可能失败。
-                  <Button type="link" size="small" style={{ padding: '0 4px', fontSize: 12 }} onClick={() => { setAsnSetDrawerOpen(false); setCookieDrawerOpen(true); }}>
+                  <Button type="link" size="small" style={{ padding: '0 4px', fontSize: 12 }} onClick={() => { setLoaContactDraft(loaContact); setLoaContactModalOpen(true); }}>
                     立即配置
                   </Button>
                 </span>

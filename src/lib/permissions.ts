@@ -14,6 +14,7 @@ export const PAGE_PERMS: Record<string, PermNode> = {
       'export': '导出表格',
     },
   },
+  'ip-broadcast-stats': { label: '广播IP段统计 A组' },
   'irr-detection': {
     label: '综合检测',
     features: {
@@ -84,6 +85,7 @@ export const ROLE_DEFAULTS: Record<string, string[]> = {
   editor: ALL_KEYS.filter(k => !k.startsWith('user-management')),
   viewer: [
     'ip-management', 'ip-management.export',
+    'ip-broadcast-stats',
     'irr-detection',
     'asn-management',
     'asn-standby-a', 'asn-standby-a.edit',

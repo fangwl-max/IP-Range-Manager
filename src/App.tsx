@@ -41,6 +41,7 @@ import PrePurchaseCheck from './components/PrePurchaseCheck';
 import ZenAnnounce from './components/ZenAnnounce';
 import CapitalOnlineAnnounce from './components/CapitalOnlineAnnounce';
 import RemoteDataSync from './components/RemoteDataSync';
+import IPBroadcastStats from './components/IPBroadcastStats';
 
 const { Sider, Content } = Layout;
 
@@ -59,6 +60,9 @@ function pathToMenuKey(pathname: string): string | null {
   if ((VALID_MENU_KEYS as readonly string[]).includes(first)) return first;
   return null;
 }
+const IP_MGMT_SUB_KEYS = ['ip-management', 'ip-broadcast-stats'] as const;
+const isIpMgmtSubKey = (k: string) => (IP_MGMT_SUB_KEYS as readonly string[]).includes(k);
+
 const CONFIG_SUB_KEYS = [
   'config-project-groups',
   'config-suppliers',
@@ -81,7 +85,7 @@ const IPXO_SUB_KEYS = [
   'ipxo-invoices',
 ] as const;
 const VALID_MENU_KEYS = [
-  'ip-management',
+  ...IP_MGMT_SUB_KEYS,
   'irr-detection',
   'cost-analysis-main',
   'cost-analysis-ipxo',
@@ -118,6 +122,7 @@ const AppContent: React.FC = () => {
   const [menuOpenKeys, setMenuOpenKeys] = useState<string[]>(() => {
     const s = localStorage.getItem(SELECTED_MENU_KEY);
     const o: string[] = [];
+    if (!s || isIpMgmtSubKey(s)) o.push('ip-mgmt');
     if (s && (s === 'configuration' || isConfigSubKey(s))) o.push('configuration');
     if (s === 'irr-detection') o.push('ip-detection');
     if (s && isIpxoSubKey(s)) o.push('ipxo');
@@ -227,8 +232,15 @@ const AppContent: React.FC = () => {
     ...(hasPermission('asn-standby-b') ? [{ key: 'asn-standby-b', icon: <StarOutlined />, label: 'B 组备用 AS' }] : []),
   ];
 
+  const ipMgmtChildren = [
+    { key: 'ip-management', label: 'IP段列表' },
+    ...(hasPermission('ip-broadcast-stats')
+      ? [{ key: 'ip-broadcast-stats', label: '广播IP段统计 A组' }]
+      : []),
+  ];
+
   const menuItems: MenuProps['items'] = [
-    { key: 'ip-management', icon: <DatabaseOutlined />, label: 'IP段管理' },
+    { key: 'ip-mgmt', icon: <DatabaseOutlined />, label: 'IP段管理', children: ipMgmtChildren },
     ...(ipxoItems.length ? [{ key: 'ipxo', icon: <ApiOutlined />, label: 'IPXO管理', children: ipxoItems }] : []),
     ...(hasPermission('larus-management') ? [{ key: 'larus-management', icon: <CloudDownloadOutlined />, label: 'Larus 管理' }] : []),
     {
@@ -370,6 +382,7 @@ const AppContent: React.FC = () => {
           style={{ margin: 0, minHeight: 280, background: '#f0f2f5', padding: 24, minWidth: 0, width: '100%' }}
         >
           {selectedMenu === 'ip-management' && <IPManagement />}
+          {selectedMenu === 'ip-broadcast-stats' && <IPBroadcastStats />}
           {selectedMenu === 'irr-detection' && <IRRDetection />}
           {selectedMenu === 'pre-purchase-check' && <PrePurchaseCheck />}
           {selectedMenu === 'cost-analysis-main' && <CostAnalysis />}
