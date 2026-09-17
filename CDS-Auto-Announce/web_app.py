@@ -254,6 +254,7 @@ def create_app(config_path: str) -> Flask:
     )
     app.config["CONFIG_PATH"] = resolved_config
     app.config["MAX_CONTENT_LENGTH"] = int(web_cfg.get("loa_max_upload_mb", 10)) * 1024 * 1024
+    app.config["TEMPLATES_AUTO_RELOAD"] = True  # 始终从磁盘重新读取模板，避免进程重启才能看到模板改动
 
     # 注入主系统内部 token（由环境变量传入）
     internal_token = os.environ.get("CDS_INTERNAL_TOKEN", "")
