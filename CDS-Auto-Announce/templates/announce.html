@@ -185,6 +185,7 @@
     <div class="toolbar-actions">
       <button type="button" class="btn btn-ghost" id="refreshMeta">刷新区域与 ASN</button>
       <button type="button" class="btn btn-ghost" id="openBatchImport">批量导入</button>
+      <button type="button" class="btn btn-ghost" id="batchFetchLoa" title="按顺序为所有已填 CIDR 拉取 IPXO LOA">一键拉取 LoA</button>
       <button type="button" class="btn btn-secondary" id="addRow">+ 添加一行</button>
     </div>
   </div>
@@ -826,5 +827,56 @@
   document.getElementById('cancelBatchImport').onclick = closeBatchImport;
   document.getElementById('confirmBatchImport').onclick = confirmBatchImport;
   batchOverlay.addEventListener('click', e => { if (e.target === batchOverlay) closeBatchImport(); });
+
+  // ── 一键拉取 LoA ──
+  const batchFetchBtn = document.getElementById('batchFetchLoa');
+
+  async function batchFetchLoa() {
+    const rows = Array.from(rowsContainer.querySelectorAll('.grid-row'));
+    const targets = rows.filter(r => (r.querySelector('.cidr').value || '').trim());
+    if (!targets.length) { alert('请先填写至少一个 CIDR'); return; }
+
+    batchFetchBtn.disabled = true;
+    batchFetchBtn.textContent = `拉取中 (0/${targets.length})`;
+
+    let done = 0;
+    for (const row of targets) {
+      const cidr = (row.querySelector('.cidr').value || '').trim();
+      const asn = normalizeAsnInput(row.querySelector('.asn').value || '');
+      const btn = row.querySelector('.btn-fetch-ipxo-loa');
+
+      // 高亮当前行正在处理
+      btn.disabled = true;
+      setLoaSummary(row, null, '正在从 IPXO 拉取...');
+
+      try {
+        const resp = await fetch('/api/loa/fetch-ipxo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cidr, asn, permanent: true }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          setLoaSummary(row, false, data.error || 'IPXO 拉取失败');
+        } else {
+          setLoaSummary(row, true, 'IPXO 拉取成功：' + loaStatusText(data));
+        }
+      } catch (err) {
+        setLoaSummary(row, false, '拉取失败: ' + err);
+      } finally {
+        btn.disabled = false;
+      }
+
+      done++;
+      batchFetchBtn.textContent = done < targets.length
+        ? `拉取中 (${done}/${targets.length})`
+        : '一键拉取 LoA';
+    }
+
+    batchFetchBtn.disabled = false;
+    batchFetchBtn.textContent = '一键拉取 LoA';
+  }
+
+  batchFetchBtn.onclick = batchFetchLoa;
 </script>
 {% endblock %}
