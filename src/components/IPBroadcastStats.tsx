@@ -7,6 +7,7 @@ import {
   SortAscendingOutlined, ArrowUpOutlined, ArrowDownOutlined,
   VerticalAlignTopOutlined, VerticalAlignBottomOutlined,
 } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import type { ColumnsType, ColumnType } from 'antd/es/table';
 import type { IPSegment, BlockedCountry, RenewalStatus } from '../types/index';
 
@@ -68,6 +69,14 @@ function usageText(seg: IPSegment): string {
   if (seg.projectGroups?.length) return seg.projectGroups.join(', ');
   const active = [...(seg.history || [])].reverse().find(h => !h.endDate);
   return active?.projectGroup || '—';
+}
+
+// ─── 日期格式化 ─────────────────────────────────────────────────────────────
+
+function formatDate(v: string | undefined): string {
+  if (!v) return '—';
+  const d = dayjs(v);
+  return d.isValid() ? d.format('YYYY-MM-DD') : v;
 }
 
 // ─── /24 等效地址计算 ────────────────────────────────────────────────────────
@@ -323,15 +332,15 @@ const IPBroadcastStats: React.FC = () => {
       dataIndex: 'purchaseDate',
       key: 'purchaseDate',
       width: 110,
-      sorter: (a, b) => (a.purchaseDate || '').localeCompare(b.purchaseDate || ''),
-      render: (v: string) => v || '—',
+      sorter: (a, b) => dayjs(a.purchaseDate).valueOf() - dayjs(b.purchaseDate).valueOf(),
+      render: (v: string) => formatDate(v),
     },
     {
       title: '续费时间',
       dataIndex: 'renewalDate',
       key: 'renewalDate',
       width: 110,
-      render: (v: string) => v || '—',
+      render: (v: string) => formatDate(v),
     },
     {
       title: 'IP属地',
