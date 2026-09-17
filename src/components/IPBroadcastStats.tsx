@@ -286,11 +286,16 @@ const IPBroadcastStats: React.FC = () => {
     return orderedKeys.map(k => ({ key: k, label: labelMap[k] ?? k }));
   }, [orderedKeys]);
 
+  const onlineSegments = useMemo(
+    () => segments.filter(s => s.renewalStatus !== 'cancelled' && s.renewalStatus !== 'refunded'),
+    [segments],
+  );
+
   const tableData = useMemo(() => {
-    if (activeTab === 'all') return segments;
     if (activeTab === '__offline__') return offlineSegments;
-    return segments.filter(s => s.usageArea === activeTab);
-  }, [segments, activeTab, offlineSegments]);
+    if (activeTab === 'all') return onlineSegments;
+    return onlineSegments.filter(s => s.usageArea === activeTab);
+  }, [onlineSegments, activeTab, offlineSegments]);
 
   const totalSlash24 = useMemo(
     () => tableData.reduce((s, seg) => s + cidrToSlash24Equiv(seg.segment), 0),
