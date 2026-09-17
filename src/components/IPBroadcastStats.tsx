@@ -1,9 +1,12 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   Card, Tabs, Table, Tag, Typography, Spin, Alert, Tooltip,
-  message, Button, Modal, List,
+  message, Button, Modal, List, Checkbox, InputNumber,
 } from 'antd';
-import { SortAscendingOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import {
+  SortAscendingOutlined, ArrowUpOutlined, ArrowDownOutlined,
+  VerticalAlignTopOutlined, VerticalAlignBottomOutlined,
+} from '@ant-design/icons';
 import type { ColumnsType, ColumnType } from 'antd/es/table';
 import type { IPSegment, BlockedCountry, RenewalStatus } from '../types/index';
 
@@ -87,20 +90,62 @@ interface TabSortModalProps {
 
 const TabSortModal: React.FC<TabSortModalProps> = ({ open, areas, onConfirm, onCancel }) => {
   const [draft, setDraft] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [step, setStep] = useState<number>(1);
 
   useEffect(() => {
-    if (open) setDraft([...areas]);
+    if (open) { setDraft([...areas]); setSelected(new Set()); setStep(1); }
   }, [open, areas]);
 
-  const move = useCallback((idx: number, dir: -1 | 1) => {
-    setDraft(prev => {
-      const next = [...prev];
-      const target = idx + dir;
-      if (target < 0 || target >= next.length) return prev;
-      [next[idx], next[target]] = [next[target], next[idx]];
+  const toggleItem = useCallback((area: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(area) ? next.delete(area) : next.add(area);
       return next;
     });
   }, []);
+
+  const toggleAll = useCallback(() => {
+    setSelected(prev => prev.size === draft.length ? new Set() : new Set(draft));
+  }, [draft]);
+
+  // 将选中项作为一组整体移动 delta 步（在未选中项中的插入位置偏移 delta）
+  const moveSelected = useCallback((delta: number) => {
+    setDraft(prev => {
+      if (selected.size === 0) return prev;
+      const sel = prev.filter(x => selected.has(x));
+      const unsel = prev.filter(x => !selected.has(x));
+      // 第一个选中项在原数组中的位置，计算其在 unsel 中的插入点
+      const firstIdx = prev.findIndex(x => selected.has(x));
+      let ip = prev.slice(0, firstIdx).filter(x => !selected.has(x)).length;
+      ip = Math.max(0, Math.min(unsel.length, ip + delta));
+      const result = [...unsel];
+      result.splice(ip, 0, ...sel);
+      return result;
+    });
+  }, [selected]);
+
+  // 单行 ↑/↓（不影响选中状态，仅移动该行）
+  const moveOne = useCallback((idx: number, dir: -1 | 1) => {
+    setDraft(prev => {
+      const next = [...prev];
+      const t = idx + dir;
+      if (t < 0 || t >= next.length) return prev;
+      [next[idx], next[t]] = [next[t], next[idx]];
+      return next;
+    });
+  }, []);
+
+  const selCount = selected.size;
+  const allChecked = draft.length > 0 && selCount === draft.length;
+  const indeterminate = selCount > 0 && selCount < draft.length;
+
+  const actionBarStyle: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 6,
+    padding: '6px 10px', marginBottom: 8,
+    background: '#f0f5ff', borderRadius: 6,
+    flexWrap: 'wrap',
+  };
 
   return (
     <Modal
@@ -110,34 +155,69 @@ const TabSortModal: React.FC<TabSortModalProps> = ({ open, areas, onConfirm, onC
       onCancel={onCancel}
       okText="应用"
       cancelText="取消"
-      width={440}
+      width={500}
     >
-      <div style={{ marginBottom: 8, color: '#888', fontSize: 13 }}>
-        拖动或使用 ↑↓ 按钮调整宣告地区的显示顺序（「全部」和「已下架」固定在前）
-      </div>
+      {/* 批量操作栏：选中后出现 */}
+      {selCount > 0 ? (
+        <div style={actionBarStyle}>
+          <span style={{ fontSize: 13, color: '#1677ff', marginRight: 4 }}>已选 {selCount} 项</span>
+          <Button size="small" icon={<VerticalAlignTopOutlined />} onClick={() => moveSelected(-Infinity)}>置顶</Button>
+          <Button size="small" icon={<ArrowUpOutlined />} onClick={() => moveSelected(-step)}>上移</Button>
+          <InputNumber
+            size="small"
+            min={1}
+            max={draft.length - 1}
+            value={step}
+            onChange={v => setStep(Math.max(1, v ?? 1))}
+            style={{ width: 52 }}
+          />
+          <span style={{ fontSize: 12, color: '#666' }}>步</span>
+          <Button size="small" icon={<ArrowDownOutlined />} onClick={() => moveSelected(step)}>下移</Button>
+          <Button size="small" icon={<VerticalAlignBottomOutlined />} onClick={() => moveSelected(Infinity)}>置底</Button>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 8, fontSize: 13, color: '#888' }}>
+          勾选一个或多个地区后，可批量上移/下移指定步数，或一键置顶/置底。
+        </div>
+      )}
+
       <List
         size="small"
         bordered
+        header={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 2px' }}>
+            <Checkbox indeterminate={indeterminate} checked={allChecked} onChange={toggleAll} />
+            <span style={{ fontSize: 13, color: '#555' }}>全选（共 {draft.length} 个宣告地区）</span>
+          </div>
+        }
         dataSource={draft}
         renderItem={(area, idx) => (
           <List.Item
-            style={{ padding: '6px 12px' }}
+            style={{
+              padding: '5px 12px',
+              background: selected.has(area) ? '#f0f5ff' : undefined,
+              cursor: 'pointer',
+            }}
+            onClick={() => toggleItem(area)}
             actions={[
               <Button
                 size="small"
                 icon={<ArrowUpOutlined />}
                 disabled={idx === 0}
-                onClick={() => move(idx, -1)}
+                onClick={e => { e.stopPropagation(); moveOne(idx, -1); }}
               />,
               <Button
                 size="small"
                 icon={<ArrowDownOutlined />}
                 disabled={idx === draft.length - 1}
-                onClick={() => move(idx, 1)}
+                onClick={e => { e.stopPropagation(); moveOne(idx, 1); }}
               />,
             ]}
           >
-            <span style={{ fontWeight: 500 }}>{area}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} onClick={e => e.stopPropagation()}>
+              <Checkbox checked={selected.has(area)} onChange={() => toggleItem(area)} />
+              <span style={{ fontWeight: 500 }}>{idx + 1}. {area}</span>
+            </div>
           </List.Item>
         )}
       />
