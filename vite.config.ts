@@ -2497,11 +2497,29 @@ async function enrichLarusItems(
   items: any[],
   cookie: string,
   fallback?: Map<string, { allocations?: any[]; asn?: string; loa_path?: string }>,
-): Promise<{ items: any[]; updatedCookie?: string }> {
+): Promise<{ items: any[]; updatedCookie?: string; skipped: number }> {
   let latestCookie = cookie;
-  const concurrency = 5;
-  const queue = [...items];
-  const results: any[] = [];
+  const concurrency = 10;
+
+  // 增量策略：id 相同且 status 未变的 item 直接复用缓存，避免无效网络请求
+  const needFetch: any[] = [];
+  const preResolved = new Map<number, any>();
+  for (const item of items) {
+    const cached = fallback?.get(String(item.id));
+    if (cached && cached.status === item.status && cached.allocations) {
+      preResolved.set(item.id, {
+        ...item,
+        allocations: cached.allocations,
+        asn: cached.asn,
+        loa_path: cached.loa_path,
+      });
+    } else {
+      needFetch.push(item);
+    }
+  }
+
+  const results: any[] = [...preResolved.values()];
+  const queue = [...needFetch];
   async function worker() {
     while (queue.length > 0) {
       const item = queue.shift();
@@ -2516,16 +2534,20 @@ async function enrichLarusItems(
           loa_path: detail.loa_path,
         });
       } catch {
-        // 单个失败时沿用旧缓存的 ASN/LOA，避免刷新把已有数据抹掉
         const prev = fallback?.get(String(item.id));
         results.push(prev ? { ...item, ...prev } : item);
       }
     }
   }
-  await Promise.all(Array.from({ length: concurrency }, worker));
+  await Promise.all(Array.from({ length: Math.min(concurrency, needFetch.length || 1) }, worker));
+
   const order = new Map(items.map((it, i) => [it.id, i]));
   results.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
-  return { items: results, updatedCookie: latestCookie !== cookie ? latestCookie : undefined };
+  return {
+    items: results,
+    updatedCookie: latestCookie !== cookie ? latestCookie : undefined,
+    skipped: preResolved.size,
+  };
 }
 
 /**
@@ -8297,8 +8319,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         cfg = { ...cfg, cookie: result.updatedCookie };
         fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
       }
-      // 自动补全所有 allocation（并发拉取，含多 ASN 支持）
-      const { items: enrichedItems, updatedCookie: enrichCookie } = await enrichLarusItems(result.items, cfg.cookie, fallback);
+      // 增量补全 allocation（只拉新增或状态变化的 item，其余复用缓存）
+      const { items: enrichedItems, updatedCookie: enrichCookie, skipped } = await enrichLarusItems(result.items, cfg.cookie, fallback);
+      console.log(`[Larus] enrich 完成: 共 ${result.items.length} 条，跳过(复用缓存) ${skipped} 条，实际请求 ${result.items.length - skipped} 条`);
       if (enrichCookie) {
         cfg = { ...cfg, cookie: enrichCookie };
         fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
