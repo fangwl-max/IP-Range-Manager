@@ -832,6 +832,51 @@ def create_app(config_path: str) -> Flask:
         all_ok = all(r["ok"] for r in results)
         return jsonify({"ok": all_ok, "results": results})
 
+    @app.post("/api/loa/parse")
+    def api_loa_parse():
+        """从上传的 LOA PDF 中提取 IP段（CIDR）和 ASN 信息"""
+        import io
+        import re
+        import ipaddress
+        upload = request.files.get("file")
+        if not upload:
+            return jsonify({"ok": False, "error": "请上传文件"}), 400
+        try:
+            from pdfminer.high_level import extract_text
+        except ImportError:
+            return jsonify({"ok": False, "error": "服务器未安装 pdfminer.six"}), 500
+        try:
+            text = extract_text(io.BytesIO(upload.read()))
+            cidr_pat = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3}/\d{1,2})\b')
+            asn_pat = re.compile(r'\bAS[N]?\s*(\d+)\b', re.IGNORECASE)
+            raw_cidrs = cidr_pat.findall(text)
+            raw_asns = asn_pat.findall(text)
+            valid_cidrs: List[str] = []
+            for c in raw_cidrs:
+                try:
+                    net = ipaddress.ip_network(c, strict=False)
+                    if not net.is_private and not net.is_loopback and not net.is_link_local:
+                        normalized = str(net)
+                        if normalized not in valid_cidrs:
+                            valid_cidrs.append(normalized)
+                except ValueError:
+                    pass
+            seen: set = set()
+            valid_asns: List[str] = []
+            for a in raw_asns:
+                if a not in seen and 1 <= int(a) <= 4294967295:
+                    valid_asns.append(a)
+                    seen.add(a)
+            return jsonify({
+                "ok": True,
+                "cidrs": valid_cidrs,
+                "asns": valid_asns,
+                "cidr": valid_cidrs[0] if valid_cidrs else "",
+                "asn": valid_asns[0] if valid_asns else "",
+            })
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"解析失败: {exc}"}), 500
+
     @app.post("/api/announce/stream")
     @require_permission(PERM_ANNOUNCE)
     def api_announce_stream():

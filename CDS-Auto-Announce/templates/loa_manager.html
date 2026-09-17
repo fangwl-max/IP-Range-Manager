@@ -37,6 +37,12 @@
   #uploadStatus .item.ok { color: var(--primary); }
   #uploadStatus .item.err { color: var(--danger); }
   .empty-row td { text-align: center; color: var(--muted); padding: 32px 0; font-size: 14px; }
+  .parse-badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
+  .parse-badge.parsing { background: #fef3c7; color: #92400e; }
+  .parse-badge.done    { background: #d1fae5; color: #065f46; }
+  .parse-badge.manual  { background: #f1f5f9; color: #64748b; }
+  .parse-badge.error   { background: #fee2e2; color: #991b1b; }
+  .cidr-select { width: 100%; padding: 5px 8px; font-size: 13px; font-family: monospace; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; }
 </style>
 {% endblock %}
 
@@ -73,8 +79,8 @@
 
 <!-- 批量上传 -->
 <div class="card">
-  <div class="card-title">批量上传 LOA</div>
-  <p class="hint" style="margin:0 0 12px">上传后文件将保存至 permanent 目录，下次宣告时自动复用。文件名格式 <code>{IP}_{mask}_AS{ASN}.pdf</code> 或 <code>{IP}_{mask}.pdf</code> 可自动解析。</p>
+  <div class="card-title">批量添加 LOA</div>
+  <p class="hint" style="margin:0 0 12px">上传后文件将保存至 permanent 目录，下次宣告时自动复用。系统将自动从 PDF 内容中识别 IP段和 ASN，也支持文件名格式 <code>{IP}_{mask}_AS{ASN}.pdf</code> 解析；识别结果可手动修正。</p>
   <div class="upload-zone" id="uploadZone">
     拖拽 PDF 文件到此处，或 <strong>点击选择文件</strong>
     <input type="file" id="fileInput" accept=".pdf" multiple style="display:none">
@@ -83,9 +89,9 @@
     <table class="preview-table">
       <thead>
         <tr>
-          <th style="width:40px">#</th>
+          <th style="width:32px">#</th>
           <th>文件名</th>
-          <th style="width:180px">IP段 (CIDR)</th>
+          <th style="width:200px">IP段 (CIDR)</th>
           <th style="width:120px">ASN</th>
           <th style="width:36px"></th>
         </tr>
@@ -249,6 +255,7 @@
   const previewArea = document.getElementById('previewArea');
   const previewBody = document.getElementById('previewBody');
   let pendingFiles = [];
+  let _nextId = 0;
 
   uploadZone.addEventListener('click', () => fileInput.click());
   uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
@@ -268,30 +275,97 @@
     if (!pdfs.length) { alert('请选择 PDF 文件'); return; }
     pdfs.forEach(f => {
       const { cidr, asn } = parse_filename(f.name);
-      pendingFiles.push({ file: f, cidr, asn });
+      pendingFiles.push({ file: f, cidr, asn, parsed: false, _id: _nextId++ });
     });
     renderPreview();
+    parseNewFiles();
   }
 
   function renderPreview() {
     document.getElementById('uploadStatus').innerHTML = '';
     if (!pendingFiles.length) { previewArea.style.display = 'none'; return; }
     previewArea.style.display = '';
-    previewBody.innerHTML = pendingFiles.map((item, i) => `
-      <tr data-pidx="${i}">
-        <td>${i + 1}</td>
-        <td class="fn-col" title="${item.file.name}">${item.file.name}</td>
-        <td><input type="text" class="p-cidr" value="${item.cidr}" placeholder="如 1.2.3.0/24"></td>
-        <td><input type="text" class="p-asn" value="${item.asn}" placeholder="如 12345 或 AS12345"></td>
-        <td><button class="btn btn-icon del preview-table del-btn" onclick="removePreviewRow(${i})" title="移除">✕</button></td>
-      </tr>`).join('');
+    previewBody.innerHTML = pendingFiles.map((item, i) => {
+      const badge = item.parsed
+        ? ''
+        : `<span class="parse-badge parsing" id="pbadge-${item._id}">识别中…</span>`;
+      const cidrField = `<input type="text" class="p-cidr" value="${item.cidr}" placeholder="如 1.2.3.0/24">`;
+      return `
+        <tr data-pidx="${i}" data-pid="${item._id}">
+          <td>${i + 1}</td>
+          <td class="fn-col" title="${item.file.name}">${item.file.name}${badge}</td>
+          <td id="cidr-cell-${item._id}">${cidrField}</td>
+          <td><input type="text" class="p-asn" value="${item.asn}" placeholder="如 12345"></td>
+          <td><button class="btn btn-icon del preview-table del-btn" onclick="removePreviewRow(${i})" title="移除">✕</button></td>
+        </tr>`;
+    }).join('');
 
-    // 同步编辑回 pendingFiles
     previewBody.querySelectorAll('tr[data-pidx]').forEach(tr => {
       const idx = parseInt(tr.dataset.pidx);
       tr.querySelector('.p-cidr').addEventListener('input', function () { pendingFiles[idx].cidr = this.value.trim(); });
       tr.querySelector('.p-asn').addEventListener('input', function () { pendingFiles[idx].asn = this.value.trim(); });
     });
+  }
+
+  async function parseNewFiles() {
+    const toParse = pendingFiles.filter(it => !it.parsed);
+    if (!toParse.length) return;
+
+    await Promise.all(toParse.map(async item => {
+      try {
+        const fd = new FormData();
+        fd.append('file', item.file);
+        const res = await fetch('/api/loa/parse', { method: 'POST', body: fd });
+        const data = await res.json();
+        item.parsed = true;
+
+        const row = previewBody.querySelector(`tr[data-pid="${item._id}"]`);
+        if (!row) return;
+
+        const badge = document.getElementById(`pbadge-${item._id}`);
+
+        if (data.ok && (data.cidrs.length || data.asns.length)) {
+          // 更新 ASN（取第一个）
+          if (data.asn) {
+            item.asn = data.asn;
+            const asnInput = row.querySelector('.p-asn');
+            if (asnInput) asnInput.value = data.asn;
+          }
+          // 更新 CIDR：多个候选时用 select，单个用 input 直接填值
+          const cidrCell = document.getElementById(`cidr-cell-${item._id}`);
+          if (cidrCell) {
+            if (data.cidrs.length > 1) {
+              item.cidr = data.cidrs[0];
+              cidrCell.innerHTML = `<select class="cidr-select p-cidr">
+                ${data.cidrs.map(c => `<option value="${c}">${c}</option>`).join('')}
+              </select>`;
+              cidrCell.querySelector('.p-cidr').addEventListener('change', function() {
+                item.cidr = this.value;
+                const idx = parseInt(row.dataset.pidx);
+                if (pendingFiles[idx]) pendingFiles[idx].cidr = this.value;
+              });
+            } else if (data.cidr) {
+              item.cidr = data.cidr;
+              const cidrInput = cidrCell.querySelector('.p-cidr');
+              if (cidrInput) cidrInput.value = data.cidr;
+            }
+          }
+          if (badge) {
+            badge.className = 'parse-badge done';
+            badge.textContent = data.cidrs.length > 1 ? `已识别 (${data.cidrs.length} 个候选)` : '已识别';
+          }
+        } else {
+          if (badge) {
+            badge.className = 'parse-badge manual';
+            badge.textContent = '未识别，请手动填写';
+          }
+        }
+      } catch(e) {
+        item.parsed = true;
+        const badge = document.getElementById(`pbadge-${item._id}`);
+        if (badge) { badge.className = 'parse-badge error'; badge.textContent = '识别失败'; }
+      }
+    }));
   }
 
   window.removePreviewRow = function (idx) {
@@ -313,7 +387,7 @@
     statusEl.innerHTML = '';
 
     const fd = new FormData();
-    pendingFiles.forEach((item, i) => {
+    pendingFiles.forEach((item) => {
       fd.append('files[]', item.file, item.file.name);
       fd.append('cidrs[]', item.cidr);
       fd.append('asns[]', item.asn.replace(/^AS/i, ''));
