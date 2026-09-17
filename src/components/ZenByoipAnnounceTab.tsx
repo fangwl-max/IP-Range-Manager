@@ -7,7 +7,7 @@ import {
   PlusOutlined, DeleteOutlined, PlayCircleOutlined,
   CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined,
   SyncOutlined, DownOutlined, RightOutlined, CopyOutlined,
-  ImportOutlined, ThunderboltOutlined,
+  ImportOutlined,
 } from "@ant-design/icons";
 
 const { Text } = Typography;
@@ -93,9 +93,6 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
   const [batchAsn, setBatchAsn] = useState<number | "">("");
   const [batchZone, setBatchZone] = useState<ZoneId | "">("");
 
-  // ── 统一应用 state ──
-  const [applyAsn, setApplyAsn] = useState<number | "">("");
-  const [applyZone, setApplyZone] = useState<ZoneId | "">("");
 
   const checkConfig = useCallback(async () => {
     try {
@@ -152,17 +149,6 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
     message.success(`已导入 ${lines.length} 条 IP 段`);
     setBatchVisible(false);
     setBatchCidrs("");
-  };
-
-  // ── 统一应用到全部行 ──
-  const handleApplyAll = () => {
-    if (applyAsn === "" && !applyZone) { message.warning("请至少设置 ASN 或可用区"); return; }
-    setRows(prev => prev.map(r => ({
-      ...r,
-      ...(applyAsn !== "" ? { asn: applyAsn } : {}),
-      ...(applyZone ? { zoneId: applyZone, publicVirtualInterfaceId: getVlanForZone(applyZone) } : {}),
-    })));
-    message.success("已应用到全部行");
   };
 
   const handleRun = async () => {
@@ -285,40 +271,6 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
         }
         style={{ padding: "6px 12px" }}
       />
-
-      {/* ── 统一应用工具栏 ── */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
-        padding: "10px 14px", borderRadius: 6,
-        border: "1.5px dashed #1677ff", background: "rgba(22,119,255,0.04)",
-      }}>
-        <ThunderboltOutlined style={{ color: "#1677ff", fontSize: 16 }} />
-        <span style={{ fontSize: 14, color: "rgba(0,0,0,0.65)", fontWeight: 500 }}>统一应用到全部行</span>
-        <Input
-          placeholder="ASN（如 138789）"
-          value={applyAsn !== "" ? String(applyAsn) : ""}
-          onChange={e => {
-            const raw = e.target.value.replace(/^[Aa][Ss]\s*/, "").replace(/[^\d]/g, "");
-            setApplyAsn(raw === "" ? "" : Number(raw));
-          }}
-          style={{ width: 150 }}
-          size="small"
-        />
-        <Select
-          value={applyZone || undefined}
-          placeholder="可用区"
-          onChange={v => setApplyZone(v as ZoneId)}
-          allowClear
-          onClear={() => setApplyZone("")}
-          size="small"
-          style={{ width: 180 }}
-        >
-          {FIXED_ZONES.map(z => <Option key={z.zoneId} value={z.zoneId}>{z.label}</Option>)}
-        </Select>
-        <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={handleApplyAll}>
-          应用到全部行
-        </Button>
-      </div>
 
       {/* 宣告任务列表 */}
       <div>

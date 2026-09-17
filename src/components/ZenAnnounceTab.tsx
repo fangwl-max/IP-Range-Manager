@@ -7,7 +7,7 @@ import {
 import {
   PlusOutlined, DeleteOutlined, PlayCircleOutlined,
   CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined,
-  CopyOutlined, SyncOutlined, ImportOutlined, ThunderboltOutlined,
+  CopyOutlined, SyncOutlined, ImportOutlined,
 } from '@ant-design/icons';
 
 const { Text } = Typography;
@@ -73,10 +73,6 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
   const [batchAsn, setBatchAsn] = useState<number | ''>('');
   const [batchRegion, setBatchRegion] = useState('');
   const [batchNetworkType, setBatchNetworkType] = useState<NetworkType>('StandardBGP');
-
-  // ── 统一应用 state ──
-  const [applyAsn, setApplyAsn] = useState<number | ''>('');
-  const [applyRegion, setApplyRegion] = useState('');
 
   // 关闭优质 BGP 时，将所有 PremiumBGP 行重置为 StandardBGP
   useEffect(() => {
@@ -165,17 +161,6 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
     message.success(`已导入 ${lines.length} 条 IP 段`);
     setBatchVisible(false);
     setBatchCidrs('');
-  };
-
-  // ── 统一应用到全部行 ──
-  const handleApplyAll = () => {
-    if (applyAsn === '' && !applyRegion) { message.warning('请至少设置 ASN 或地域'); return; }
-    setRows(prev => prev.map(r => ({
-      ...r,
-      ...(applyAsn !== '' ? { asn: applyAsn } : {}),
-      ...(applyRegion ? { regionId: applyRegion } : {}),
-    })));
-    message.success('已应用到全部行');
   };
 
   // ── 执行流水线 ──
@@ -285,56 +270,6 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
         }
         style={{ borderRadius: 8 }}
       >
-        {/* 统一应用工具栏 */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-          padding: '8px 10px', marginBottom: 8,
-          background: '#f0f7ff', borderRadius: 6, border: '1px dashed #91caff',
-        }}>
-          <ThunderboltOutlined style={{ color: '#1677ff' }} />
-          <span style={{ fontSize: 13, color: '#1677ff', fontWeight: 500 }}>统一应用：</span>
-          {asnOptions.length > 0 ? (
-            <Select
-              showSearch placeholder="选 ASN"
-              value={applyAsn !== '' ? applyAsn : undefined}
-              onChange={v => setApplyAsn(v)}
-              style={{ width: 160 }}
-              size="small"
-              allowClear
-              onClear={() => setApplyAsn('')}
-              filterOption={(input, opt) => String(opt?.children || '').toLowerCase().includes(input.toLowerCase())}
-            >
-              {asnOptions.map(a => <Option key={a.value} value={a.value}>{a.label}</Option>)}
-            </Select>
-          ) : (
-            <Input
-              placeholder="ASN（如 138789）"
-              value={applyAsn !== '' ? String(applyAsn) : ''}
-              onChange={e => {
-                const raw = e.target.value.replace(/^[Aa][Ss]\s*/, '').replace(/[^\d]/g, '');
-                setApplyAsn(raw === '' ? '' : Number(raw));
-              }}
-              size="small" style={{ width: 130 }} allowClear
-            />
-          )}
-          <Select
-            showSearch placeholder="选地域"
-            value={applyRegion || undefined}
-            onChange={v => setApplyRegion(v)}
-            style={{ width: 200 }}
-            size="small"
-            allowClear
-            onClear={() => setApplyRegion('')}
-            loading={metaLoading}
-            filterOption={(input, opt) => String(opt?.children || '').toLowerCase().includes(input.toLowerCase())}
-          >
-            {regionOptions.map(r => <Option key={r.regionId} value={r.regionId}>{r.label}</Option>)}
-          </Select>
-          <Button size="small" type="primary" ghost onClick={handleApplyAll}>
-            应用到全部行
-          </Button>
-        </div>
-
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>

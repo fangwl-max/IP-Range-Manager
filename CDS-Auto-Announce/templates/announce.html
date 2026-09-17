@@ -71,6 +71,9 @@
     white-space: nowrap;
     flex: 0 0 auto;
   }
+  .btn-blue { background: #1677ff; color: #fff; border: 1px solid #1677ff; }
+  .btn-blue:hover { background: #0958d9; border-color: #0958d9; }
+  .btn-blue:disabled { opacity: .6; cursor: not-allowed; }
   .hidden-file { display: none; }
   .announce-row-foot {
     display: none;
@@ -181,6 +184,7 @@
     <div class="card-title" style="margin:0">宣告任务</div>
     <div class="toolbar-actions">
       <button type="button" class="btn btn-ghost" id="refreshMeta">刷新区域与 ASN</button>
+      <button type="button" class="btn btn-ghost" id="openBatchImport">批量导入</button>
       <button type="button" class="btn btn-secondary" id="addRow">+ 添加一行</button>
     </div>
   </div>
@@ -211,6 +215,36 @@
     新加坡 B/C/D/E/F 节点已设为禁止选择。宣告时若本地无 LOA，将按 config 中 IPXO 配置自动从平台拉取 PDF；也可点击「上传 LOA」直接保存到正式目录。<br>
     默认勾选「创建中即视为宣告成功」：仅提交 BYOIP 创建，首云状态为「创建中」即返回成功；取消勾选则继续执行广播与挂载公网。
   </p>
+</div>
+
+<!-- 批量导入 Modal -->
+<div id="batchImportOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9000;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:12px;padding:24px;width:500px;max-width:96vw;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <strong style="font-size:16px;">批量导入 IP 段</strong>
+      <button type="button" id="closeBatchImport" style="background:none;border:none;font-size:20px;cursor:pointer;color:#999;">×</button>
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="display:block;font-size:13px;color:#6b7280;margin-bottom:4px;">IP 段列表（每行一个 CIDR，或逗号/空格分隔）</label>
+      <textarea id="batchCidrs" rows="8" style="width:100%;padding:8px 10px;border:1px solid #e6ebf0;border-radius:8px;font-size:13px;font-family:monospace;resize:vertical;" placeholder="1.2.3.0/24&#10;5.6.7.0/23&#10;10.0.0.0/22"></textarea>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+      <div>
+        <label style="display:block;font-size:13px;color:#6b7280;margin-bottom:4px;">源 ASN（可选，批量填充）</label>
+        <input type="text" id="batchAsn" placeholder="如 138789" style="width:100%;padding:8px 10px;border:1px solid #e6ebf0;border-radius:8px;font-size:14px;">
+      </div>
+      <div>
+        <label style="display:block;font-size:13px;color:#6b7280;margin-bottom:4px;">区域（可选，批量填充）</label>
+        <select id="batchSite" style="width:100%;padding:8px 10px;border:1px solid #e6ebf0;border-radius:8px;font-size:14px;">
+          <option value="">选择区域</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;">
+      <button type="button" id="cancelBatchImport" class="btn btn-ghost">取消</button>
+      <button type="button" id="confirmBatchImport" class="btn btn-primary">导入</button>
+    </div>
+  </div>
 </div>
 
 <div class="card" id="progressCard" style="display:none">
@@ -459,8 +493,8 @@
       + '<div class="cell"><input type="text" class="asn" list="asn-list" placeholder="ASN" value="' + escapeAttr(data.asn || '') + '"></div>'
       + '<div class="cell loa-cell"><div class="loa-actions">'
       + '<button type="button" class="btn btn-ghost btn-check-loa" title="检查本地 LOA">检查</button>'
+      + '<button type="button" class="btn btn-blue btn-fetch-ipxo-loa" title="从 IPXO 拉取 LOA">LoA拉取</button>'
       + '<button type="button" class="btn btn-ghost btn-download-loa" title="下载本地 LOA">下载</button>'
-      + '<button type="button" class="btn btn-ghost btn-fetch-ipxo-loa" title="从 IPXO 拉取 LOA">LoA拉取</button>'
       + '<button type="button" class="btn btn-primary btn-upload-loa" title="上传 LOA PDF">上传</button>'
       + '<input type="file" class="hidden-file loa-file-input" accept=".pdf,application/pdf">'
       + '</div></div>'
@@ -748,5 +782,49 @@
 
   rowsContainer.appendChild(createRow());
   loadMeta(false);
+
+  // ── 批量导入 ──
+  const batchOverlay = document.getElementById('batchImportOverlay');
+  const batchSiteSelect = document.getElementById('batchSite');
+
+  function openBatchImport() {
+    // 同步区域选项
+    batchSiteSelect.innerHTML = '<option value="">选择区域</option>'
+      + metaSites.filter(s => !s.disabled).map(s =>
+        '<option value="' + escapeAttr(s.site_id) + '">' + escapeAttr(s.site_name || s.site_id) + '</option>'
+      ).join('');
+    document.getElementById('batchCidrs').value = '';
+    document.getElementById('batchAsn').value = '';
+    batchSiteSelect.value = '';
+    batchOverlay.style.display = 'flex';
+  }
+
+  function closeBatchImport() { batchOverlay.style.display = 'none'; }
+
+  function confirmBatchImport() {
+    const raw = document.getElementById('batchCidrs').value;
+    const asn = normalizeAsnInput(document.getElementById('batchAsn').value);
+    const siteId = batchSiteSelect.value;
+    const lines = raw.split(/[\n,，\s]+/).map(s => s.trim()).filter(s => s.includes('/'));
+    if (!lines.length) { alert('请输入至少一个有效的 CIDR 段'); return; }
+
+    // 若只有一个空行则替换，否则追加
+    const existing = rowsContainer.querySelectorAll('.grid-row');
+    const isEmpty = existing.length === 1 && !existing[0].querySelector('.cidr').value.trim()
+      && !existing[0].querySelector('.asn').value.trim()
+      && !existing[0].querySelector('.site').value;
+    if (isEmpty) rowsContainer.innerHTML = '';
+
+    for (const cidr of lines) {
+      rowsContainer.appendChild(createRow({ cidr, asn, site_id: siteId }));
+    }
+    closeBatchImport();
+  }
+
+  document.getElementById('openBatchImport').onclick = openBatchImport;
+  document.getElementById('closeBatchImport').onclick = closeBatchImport;
+  document.getElementById('cancelBatchImport').onclick = closeBatchImport;
+  document.getElementById('confirmBatchImport').onclick = confirmBatchImport;
+  batchOverlay.addEventListener('click', e => { if (e.target === batchOverlay) closeBatchImport(); });
 </script>
 {% endblock %}
