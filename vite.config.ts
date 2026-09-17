@@ -6683,26 +6683,34 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             cancellationDate = d.toISOString().slice(0, 10);
           }
           toCancel.push({
-            _action: 'cancel',
+            _action: 'update_status',
             segment: seg.segment,
             localId: seg.id,
             oldRenewalStatus: seg.renewalStatus,
+            newRenewalStatus: 'cancelled',
             renewalDate,
             cancellationDate,
           });
         }
 
+        const reqUrl = new URL(req.url || '/', 'http://localhost');
+        const syncMode = reqUrl.searchParams.get('mode') || 'all'; // all | add_only | status_only
+
         // GET：仅预览
         if (req.method === 'GET') {
+          const filteredAdd = syncMode === 'status_only' ? [] : toAdd;
+          const filteredUpdate = syncMode === 'add_only' ? [] : toCancel;
           res.statusCode = 200;
           res.end(JSON.stringify({
             success: true,
             preview: true,
-            toAdd: toAdd.length,
-            toCancel: toCancel.length,
-            toAddItems: toAdd,
-            toCancelItems: toCancel,
-            cacheTotal: cache.services.data.length,
+            mode: syncMode,
+            toAdd: filteredAdd.length,
+            toUpdate: filteredUpdate.length,
+            toUuidUpdate: 0,
+            toAddItems: filteredAdd,
+            toUpdateItems: filteredUpdate,
+            ipxoTotal: cache.services.data.length,
             localTotal: localSegments.length,
           }));
           return;
@@ -6713,7 +6721,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         let cancelledCount = 0;
         let updatedCount = 0;
 
-        for (const item of toAdd) {
+        if (syncMode !== 'status_only') for (const item of toAdd) {
           const meta = extractIpxoServiceMeta({ loa: item.loa, billing_service: { next_due_date: null } });
           // renewalDate 用 item.nextDueDate（toAdd 阶段已转换）
           const renewalDate = item.nextDueDate || meta.renewalDate;
@@ -6745,7 +6753,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           addedCount++;
         }
 
-        for (const item of toCancel) {
+        if (syncMode !== 'add_only') for (const item of toCancel) {
           const idx = localData.ipSegments.findIndex((s: any) => s.id === item.localId);
           if (idx === -1) continue;
           localData.ipSegments[idx].renewalStatus = 'cancelled';
@@ -6793,240 +6801,6 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           cancelledCount,
           updatedCount,
           message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条，更新 ${updatedCount} 条`,
-        }));
-      } catch (e: any) {
-        res.statusCode = 500;
-        res.end(JSON.stringify({ success: false, message: e.message }));
-      }
-    });
-
-    // IPXO 同步到 IP 管理（预览 + 执行）
-    server.middlewares.use('/api/ipxo/sync', async (req, res, _next) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-      res.setHeader('Content-Type', 'application/json');
-      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
-
-      try {
-        const ipxoConfig = loadIpxoConfig();
-        if (!ipxoConfig) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
-
-        // 读取本地 ip-data.json
-        let localData: any = { ipSegments: [], projectGroups: [], suppliers: [], usageAreas: [], asns: [], asnGroups: [], version: '1.0.0' };
-        if (fs.existsSync(dataFilePath)) {
-          localData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
-        }
-        const localSegments: any[] = localData.ipSegments || [];
-
-        // 建立本地 IP 段索引（segment 字符串 -> 记录）
-        const localBySegment = new Map<string, any>();
-        const localByIpxoUuid = new Map<string, any>();
-        for (const s of localSegments) {
-          localBySegment.set(s.segment, s);
-          if (s.ipxoServiceUuid) localByIpxoUuid.set(s.ipxoServiceUuid, s);
-        }
-
-        // 拉取 IPXO 所有 active + terminated 服务（全量，翻页）
-        const allIpxoServices: any[] = [];
-        const activeSegments = new Set<string>(); // 记录 active 状态的 IP 段，防止 terminated 误覆盖
-        for (const status of ['active', 'terminated']) {
-          let page = 1;
-          let lastPage = 1;
-          do {
-            const result = await callIpxoApi(
-              `/billing/v1/{tenant_uuid}/market/ipv4/services?page=${page}&per_page=100&status=${status}`
-            );
-            if (result.status !== 200) break;
-            const body = result.body;
-            const items: any[] = body?.data ?? [];
-            lastPage = body?.meta?.last_page ?? 1;
-            for (const item of items) {
-              item._ipxoStatus = status;
-              allIpxoServices.push(item);
-              if (status === 'active') {
-                const bs = item.billing_service;
-                if (bs?.address && bs.cidr != null) {
-                  activeSegments.add(`${bs.address}/${bs.cidr}`);
-                }
-              }
-            }
-            page++;
-          } while (page <= lastPage);
-        }
-
-        const nowIso = new Date().toISOString();
-        const toAdd: any[] = [];      // IPXO 有，本地没有
-        const toUpdate: any[] = [];   // 本地有，状态需更新
-
-        for (const svc of allIpxoServices) {
-          const bs = svc.billing_service;
-          if (!bs?.address || bs.cidr == null) continue;
-          const segStr = `${bs.address}/${bs.cidr}`;
-          const marketUuid = svc.market_service?.uuid || '';
-          const billingUuid = bs.uuid || '';
-          const ipxoStatus = svc._ipxoStatus as string;
-          const nextDueDate = bs.next_due_date ? new Date(bs.next_due_date * 1000).toISOString().slice(0, 10) : '';
-
-          const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
-
-          if (!existing) {
-            // 新增：IPXO 有，本地无
-            if (ipxoStatus !== 'active') continue; // 已终止的不新增
-            toAdd.push({
-              _action: 'add',
-              segment: segStr,
-              ipxoStatus,
-              monthlyPrice: bs.recurring_amount ?? 0,
-              nextDueDate,
-              registry: svc.market_service?.registry ?? '',
-              marketUuid,
-              billingUuid,
-              loa: svc.loa ?? [],
-            });
-          } else {
-            // 已存在：检查是否需要更新 renewalStatus
-            const localStatus = existing.renewalStatus;
-            if (
-              ipxoStatus === 'terminated' &&
-              !activeSegments.has(segStr) && // 在 active 列表中出现过的不处理
-              (localStatus === 'renewed' || localStatus === 'not_renewed')
-            ) {
-              toUpdate.push({
-                _action: 'update_status',
-                segment: segStr,
-                localId: existing.id,
-                oldRenewalStatus: localStatus,
-                newRenewalStatus: 'cancelled',
-                ipxoStatus,
-                monthlyPrice: bs.recurring_amount ?? 0,
-                nextDueDate,
-                marketUuid,
-              });
-            }
-            // 同步 ipxoServiceUuid（如果之前没有）
-            if (!existing.ipxoServiceUuid && marketUuid) {
-              toUpdate.push({
-                _action: 'update_uuid',
-                segment: segStr,
-                localId: existing.id,
-                marketUuid,
-              });
-            }
-          }
-        }
-
-        // GET：仅预览，不执行
-        if (req.method === 'GET') {
-          const reqUrl2 = new URL(req.url || '/', 'http://localhost');
-          const mode = reqUrl2.searchParams.get('mode') || 'all'; // all | add_only | status_only
-          const filteredAdd = mode === 'status_only' ? [] : toAdd;
-          const filteredUpdate = mode === 'add_only' ? [] : toUpdate.filter(i => i._action === 'update_status');
-          const uuidUpdates = toUpdate.filter(i => i._action === 'update_uuid');
-          res.statusCode = 200;
-          res.end(JSON.stringify({
-            success: true,
-            preview: true,
-            mode,
-            toAdd: filteredAdd.length,
-            toUpdate: filteredUpdate.length,
-            toUuidUpdate: uuidUpdates.length,
-            toAddItems: filteredAdd,
-            toUpdateItems: [...filteredUpdate, ...uuidUpdates],
-            ipxoTotal: allIpxoServices.length,
-            localTotal: localSegments.length,
-          }));
-          return;
-        }
-
-        // POST：执行同步
-        const reqUrl3 = new URL(req.url || '/', 'http://localhost');
-        const syncMode = reqUrl3.searchParams.get('mode') || 'all'; // all | add_only | status_only
-        let addedCount = 0;
-        let updatedCount = 0;
-
-        // 新增记录
-        if (syncMode !== 'status_only') {
-        for (const item of toAdd) {
-          const newId = `ip-${Date.now()}-${Math.random()}-ipxo`;
-          const meta = extractIpxoServiceMeta({ loa: item.loa, billing_service: { next_due_date: null } });
-          const renewalDate = item.nextDueDate || meta.renewalDate;
-          const newSeg: any = {
-            id: newId,
-            segment: item.segment,
-            supplier: 'IPXO',
-            asn: meta.primaryAsn,
-            usageArea: '',
-            purchaseDate: meta.purchaseDate,
-            renewalDate,
-            cancellationDate: '',
-            monthlyPrice: item.monthlyPrice,
-            renewalStatus: 'not_renewed',
-            projectGroups: [],
-            serverLocations: [],
-            blockedCountries: [],
-            rateLimitedCountries: [],
-            detectedCountries: [],
-            history: [],
-            syncSource: 'ipxo_api',
-            ipxoServiceUuid: item.marketUuid,
-            ipxoLastSyncAt: nowIso,
-            createdAt: nowIso,
-            updatedAt: nowIso,
-          };
-          if (meta.additionalAsns.length > 0) newSeg.additionalAsns = meta.additionalAsns;
-          localData.ipSegments.push(newSeg);
-          addedCount++;
-        }
-        } // end if add_only
-
-        // 更新记录（按 localId 合并，每条 IP 段只写一次）
-        if (syncMode !== 'add_only') {
-          // 按 localId 归并所有待更新动作
-          const updateMap = new Map<string, any>();
-          for (const item of toUpdate) {
-            const existing2 = updateMap.get(item.localId);
-            if (!existing2) {
-              updateMap.set(item.localId, { ...item });
-            } else {
-              // 合并：status 优先，uuid 可补充
-              if (item._action === 'update_status') {
-                existing2._action = 'update_status';
-                existing2.newRenewalStatus = item.newRenewalStatus;
-              }
-              if (item.marketUuid) existing2.marketUuid = item.marketUuid;
-            }
-          }
-
-          for (const item of Array.from(updateMap.values())) {
-            const idx = localData.ipSegments.findIndex((s: any) => s.id === item.localId);
-            if (idx === -1) continue;
-            if (item._action === 'update_status') {
-              // 仅当本地状态真的不同时才写（差异更新）
-              if (localData.ipSegments[idx].renewalStatus !== item.newRenewalStatus) {
-                localData.ipSegments[idx].renewalStatus = item.newRenewalStatus;
-                updatedCount++;
-              }
-            }
-            if (item.marketUuid && localData.ipSegments[idx].ipxoServiceUuid !== item.marketUuid) {
-              localData.ipSegments[idx].ipxoServiceUuid = item.marketUuid;
-            }
-            localData.ipSegments[idx].ipxoLastSyncAt = nowIso;
-            localData.ipSegments[idx].updatedAt = nowIso;
-          }
-        } // end if status_only
-
-        localData.exportTime = nowIso;
-        fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
-
-        res.statusCode = 200;
-        res.end(JSON.stringify({
-          success: true,
-          preview: false,
-          syncMode,
-          addedCount,
-          updatedCount,
-          message: `同步完成：新增 ${addedCount} 条，更新状态 ${updatedCount} 条`,
         }));
       } catch (e: any) {
         res.statusCode = 500;
