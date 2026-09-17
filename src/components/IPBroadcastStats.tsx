@@ -345,7 +345,10 @@ const IPBroadcastStats: React.FC = () => {
       dataIndex: 'renewalDate',
       key: 'renewalDate',
       width: 110,
-      render: (v: string) => formatDate(v),
+      render: (v: string, seg: IPSegment) =>
+        seg.renewalStatus === 'not_renewed'
+          ? <Text type="secondary">取消续费</Text>
+          : formatDate(v),
     },
     {
       title: 'IP属地',

@@ -3367,8 +3367,10 @@ const IPManagement: React.FC = () => {
         if (!b.renewalDate) return -1;
         return dayjs(a.renewalDate).valueOf() - dayjs(b.renewalDate).valueOf();
       },
-      render: (date: string) =>
-        date ? (
+      render: (date: string, seg: IPSegment) =>
+        seg.renewalStatus === 'not_renewed' ? (
+          <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>取消续费</Text>
+        ) : date ? (
           <span style={{ whiteSpace: 'nowrap' }}>{dayjs(date).format('YYYY-MM-DD')}</span>
         ) : (
           '-'
