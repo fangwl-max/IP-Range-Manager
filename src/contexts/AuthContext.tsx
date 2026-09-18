@@ -9,6 +9,7 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (username: string, password: string) => Promise<{ success: boolean; message?: string }>;
+  loginWithGoogle: (credential: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
   hasPermission: (permission: string) => boolean;
   refreshUser: () => Promise<void>;
@@ -93,6 +94,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const loginWithGoogle = useCallback(async (credential: string) => {
+    try {
+      const res = await fetch('/api/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential }),
+      });
+      const data = await res.json();
+      if (data.success && data.user && data.token) {
+        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+        setUser(data.user);
+        setToken(data.token);
+        return { success: true };
+      }
+      return { success: false, message: data.message || 'Google 登录失败' };
+    } catch (e: any) {
+      return { success: false, message: e.message || '网络错误' };
+    }
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST', headers: getAuthHeader() });
@@ -112,7 +133,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, hasPermission, refreshUser: fetchCurrentUser }}>
+    <AuthContext.Provider value={{ user, token, loading, login, loginWithGoogle, logout, hasPermission, refreshUser: fetchCurrentUser }}>
       {children}
     </AuthContext.Provider>
   );

@@ -18,6 +18,7 @@ import {
   SoundOutlined,
   CloudDownloadOutlined,
   ApiOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import './App.css';
@@ -41,6 +42,7 @@ import PrePurchaseCheck from './components/PrePurchaseCheck';
 import ZenAnnounce from './components/ZenAnnounce';
 import CapitalOnlineAnnounce from './components/CapitalOnlineAnnounce';
 import RemoteDataSync from './components/RemoteDataSync';
+import AuditLogs from './components/AuditLogs';
 
 const { Sider, Content } = Layout;
 
@@ -92,6 +94,7 @@ const VALID_MENU_KEYS = [
   ...IPXO_SUB_KEYS,
   'larus-management',
   'user-management',
+  'audit-logs',
   'notify-config',
   'remote-sync',
 ] as const;
@@ -206,7 +209,7 @@ const AppContent: React.FC = () => {
 
   const ipxoItems = [
     ...(hasPermission('pre-purchase-check') ? [{ key: 'pre-purchase-check', label: '购前检测' }] : []),
-    ...(hasPermission('ipxo-services') ? [{ key: 'ipxo-services', label: '已租用IP' }] : []),
+    ...(hasPermission('ipxo-services') ? [{ key: 'ipxo-services', label: '已租用IP段' }] : []),
     ...(hasPermission('ipxo-invoices') ? [{ key: 'ipxo-invoices', label: '发票' }] : []),
   ];
   const costItems = [
@@ -241,6 +244,7 @@ const AppContent: React.FC = () => {
     ...(configItems.length ? [{ key: 'configuration', icon: <SettingOutlined />, label: '配置管理', children: configItems }] : []),
     ...(asnItems.length ? [{ key: 'asn', icon: <SafetyCertificateOutlined />, label: 'ASN', children: asnItems }] : []),
     ...(hasPermission('user-management') ? [{ key: 'user-management', icon: <UserOutlined />, label: '用户与权限' }] : []),
+    ...(hasPermission('audit-logs') ? [{ key: 'audit-logs', icon: <FileTextOutlined />, label: '操作日志' }] : []),
     {
       key: 'announce',
       icon: <SoundOutlined />,
@@ -260,7 +264,7 @@ const AppContent: React.FC = () => {
           justifyContent: 'center',
           alignItems: 'center',
           minHeight: '100vh',
-          background: '#f0f2f5',
+          background: '#f4f6f9',
         }}
       >
         <Spin size="large" />
@@ -287,6 +291,8 @@ const AppContent: React.FC = () => {
           top: 0,
           bottom: 0,
           overflow: 'hidden',
+          background: '#0f172a',
+          boxShadow: '1px 0 0 rgba(255,255,255,0.05)',
         }}
       >
         {/* ant-layout-sider 会把子节点包一层，flex 需写在内层才能撑满并固定底部账户区 */}
@@ -298,8 +304,27 @@ const AppContent: React.FC = () => {
             minHeight: 0,
           }}
         >
-        <div style={{ padding: '16px', color: '#fff', fontSize: '18px', fontWeight: 'bold', textAlign: 'center', flexShrink: 0 }}>
-          IP段管理平台
+        <div style={{
+          padding: '18px 16px 14px',
+          display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+        }}>
+          <div style={{
+            width: 34, height: 34, borderRadius: 9, flexShrink: 0,
+            background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 4px 12px rgba(99,102,241,0.4)',
+          }}>
+            <svg width="18" height="18" viewBox="0 0 28 28" fill="none">
+              <rect x="3" y="3" width="9" height="9" rx="2.5" fill="white" fillOpacity="0.95" />
+              <rect x="16" y="3" width="9" height="9" rx="2.5" fill="white" fillOpacity="0.5" />
+              <rect x="3" y="16" width="9" height="9" rx="2.5" fill="white" fillOpacity="0.5" />
+              <rect x="16" y="16" width="9" height="9" rx="2.5" fill="white" fillOpacity="0.95" />
+            </svg>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: 'rgba(255,255,255,0.92)', fontSize: 17, fontWeight: 700, lineHeight: '1.25', letterSpacing: '-0.3px' }}>IP段管理平台</div>
+          </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
           <Menu
@@ -334,14 +359,15 @@ const AppContent: React.FC = () => {
                 width: 36,
                 height: 36,
                 borderRadius: '50%',
-                background: 'rgba(92, 107, 192, 0.9)',
+                background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 color: '#fff',
-                fontSize: 16,
-                fontWeight: 600,
+                fontSize: 15,
+                fontWeight: 700,
                 flexShrink: 0,
+                boxShadow: '0 2px 8px rgba(99,102,241,0.4)',
               }}
             >
               {avatarLetter}
@@ -367,7 +393,7 @@ const AppContent: React.FC = () => {
       </Sider>
       <Layout style={{ marginLeft: 200, flex: 1, minWidth: 0 }}>
         <Content
-          style={{ margin: 0, minHeight: 280, background: '#f0f2f5', padding: 24, minWidth: 0, width: '100%' }}
+          style={{ margin: 0, minHeight: 280, background: '#f4f6f9', padding: 24, minWidth: 0, width: '100%' }}
         >
           {selectedMenu === 'ip-management' && <IPManagement />}
           {selectedMenu === 'irr-detection' && <IRRDetection />}
@@ -389,6 +415,7 @@ const AppContent: React.FC = () => {
           {selectedMenu === 'announce-zen' && <ZenAnnounce />}
           {selectedMenu === 'announce-capital-online' && <CapitalOnlineAnnounce />}
           {selectedMenu === 'remote-sync' && <RemoteDataSync />}
+          {selectedMenu === 'audit-logs' && <AuditLogs />}
         </Content>
       </Layout>
     </Layout>

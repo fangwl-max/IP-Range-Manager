@@ -72,6 +72,7 @@ export const PAGE_PERMS: Record<string, PermNode> = {
   },
   'remote-sync': { label: '远程数据同步' },
   'user-management': { label: '用户与权限', adminOnly: true },
+  'audit-logs': { label: '操作日志', adminOnly: true },
 };
 
 const ALL_KEYS: string[] = Object.entries(PAGE_PERMS).flatMap(([pageKey, node]) => [

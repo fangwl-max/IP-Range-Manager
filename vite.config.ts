@@ -32,6 +32,8 @@ const asnStandbyFilePath = path.resolve(__dirname, 'asn-standby-groups.json');
 const zenConfigFilePath = path.resolve(__dirname, 'zen-config.json');
 // CDS-Auto-Announce 配置文件路径
 const cdsConfigFilePath = path.resolve(__dirname, 'cds-config.json');
+// 操作审计日志文件路径（NDJSON，追加写入）
+const auditLogPath = path.resolve(__dirname, 'audit.log');
 // 内存中的 token 存储 (token -> { userId, username })
 const tokenStore = new Map<string, { userId: string; username: string; role: string }>();
 
@@ -161,6 +163,24 @@ function startCdsFlask() {
 
 function hashPassword(password: string): string {
   return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+function logAudit(req: any, userId: string, username: string, role: string, action: string, resource: string, details?: Record<string, any>): void {
+  try {
+    const entry = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      userId, username, role, action, resource,
+      ip: (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || (req as any).socket?.remoteAddress || '',
+      ...(details ? { details } : {}),
+    });
+    fs.appendFileSync(auditLogPath, entry + '\n');
+  } catch { /* 日志写入失败不影响主流程 */ }
+}
+
+function getTokenSession(req: any): { userId: string; username: string; role: string } | null {
+  const authHeader = (req.headers?.authorization || '') as string;
+  const token = authHeader.replace(/^Bearer\s+/i, '');
+  return token ? (tokenStore.get(token) ?? null) : null;
 }
 
 function readRequestBody(req: any): Promise<string> {
@@ -380,7 +400,7 @@ const syncServersPath = path.resolve(__dirname, 'sync-servers.json');
 
 // ===================== Larus 配置存储 =====================
 const larusConfigPath = path.resolve(__dirname, 'larus-config.json');
-const larusCachePath = path.resolve(__dirname, 'larus-cache.json');
+const larusDataPath = path.resolve(__dirname, 'larus-data.json');
 
 interface SshServerConfig {
   id: string;
@@ -1129,21 +1149,26 @@ async function refreshIpxoCache(): Promise<{ servicesCount: number; invoicesCoun
   const config = loadIpxoConfig();
   if (!config) throw new Error('IPXO 配置未设置');
 
-  // 1. 全量拉取 active 服务
+  // 1. 全量拉取 active 服务（per_page=500 支持一次性获取全量）
   const allServices: any[] = [];
-  let page = 1;
-  let lastPage = 1;
-  do {
+  const SVC_PER_PAGE = 500;
+  let svcPage = 1;
+  while (true) {
     const result = await callIpxoApi(
-      `/billing/v1/{tenant_uuid}/market/ipv4/services?page=${page}&per_page=100&status=active`
+      `/billing/v1/{tenant_uuid}/market/ipv4/services?page=${svcPage}&per_page=${SVC_PER_PAGE}&status=active`
     );
-    if (result.status !== 200) break;
+    if (result.status !== 200) {
+      console.warn(`[IPXO Cache] Services page ${svcPage} failed with status ${result.status}, stopping.`);
+      break;
+    }
     const body = result.body;
     const items: any[] = body?.data ?? [];
-    lastPage = body?.meta?.last_page ?? 1;
+    const lastPage: number = body?.meta?.last_page ?? 1;
     allServices.push(...items);
-    page++;
-  } while (page <= lastPage);
+    console.log(`[IPXO Cache] Services page ${svcPage}/${lastPage}: ${items.length} records, total=${allServices.length}`);
+    if (items.length === 0 || (svcPage >= lastPage && items.length < SVC_PER_PAGE)) break;
+    svcPage++;
+  }
 
   // 2. 批量拉取每条服务的 start_date（详情接口才有），并发度 10
   {
@@ -1286,7 +1311,7 @@ function extractIpxoServiceMeta(svc: any): {
 /** 自动同步 IPXO 缓存中的新增/取消 IP 段到本地 ip-data.json */
 async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelledCount: number; updatedCount: number }> {
   const cache = loadIpxoCache();
-  if (!cache?.services?.data?.length) return { addedCount: 0, cancelledCount: 0 };
+  if (!cache?.services?.data?.length) return { addedCount: 0, cancelledCount: 0, updatedCount: 0 };
 
   let localData: any = { ipSegments: [] };
   if (fs.existsSync(dataFilePath)) {
@@ -1323,17 +1348,18 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
     if (!existing) {
       const meta = extractIpxoServiceMeta(svc);
+      const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
       const newSeg: any = {
         id: `ip-${Date.now()}-${Math.random()}-ipxo`,
         segment: segStr,
         supplier: 'IPXO',
-        asn: meta.primaryAsn,
+        asn: '',
         usageArea: '',
         purchaseDate: meta.purchaseDate,
         renewalDate: meta.renewalDate,
         cancellationDate: '',
         monthlyPrice: bs.recurring_amount ?? 0,
-        renewalStatus: 'not_renewed',
+        renewalStatus: svc.ecommerce_pending_order ? 'not_renewed' : 'cancelled',
         projectGroups: [],
         serverLocations: [],
         blockedCountries: [],
@@ -1346,13 +1372,13 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
         createdAt: nowIso,
         updatedAt: nowIso,
       };
-      if (meta.additionalAsns.length > 0) newSeg.additionalAsns = meta.additionalAsns;
+      if (allLoaAsns.length > 0) newSeg.additionalAsns = allLoaAsns;
       localData.ipSegments.push(newSeg);
       addedCount++;
     }
   }
 
-  // 缓存有、本地有（ipxo_api 来源）→ 更新 ASN / 购买日 / 续费日
+  // 缓存有、本地有 → 更新 ASN、购买时间、续费日、月费、续费状态
   let updatedCount = 0;
   for (const svc of cache.services.data) {
     const bs = svc.billing_service;
@@ -1366,15 +1392,18 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     if (idx === -1) continue;
     const seg = localData.ipSegments[idx];
     const meta = extractIpxoServiceMeta(svc);
+    const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
     let changed = false;
-    if (!seg.asn && meta.primaryAsn) { seg.asn = meta.primaryAsn; changed = true; }
-    if (!(seg.additionalAsns?.length) && meta.additionalAsns.length > 0) {
-      seg.additionalAsns = meta.additionalAsns; changed = true;
+    if (allLoaAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allLoaAsns)) {
+      seg.additionalAsns = allLoaAsns; changed = true;
     }
-    if (!seg.purchaseDate && meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
-    if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) {
-      seg.renewalDate = meta.renewalDate; changed = true;
-    }
+    if (meta.purchaseDate && seg.purchaseDate !== meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
+    if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
+    const ipxoMonthlyPrice = bs.recurring_amount ?? null;
+    if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
+    const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'cancelled';
+    if (ipxoRenewalStatus === 'cancelled' && seg.renewalStatus !== 'cancelled') { seg.renewalStatus = 'cancelled'; changed = true; }
+    else if (ipxoRenewalStatus === 'not_renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'not_renewed'; changed = true; }
     if (changed) {
       seg.ipxoLastSyncAt = nowIso;
       seg.updatedAt = nowIso;
@@ -2279,15 +2308,15 @@ function saveLarusConfig(data: any): void {
   fs.writeFileSync(larusConfigPath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-function loadLarusCache(): any | null {
+function loadLarusData(): any | null {
   try {
-    if (!fs.existsSync(larusCachePath)) return null;
-    return JSON.parse(fs.readFileSync(larusCachePath, 'utf-8'));
+    if (!fs.existsSync(larusDataPath)) return null;
+    return JSON.parse(fs.readFileSync(larusDataPath, 'utf-8'));
   } catch { return null; }
 }
 
-function saveLarusCache(data: any): void {
-  fs.writeFileSync(larusCachePath, JSON.stringify(data, null, 2), 'utf-8');
+function saveLarusData(data: any): void {
+  fs.writeFileSync(larusDataPath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 // ─── Larus LOA 共享工具 ──────────────────────────────────────────────────────
@@ -2365,7 +2394,7 @@ async function checkLoaExistsInCds(cidr: string, asn: string): Promise<boolean> 
 }
 
 async function syncAllLarusLoaToCds(): Promise<{ total: number; synced: number; skipped: number; failed: number; results: SyncLoaResult[] }> {
-  const cache = loadLarusCache();
+  const cache = loadLarusData();
   const cfg = loadLarusConfig();
   if (!cache?.items?.length || !cfg) return { total: 0, synced: 0, skipped: 0, failed: 0, results: [] };
 
@@ -2604,7 +2633,7 @@ async function enrichLarusItems(
  * 若响应携带 Set-Cookie，自动合并并持久化，保持 remember_web token 持续续期。
  */
 function startLarusKeepAlive(): void {
-  const INTERVAL_MS = 90 * 60 * 1000;
+  const INTERVAL_MS = 30 * 60 * 1000;
   const ping = async () => {
     const cfg = loadLarusConfig();
     if (!cfg) return;
@@ -2623,7 +2652,7 @@ function startLarusKeepAlive(): void {
   // 启动后 5 秒先 ping 一次，确认当前 session 是否有效
   setTimeout(ping, 5000);
   setInterval(ping, INTERVAL_MS);
-  console.log('[Larus] KeepAlive 已启动（每 90 分钟保活一次）');
+  console.log('[Larus] KeepAlive 已启动（每 30 分钟保活一次）');
 }
 
 /**
@@ -2669,6 +2698,28 @@ function startIpxoCacheRefreshScheduler(): void {
       console.error('[IpxoCache] 每日缓存刷新失败:', e.message);
     }
   }, 60_000);
+}
+
+/** 清理 backups/ 目录中超过两个月的备份文件，返回已删除的文件名列表 */
+function cleanupOldBackups(backupDir: string): string[] {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 2);
+  const deleted: string[] = [];
+  try {
+    const files = fs.readdirSync(backupDir).filter(f => f.endsWith('.json'));
+    for (const file of files) {
+      const m = file.match(/-(\d{4}-\d{2}-\d{2})\.json$/);
+      if (!m) continue;
+      const d = new Date(m[1]);
+      if (!isNaN(d.getTime()) && d < cutoff) {
+        fs.unlinkSync(path.join(backupDir, file));
+        deleted.push(file);
+      }
+    }
+  } catch (e: any) {
+    console.error('[Backup] 清理旧备份失败:', e.message);
+  }
+  return deleted;
 }
 
 /** 定时备份任务：每天 03:00 北京时间备份所有数据文件，文件名含前一天日期 */
@@ -2722,6 +2773,12 @@ function startBackupScheduler(): void {
 
       console.log(`[Backup] 备份完成：${prevDay}，已备份 ${backed.length} 个文件`);
 
+      // 清理超过两个月的旧备份
+      const cleanedFiles = cleanupOldBackups(backupDir);
+      if (cleanedFiles.length > 0) {
+        console.log(`[Backup] 已清理 ${cleanedFiles.length} 个过期备份文件`);
+      }
+
       // 更新备份时间记录
       const updated = loadNotifyConfig();
       if (updated) {
@@ -2732,7 +2789,10 @@ function startBackupScheduler(): void {
 
       // 发送 Google Chat 通知（如果已配置）
       if (cfg?.googleChatWebhook) {
-        const chatText = `✅ 数据备份完成\n时间：${bjDate} 03:00（北京时间）\n备份日期：${prevDay}\n文件：${backed.join('、')}\n共 ${backed.length} 个文件已备份到 backups/ 目录`;
+        const cleanupLine = cleanedFiles.length > 0
+          ? `\n🗑️ 已清理过期备份：${cleanedFiles.length} 个文件（超过 2 个月）`
+          : '';
+        const chatText = `✅ 数据备份完成\n时间：${bjDate} 03:00（北京时间）\n备份日期：${prevDay}\n文件：${backed.join('、')}\n共 ${backed.length} 个文件已备份到 backups/ 目录${cleanupLine}`;
         const chatPayload = JSON.stringify({ text: chatText });
         try {
           await new Promise<void>((resolve, reject) => {
@@ -3206,6 +3266,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             }
             // ────────────────────────────────────────────────────────────────────
 
+            const saveSession = getTokenSession(req);
+            if (saveSession) {
+              const segCount = Array.isArray(savedData?.ipSegments) ? savedData.ipSegments.length : 0;
+              logAudit(req, saveSession.userId, saveSession.username, saveSession.role, 'ip_segment.save', 'ip-data', { segmentCount: segCount });
+            }
             res.setHeader('Content-Type', 'application/json');
             res.statusCode = 200;
             res.end(JSON.stringify({ success: true }));
@@ -3290,9 +3355,16 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             res.end(JSON.stringify({ success: false, message: '用户名或密码错误' }));
             return;
           }
+          if (user.disabled) {
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: false, message: '账号已被禁用，请联系管理员' }));
+            return;
+          }
           const token = crypto.randomBytes(32).toString('hex');
           tokenStore.set(token, { userId: user.id, username: user.username, role: user.role });
-          const userInfo = { id: user.id, username: user.username, displayName: user.displayName, role: user.role, createdAt: user.createdAt, updatedAt: user.updatedAt };
+          logAudit(req, user.id, user.username, user.role, 'auth.login', 'password');
+          const userInfo = { id: user.id, username: user.username, displayName: user.displayName, role: user.role, googleEmail: user.googleEmail, loginType: user.loginType ?? 'password', permissions: user.permissions, createdAt: user.createdAt, updatedAt: user.updatedAt };
           res.setHeader('Content-Type', 'application/json');
           res.statusCode = 200;
           res.end(JSON.stringify({ success: true, user: userInfo, token }));
@@ -3330,14 +3402,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
       const users = loadUsers();
       const user = users.find((u: any) => u.id === session.userId);
-      if (!user) {
+      if (!user || user.disabled) {
         tokenStore.delete(token);
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 200;
         res.end(JSON.stringify({ success: false, user: null }));
         return;
       }
-      const userInfo = { id: user.id, username: user.username, displayName: user.displayName, role: user.role, permissions: user.permissions, createdAt: user.createdAt, updatedAt: user.updatedAt };
+      const userInfo = { id: user.id, username: user.username, displayName: user.displayName, role: user.role, permissions: user.permissions, googleEmail: user.googleEmail, loginType: user.loginType ?? (user.googleEmail ? 'google' : 'password'), disabled: user.disabled ?? false, createdAt: user.createdAt, updatedAt: user.updatedAt };
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, user: userInfo, token }));
@@ -3356,7 +3428,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (req.method === 'POST') {
         const authHeader = (req as any).headers?.authorization || '';
         const token = authHeader.replace(/^Bearer\s+/i, '');
-        if (token) tokenStore.delete(token);
+        if (token) {
+          const session = tokenStore.get(token);
+          if (session) logAudit(req, session.userId, session.username, session.role, 'auth.logout', '-');
+          tokenStore.delete(token);
+        }
       }
       res.setHeader('Content-Type', 'application/json');
       res.statusCode = 200;
@@ -3383,7 +3459,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         return;
       }
       if (req.method === 'GET') {
-        const users = loadUsers().map((u: any) => ({ id: u.id, username: u.username, displayName: u.displayName, role: u.role, permissions: u.permissions, createdAt: u.createdAt, updatedAt: u.updatedAt }));
+        const users = loadUsers().map((u: any) => ({ id: u.id, username: u.username, displayName: u.displayName, role: u.role, permissions: u.permissions, googleEmail: u.googleEmail, loginType: u.loginType ?? (u.googleEmail ? 'google' : 'password'), disabled: u.disabled ?? false, createdAt: u.createdAt, updatedAt: u.updatedAt }));
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true, users }));
@@ -3413,6 +3489,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               const newUser = { id: 'user-' + Date.now(), username: username.trim(), passwordHash: hashPassword(password), displayName: displayName || username.trim(), role: role || 'viewer', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
               users.push(newUser);
               saveUsers(users);
+              logAudit(req, session.userId, session.username, session.role, 'user.create', newUser.username, { role: newUser.role });
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true, user: { id: newUser.id, username: newUser.username, displayName: newUser.displayName, role: newUser.role, createdAt: newUser.createdAt, updatedAt: newUser.updatedAt } }));
@@ -3429,6 +3506,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               if (role) users[idx].role = role;
               users[idx].updatedAt = new Date().toISOString();
               saveUsers(users);
+              logAudit(req, session.userId, session.username, session.role, 'user.update', users[idx].username, { role: users[idx].role });
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true, user: { id: users[idx].id, username: users[idx].username, displayName: users[idx].displayName, role: users[idx].role, createdAt: users[idx].createdAt, updatedAt: users[idx].updatedAt } }));
@@ -3449,9 +3527,43 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               users[idx].permissions = Array.isArray(permissions) ? permissions : null;
               users[idx].updatedAt = new Date().toISOString();
               saveUsers(users);
+              logAudit(req, session.userId, session.username, session.role, 'user.set_permissions', users[idx].username, { count: Array.isArray(permissions) ? permissions.length : 'reset' });
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true }));
+            } else if (action === 'toggle-disabled') {
+              const idx = users.findIndex((u: any) => u.id === id);
+              if (idx < 0) {
+                res.setHeader('Content-Type', 'application/json');
+                res.statusCode = 404;
+                res.end(JSON.stringify({ success: false, message: '用户不存在' }));
+                return;
+              }
+              if (users[idx].username === 'admin') {
+                res.setHeader('Content-Type', 'application/json');
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, message: '不能禁用管理员账户' }));
+                return;
+              }
+              if (id === session.userId) {
+                res.setHeader('Content-Type', 'application/json');
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, message: '不能禁用自己的账户' }));
+                return;
+              }
+              users[idx].disabled = !users[idx].disabled;
+              users[idx].updatedAt = new Date().toISOString();
+              saveUsers(users);
+              // 若是禁用操作，立即踢出该用户所有 session
+              if (users[idx].disabled) {
+                for (const [t, s] of tokenStore.entries()) {
+                  if ((s as any).userId === id) tokenStore.delete(t);
+                }
+              }
+              logAudit(req, session.userId, session.username, session.role, users[idx].disabled ? 'user.disable' : 'user.enable', users[idx].username);
+              res.setHeader('Content-Type', 'application/json');
+              res.statusCode = 200;
+              res.end(JSON.stringify({ success: true, disabled: users[idx].disabled }));
             } else if (action === 'delete') {
               if (id === users.find((u: any) => u.username === 'admin')?.id) {
                 res.setHeader('Content-Type', 'application/json');
@@ -3459,8 +3571,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
                 res.end(JSON.stringify({ success: false, message: '不能删除管理员账户' }));
                 return;
               }
+              const deletedUser = users.find((u: any) => u.id === id);
               users = users.filter((u: any) => u.id !== id);
               saveUsers(users);
+              logAudit(req, session.userId, session.username, session.role, 'user.delete', deletedUser?.username ?? id);
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true }));
@@ -3478,6 +3592,117 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       } else {
         res.statusCode = 405;
         res.end('Method Not Allowed');
+      }
+    });
+
+    // 认证 API - Google OAuth 登录（验证 id_token，限制 @nodelink.it 域名）
+    server.middlewares.use('/api/auth/google', async (req: any, res: any, next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end('Method Not Allowed'); return; }
+      try {
+        const rawBody = await readRequestBody(req);
+        const { credential } = JSON.parse(rawBody);
+        if (!credential) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, message: '缺少 Google credential' }));
+          return;
+        }
+        // 调用 Google tokeninfo 接口验证 id_token
+        const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+        const payload = await googleRes.json() as any;
+        if (!googleRes.ok || payload.error) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, message: 'Google 凭证无效' }));
+          return;
+        }
+        // 验证 Client ID（防止其他应用的 token）
+        const expectedClientId = process.env.VITE_GOOGLE_CLIENT_ID || '';
+        if (expectedClientId && payload.aud !== expectedClientId) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, message: 'Google Client ID 不匹配' }));
+          return;
+        }
+        const email: string = (payload.email || '').toLowerCase();
+        if (!email.endsWith('@nodelink.it')) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, message: '仅允许 @nodelink.it 账户登录' }));
+          return;
+        }
+        // 查找或创建用户
+        const users = loadUsers();
+        let user = users.find((u: any) => u.googleEmail === email);
+        if (!user) {
+          const newGoogleUser: any = {
+            id: 'google-' + Date.now(),
+            username: email.split('@')[0],
+            displayName: payload.name || email.split('@')[0],
+            role: 'viewer',
+            googleEmail: email,
+            googleId: payload.sub,
+            loginType: 'google',
+            permissions: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          users.push(newGoogleUser);
+          saveUsers(users);
+          user = newGoogleUser;
+          console.log(`[Auth] 新建 Google 账户: ${email}`);
+        }
+        if (user.disabled) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, message: '账号已被禁用，请联系管理员' }));
+          return;
+        }
+        const token = crypto.randomBytes(32).toString('hex');
+        tokenStore.set(token, { userId: user.id, username: user.username, role: user.role });
+        logAudit(req, user.id, user.username, user.role, 'auth.login', 'google', { email });
+        const { googleId: _gid, passwordHash: _ph, ...safeUser } = user as any;
+        safeUser.loginType = 'google';
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, user: safeUser, token }));
+      } catch (e: any) {
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message || 'Google 登录失败' }));
+      }
+    });
+
+    // 审计日志 API - 获取操作记录（需 admin）
+    server.middlewares.use('/api/audit-logs', (req: any, res: any, next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'GET') { res.statusCode = 405; res.end('Method Not Allowed'); return; }
+      const session = getTokenSession(req);
+      if (!session || session.role !== 'admin') {
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 403;
+        res.end(JSON.stringify({ success: false, message: '需要管理员权限' }));
+        return;
+      }
+      try {
+        const urlParams = new URL(req.url, 'http://x').searchParams;
+        const limit = Math.min(parseInt(urlParams.get('limit') || '500', 10), 2000);
+        let lines: string[] = [];
+        if (fs.existsSync(auditLogPath)) {
+          lines = fs.readFileSync(auditLogPath, 'utf-8').trim().split('\n').filter(Boolean);
+        }
+        const entries = lines.slice(-limit).reverse().map((l: string) => {
+          try { return JSON.parse(l); } catch { return null; }
+        }).filter(Boolean);
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, logs: entries, total: lines.length }));
+      } catch (e: any) {
+        res.setHeader('Content-Type', 'application/json');
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message }));
       }
     });
 
@@ -5893,7 +6118,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               product_fields: {
                 asn: Number(asn),
                 subnets,
-                company_name: companyName,
+                ...(companyName ? { company_name: companyName } : {}),
                 max_length: 24,
                 info: '',
                 create_whois_inetnum: true,
@@ -5908,12 +6133,21 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               cartBody
             );
 
+            // 200/201 成功；204 No Content 也是成功；409 Duplicate 视为"已在购物车"提示
+            const cartOk = cartResult.status >= 200 && cartResult.status < 300;
+            const cartDuplicate = cartResult.status === 409;
+            const cartErrDetail = cartResult.body?.message
+              || cartResult.body?.error
+              || (typeof cartResult.body === 'string' && cartResult.body ? cartResult.body : `HTTP ${cartResult.status}`);
+            console.log(`[LOA Cart] status=${cartResult.status}, body=`, cartResult.body);
             res.statusCode = 200;
             res.end(JSON.stringify({
-              success: cartResult.status === 200 || cartResult.status === 201,
-              message: cartResult.status === 200 || cartResult.status === 201
+              success: cartOk || cartDuplicate,
+              message: cartOk
                 ? `ASN ${asn} 验证通过，LOA 已加入购物车（${subnets.length} 个 IP 段），请前往 IPXO 平台完成支付`
-                : `LOA 加入购物车失败：${cartResult.body?.message || JSON.stringify(cartResult.body)}`,
+                : cartDuplicate
+                  ? `ASN ${asn} 已在购物车中，请前往 IPXO 平台完成支付`
+                  : `LOA 加入购物车失败 [HTTP ${cartResult.status}]：${cartErrDetail}`,
               validateBody: validateResult.body,
               cartStatus: cartResult.status,
               cartBody: cartResult.body,
@@ -6429,6 +6663,16 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               meta: { use_again: useAgain },
             });
 
+            const apiErrMsg = (r: any) => {
+              const bodyMsg = r.body?.message || r.body?.error
+                || (typeof r.body === 'string' ? (r.body || '空响应') : JSON.stringify(r.body).slice(0, 200));
+              return `失败 (HTTP ${r.status}): ${bodyMsg}`;
+            };
+            const isTerminateOk = (r: any) =>
+              (r.status >= 200 && r.status < 300) ||
+              r.status === 409 ||   // 已有终止请求
+              r.status === 422;     // 已在取消状态
+
             const results: any[] = [];
             for (const svc of serviceList) {
               const { billingUuid, marketUuid, subnet } = svc;
@@ -6441,34 +6685,34 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
                   `/ecommerce/public/{tenant_uuid}/subscriptions/${billingUuid}/terminate`,
                   terminateBody
                 );
-                if (r.status >= 200 && r.status < 300) {
+                if (isTerminateOk(r)) {
                   ok = true;
-                  msg = '取消成功';
+                  msg = r.status >= 200 && r.status < 300 ? '取消成功' : `取消已处理 (HTTP ${r.status})`;
                 } else if (r.status === 404 && marketUuid) {
                   // fallback to marketUuid
                   const r2 = await callIpxoApiPost(
                     `/ecommerce/public/{tenant_uuid}/subscriptions/${marketUuid}/terminate`,
                     terminateBody
                   );
-                  if (r2.status >= 200 && r2.status < 300) {
+                  if (isTerminateOk(r2)) {
                     ok = true;
-                    msg = '取消成功 (via market UUID)';
+                    msg = r2.status >= 200 && r2.status < 300 ? '取消成功 (via market UUID)' : `取消已处理 (HTTP ${r2.status})`;
                   } else {
-                    msg = `失败: ${r2.body?.message || r2.body?.error || JSON.stringify(r2.body).slice(0, 200)}`;
+                    msg = apiErrMsg(r2);
                   }
                 } else {
-                  msg = `失败: ${r.body?.message || r.body?.error || JSON.stringify(r.body).slice(0, 200)}`;
+                  msg = apiErrMsg(r);
                 }
               } else if (marketUuid) {
                 const r = await callIpxoApiPost(
                   `/ecommerce/public/{tenant_uuid}/subscriptions/${marketUuid}/terminate`,
                   terminateBody
                 );
-                if (r.status >= 200 && r.status < 300) {
+                if (isTerminateOk(r)) {
                   ok = true;
-                  msg = '取消成功';
+                  msg = r.status >= 200 && r.status < 300 ? '取消成功' : `取消已处理 (HTTP ${r.status})`;
                 } else {
-                  msg = `失败: ${r.body?.message || r.body?.error || JSON.stringify(r.body).slice(0, 200)}`;
+                  msg = apiErrMsg(r);
                 }
               } else {
                 msg = '缺少 UUID';
@@ -6985,13 +7229,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
         if (syncMode !== 'status_only') for (const item of toAdd) {
           const meta = extractIpxoServiceMeta({ loa: item.loa, billing_service: { next_due_date: null } });
+          const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
           // renewalDate 用 item.nextDueDate（toAdd 阶段已转换）
           const renewalDate = item.nextDueDate || meta.renewalDate;
           const newSeg: any = {
             id: `ip-${Date.now()}-${Math.random()}-ipxo`,
             segment: item.segment,
             supplier: 'IPXO',
-            asn: meta.primaryAsn,
+            asn: '',
             usageArea: '',
             purchaseDate: meta.purchaseDate,
             renewalDate,
@@ -7010,7 +7255,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             createdAt: nowIso,
             updatedAt: nowIso,
           };
-          if (meta.additionalAsns.length > 0) newSeg.additionalAsns = meta.additionalAsns;
+          if (allLoaAsns.length > 0) newSeg.additionalAsns = allLoaAsns;
           localData.ipSegments.push(newSeg);
           addedCount++;
         }
@@ -7027,7 +7272,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           cancelledCount++;
         }
 
-        // 已有记录 → 更新 ASN / 购买日 / 续费日
+        // 已有记录 → 更新 ASN、购买时间、续费日、月费、续费状态
         for (const svc of cache.services.data) {
           const bs = svc.billing_service;
           if (!bs?.address || bs.cidr == null) continue;
@@ -7040,15 +7285,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           if (idx === -1) continue;
           const seg = localData.ipSegments[idx];
           const meta = extractIpxoServiceMeta(svc);
+          const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
           let changed = false;
-          if (!seg.asn && meta.primaryAsn) { seg.asn = meta.primaryAsn; changed = true; }
-          if (!(seg.additionalAsns?.length) && meta.additionalAsns.length > 0) {
-            seg.additionalAsns = meta.additionalAsns; changed = true;
+          if (allLoaAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allLoaAsns)) {
+            seg.additionalAsns = allLoaAsns; changed = true;
           }
-          if (!seg.purchaseDate && meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
-          if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) {
-            seg.renewalDate = meta.renewalDate; changed = true;
-          }
+          if (meta.purchaseDate && seg.purchaseDate !== meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
+          if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
+          const ipxoMonthlyPrice = bs.recurring_amount ?? null;
+          if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
+          const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'cancelled';
+          if (ipxoRenewalStatus === 'cancelled' && seg.renewalStatus !== 'cancelled') { seg.renewalStatus = 'cancelled'; changed = true; }
+          else if (ipxoRenewalStatus === 'not_renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'not_renewed'; changed = true; }
           if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
         }
 
@@ -7127,9 +7375,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               segment: segStr,
               monthlyPrice: bs.recurring_amount ?? 0,
               nextDueDate,
+              startDate: bs.start_date ?? null,
               registry: svc.market_service?.registry ?? '',
               marketUuid,
               loa: svc.loa ?? [],
+              hasPendingOrder: !!svc.ecommerce_pending_order,
             });
           }
         }
@@ -7177,19 +7427,23 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         let updatedCount = 0;
 
         for (const item of toAdd) {
-          const meta = extractIpxoServiceMeta({ loa: item.loa, billing_service: { next_due_date: null } });
+          const meta = extractIpxoServiceMeta({ loa: item.loa, billing_service: { next_due_date: null, start_date: item.startDate } });
+          const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
           const renewalDate = item.nextDueDate || meta.renewalDate;
+          const purchaseDate = item.startDate
+            ? new Date(item.startDate * 1000).toISOString().slice(0, 10)
+            : meta.purchaseDate;
           const newSeg: any = {
             id: `ip-${Date.now()}-${Math.random()}-ipxo`,
             segment: item.segment,
             supplier: 'IPXO',
-            asn: meta.primaryAsn,
+            asn: '',
             usageArea: '',
-            purchaseDate: meta.purchaseDate,
+            purchaseDate,
             renewalDate,
             cancellationDate: '',
             monthlyPrice: item.monthlyPrice,
-            renewalStatus: 'not_renewed',
+            renewalStatus: item.hasPendingOrder ? 'not_renewed' : 'cancelled',
             projectGroups: [],
             serverLocations: [],
             blockedCountries: [],
@@ -7202,7 +7456,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             createdAt: nowIso,
             updatedAt: nowIso,
           };
-          if (meta.additionalAsns.length > 0) newSeg.additionalAsns = meta.additionalAsns;
+          if (allLoaAsns.length > 0) newSeg.additionalAsns = allLoaAsns;
           localData.ipSegments.push(newSeg);
           addedCount++;
         }
@@ -7219,7 +7473,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           cancelledCount++;
         }
 
-        // 已有记录 → 更新 ASN / 购买日 / 续费日
+        // 已有记录 → 更新 ASN、购买时间、续费日、月费、续费状态
         for (const svc of cache.services.data) {
           const bs = svc.billing_service;
           if (!bs?.address || bs.cidr == null) continue;
@@ -7232,15 +7486,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           if (idx === -1) continue;
           const seg = localData.ipSegments[idx];
           const meta = extractIpxoServiceMeta(svc);
+          const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
           let changed = false;
-          if (!seg.asn && meta.primaryAsn) { seg.asn = meta.primaryAsn; changed = true; }
-          if (!(seg.additionalAsns?.length) && meta.additionalAsns.length > 0) {
-            seg.additionalAsns = meta.additionalAsns; changed = true;
+          if (allLoaAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allLoaAsns)) {
+            seg.additionalAsns = allLoaAsns; changed = true;
           }
-          if (!seg.purchaseDate && meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
-          if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) {
-            seg.renewalDate = meta.renewalDate; changed = true;
-          }
+          if (meta.purchaseDate && seg.purchaseDate !== meta.purchaseDate) { seg.purchaseDate = meta.purchaseDate; changed = true; }
+          if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
+          const ipxoMonthlyPrice = bs.recurring_amount ?? null;
+          if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
+          const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'cancelled';
+          if (ipxoRenewalStatus === 'cancelled' && seg.renewalStatus !== 'cancelled') { seg.renewalStatus = 'cancelled'; changed = true; }
+          else if (ipxoRenewalStatus === 'not_renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'not_renewed'; changed = true; }
           if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
         }
 
@@ -8127,6 +8384,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
     try {
       const body = await readBody(req);
+      const zenPipeSession = getTokenSession(req);
+      if (zenPipeSession) {
+        const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
+        logAudit(req, zenPipeSession.userId, zenPipeSession.username, zenPipeSession.role, 'announce.zen', 'pipeline', { taskCount: tasks.length });
+      }
       const { ak, sk } = getZenCreds();
       const { runPipeline } = await import('./src/lib/zen/pipeline.js' as any);
       await streamNdjson(res, runPipeline(body, ak, sk));
@@ -8182,7 +8444,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
     try {
       const body = await readBody(req);
-      const { ak, sk } = getZenCreds();
+      const byoipAnnSession = getTokenSession(req);
       const jobs = Array.isArray(body?.jobs) ? body.jobs.map((j: any) => ({
         cidrBlock: String(j.cidrBlock ?? '').trim(),
         asn: Number(j.asn),
@@ -8193,6 +8455,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         })).filter((z: any) => z.zoneId && z.publicVirtualInterfaceId) : [],
       })).filter((j: any) => j.cidrBlock && Number.isFinite(j.asn) && j.asn > 0 && j.zones.length > 0) : [];
       if (!jobs.length) throw new Error('请至少填写一条完整任务（CIDR、ASN、至少一个可用区+公网 VLAN）');
+      if (byoipAnnSession) logAudit(req, byoipAnnSession.userId, byoipAnnSession.username, byoipAnnSession.role, 'announce.zen_byoip', jobs.map((j: any) => j.cidrBlock).join(','), { jobCount: jobs.length, dryRun: Boolean(body?.dryRun) });
+      const { ak, sk } = getZenCreds();
       const { runByoipAnnounce } = await import('./src/lib/zen/byoip-announce.js' as any);
       await streamNdjson(res, runByoipAnnounce({ jobs, dryRun: Boolean(body?.dryRun) }, ak, sk));
     } catch (e: any) {
@@ -8218,6 +8482,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     }
     try {
       const body = await readBody(req);
+      const byoipWdSession = getTokenSession(req);
       const { ak, sk } = getZenCreds();
       let tasks: { regionId: string; cidrBlock: string }[];
       if (Array.isArray(body?.tasks)) {
@@ -8231,6 +8496,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         tasks = [{ regionId: String(body?.regionId ?? '').trim(), cidrBlock }];
       }
       if (!tasks.length) throw new Error('请至少填写一行 CIDR');
+      if (byoipWdSession) logAudit(req, byoipWdSession.userId, byoipWdSession.username, byoipWdSession.role, 'withdraw.zen_byoip', tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: tasks.length, dryRun: Boolean(body?.dryRun) });
       const scanRegionIds = (body?.scanRegionIds || []).map((x: any) => String(x).trim()).filter(Boolean);
       const { runByoipWithdraw } = await import('./src/lib/zen/byoip-withdraw.js' as any);
       await streamNdjson(res, runByoipWithdraw({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk));
@@ -8526,7 +8792,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
     // 未配置时：先尝试返回旧缓存，没有缓存才报错
     if (!cfg) {
-      const cache = loadLarusCache();
+      const cache = loadLarusData();
       if (cache?.items?.length) {
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true, fromCache: true, cachedAt: cache.cachedAt, items: cache.items, warning: 'Larus Cookie 未配置，显示历史缓存' }));
@@ -8539,7 +8805,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
     // 有缓存且非强制刷新：直接返回（缓存永久有效，无 stale 概念）
     if (!forceRefresh) {
-      const cache = loadLarusCache();
+      const cache = loadLarusData();
       if (cache?.cachedAt && cache.items?.length) {
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true, fromCache: true, cachedAt: cache.cachedAt, items: cache.items }));
@@ -8550,7 +8816,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     // 无缓存 或 强制刷新：从 Larus API 拉取 IP 列表 + 自动补全所有 allocation（ASN/LOA）
     try {
       // 旧缓存按 id 建索引，供 enrich 单条失败时回填 ASN/LOA
-      const prevCache = loadLarusCache();
+      const prevCache = loadLarusData();
       const fallback = new Map<string, any>(
         (prevCache?.items || []).map((it: any) => [String(it.id), it]),
       );
@@ -8567,14 +8833,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
       }
       const payload = { cachedAt: new Date().toISOString(), items: enrichedItems };
-      saveLarusCache(payload);
+      saveLarusData(payload);
       // 后台同步所有 LOA 到首都在线（不阻塞响应）
       syncAllLarusLoaToCds().catch(() => {});
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, fromCache: false, cookieAutoRenewed: !!(result.updatedCookie || enrichCookie), cachedAt: payload.cachedAt, items: enrichedItems }));
     } catch (e: any) {
       // 拉取失败时降级到旧缓存（包含 ASN/LOA 等已获取的信息）
-      const stale = loadLarusCache();
+      const stale = loadLarusData();
       if (stale?.items?.length) {
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true, fromCache: true, cachedAt: stale.cachedAt, items: stale.items, warning: `Cookie 已过期或刷新失败（${e.message}），显示历史缓存` }));
@@ -8654,7 +8920,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.end(JSON.stringify({ found: false, message: '缺少 cidr 参数' }));
       return;
     }
-    const cache = loadLarusCache();
+    const cache = loadLarusData();
     if (!cache?.items?.length) {
       res.statusCode = 200;
       res.end(JSON.stringify({ found: false, message: 'Larus 缓存为空，请先在 Larus 管理页刷新数据' }));
@@ -8704,12 +8970,12 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const loa_path: string | null = first?.loa_file ? `/ipv4/contract/loa/${first.id}` : null;
       // 写回主缓存：更新该 route_id 对应的 item
       if (id) {
-        const cache = loadLarusCache();
+        const cache = loadLarusData();
         if (cache?.items) {
           const idx = cache.items.findIndex((it: any) => String(it.id) === String(id));
           if (idx >= 0) {
             cache.items[idx] = { ...cache.items[idx], allocations, asn: asn ?? undefined, loa_path: loa_path ?? undefined };
-            saveLarusCache(cache);
+            saveLarusData(cache);
           }
         }
       }
@@ -8741,7 +9007,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const routeIds: number[] = body.route_ids || [];
       if (!routeIds.length) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_ids' })); return; }
 
-      const cache = loadLarusCache();
+      const cache = loadLarusData();
       const cacheMap = new Map<string, any>((cache?.items || []).map((it: any) => [String(it.id), it]));
       const results: Array<{ id: number; irr_data: any }> = [];
 
@@ -8764,7 +9030,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           const updated = cacheMap.get(String(it.id));
           return updated ?? it;
         });
-        saveLarusCache(cache);
+        saveLarusData(cache);
       }
 
       res.statusCode = 200;
@@ -8788,7 +9054,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const routeIds: number[] = body.route_ids || [];
       if (!routeIds.length) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_ids' })); return; }
 
-      const cache = loadLarusCache();
+      const cache = loadLarusData();
       const cacheMap = new Map<string, any>((cache?.items || []).map((it: any) => [String(it.id), it]));
       const results: Array<{ id: number; purchase_date: string | null; expiry_date: string | null }> = [];
 
@@ -8812,7 +9078,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
       if (cache?.items) {
         cache.items = cache.items.map((it: any) => cacheMap.get(String(it.id)) ?? it);
-        saveLarusCache(cache);
+        saveLarusData(cache);
       }
 
       res.statusCode = 200;
@@ -8880,9 +9146,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   server.middlewares.use('/api/larus/stats', (_req: any, res: any, _next: any) => {
     res.setHeader('Content-Type', 'application/json');
     try {
-      const cacheFile = path.join(__dirname, 'larus-cache.json');
-      const raw = fs.existsSync(cacheFile) ? JSON.parse(fs.readFileSync(cacheFile, 'utf-8')) : {};
-      // larus-cache.json 结构：{ cachedAt, items: [...] }
+      const raw = loadLarusData() ?? {};
+      // larus-data.json 结构：{ cachedAt, items: [...] }
       const cacheItems: any[] = Array.isArray(raw) ? raw : (raw.items || []);
       const totalSegments = cacheItems.length;
       const totalIps = cacheItems.reduce((s: number, it: any) => s + (it.total_ips || 0), 0);

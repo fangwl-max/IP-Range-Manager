@@ -3,16 +3,16 @@ html,
 body,
 #root {
   min-height: 100vh;
-  background: #f0f2f5;
+  background: #f4f6f9;
 }
 
 .app {
   min-height: 100vh;
-  background: #f0f2f5;
+  background: #f4f6f9;
 }
 
 .app-header {
-  background: #001529;
+  background: #0f172a;
   color: white;
   padding: 16px 24px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
@@ -32,13 +32,61 @@ body,
   box-sizing: border-box;
 }
 
-/* 表格默认行间距 */
+/* ── 侧边栏深色主题覆盖 ── */
+.ant-layout-sider,
+.ant-layout-sider-children {
+  background: #0f172a !important;
+}
+
+.ant-menu-dark,
+.ant-menu-dark > .ant-menu,
+.ant-menu-dark .ant-menu-sub {
+  background: #0f172a !important;
+}
+
+.ant-menu-dark.ant-menu-inline .ant-menu-sub.ant-menu-inline {
+  background: rgba(0, 0, 0, 0.22) !important;
+}
+
+.ant-menu-dark .ant-menu-item-selected {
+  background: rgba(99, 102, 241, 0.18) !important;
+}
+
+.ant-menu-dark .ant-menu-item:not(.ant-menu-item-selected):hover,
+.ant-menu-dark .ant-menu-submenu-title:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+}
+
+/* 选中项文字加亮 */
+.ant-menu-dark .ant-menu-item-selected,
+.ant-menu-dark .ant-menu-item-selected .anticon,
+.ant-menu-dark .ant-menu-item-selected span {
+  color: #a5b4fc !important;
+}
+
+/* ── Card 全局精修 ── */
+.ant-card {
+  border-radius: 10px !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.04) !important;
+  border: 1px solid rgba(0, 0, 0, 0.07) !important;
+}
+
+.ant-card-head {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06) !important;
+}
+
+/* ── 表格默认行间距 ── */
 .ant-table-tbody > tr > td {
   padding: 8px 12px !important;
 }
 
 .ant-table-thead > tr > th {
   padding: 10px 12px !important;
+  background: #f8fafc !important;
+  font-weight: 600 !important;
+  color: #475569 !important;
+  font-size: 12.5px !important;
+  letter-spacing: 0.01em !important;
 }
 
 /* IP段管理：略增单元格间距，日期等列可读性更好 */

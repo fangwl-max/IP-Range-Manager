@@ -36,6 +36,7 @@ import {
   CloseOutlined,
   CheckCircleOutlined,
   SearchOutlined,
+  CopyOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { RENEWAL_STATUS_OPTIONS, RENEWAL_STATUS_DISPLAY } from '../types';
@@ -112,11 +113,16 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   const [servicesAsnValue, setServicesAsnValue] = useState('');
   const [servicesSelectedKeys, setServicesSelectedKeys] = useState<string[]>([]);
   const [servicesTableFilters, setServicesTableFilters] = useState<Record<string, string[]>>({});
+  const [servicesTableKey, setServicesTableKey] = useState(0);
   // 设置 ASN 弹窗
   const [setAsnVisible, setSetAsnVisible] = useState(false);
   const [setAsnLoading, setSetAsnLoading] = useState(false);
   const [setAsnNumber, setSetAsnNumber] = useState<number | null>(null);
   const [setAsnCompany, setSetAsnCompany] = useState('');
+  // 取消 ASN 弹窗
+  const [removeAsnVisible, setRemoveAsnVisible] = useState(false);
+  const [removeAsnLoading, setRemoveAsnLoading] = useState(false);
+  const [removeAsnResults, setRemoveAsnResults] = useState<{ subnet: string; asn: number; status: 'pending' | 'ok' | 'err'; msg?: string }[]>([]);
   // 取消续费弹窗
   const [cancelVisible, setCancelVisible] = useState(false);
   const [cancelLoading, setCancelLoading] = useState(false);
@@ -222,21 +228,17 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
     }
   }, []);
 
-  // 加载活跃服务（全量加载，不分页）
-  const loadServices = useCallback(async (status: string, search?: string, asnFilter?: string, asnValue?: string, saveToCache = false) => {
+  // 加载全量服务数据（不传任何过滤参数，全部在客户端过滤）
+  const loadServices = useCallback(async (saveToCache = false) => {
     setServicesLoading(true);
     try {
-      const params = new URLSearchParams({ page: '1', per_page: '9999' });
-      if (status) params.set('status', status);
-      if (search) params.set('search', search);
-      if (asnFilter && asnFilter !== 'all') params.set('asn_filter', asnFilter);
-      if (asnFilter === 'specific' && asnValue) params.set('asn_value', asnValue.replace(/^AS/i, '').trim());
+      const params = new URLSearchParams({ status: 'active', page: '1', per_page: '9999' });
       const res = await fetch(`/api/ipxo/services?${params}`);
       const json = await res.json();
       if (json.success) {
         const raw = json.data;
         const list = Array.isArray(raw) ? raw : raw?.data ?? [];
-        const meta = raw?.meta ?? { current_page: 1, last_page: 1, per_page: 9999, total: list.length };
+        const meta = { current_page: 1, last_page: 1, per_page: 9999, total: list.length };
         setServices(list);
         setServicesMeta(meta);
         if (saveToCache) {
@@ -273,7 +275,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         message.success({ content: json.message, key: 'cache', duration: 4 });
         loadCacheStatus();
         loadInvoices(true);
-        loadServices(servicesStatus, '', '', '', true);
+        loadServices(true);
         loadUpcoming(upcomingDays);
       } else {
         message.error({ content: '缓存刷新失败: ' + (json.message || '未知错误'), key: 'cache', duration: 4 });
@@ -543,7 +545,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         setServicesMeta(cached.meta);
         setServicesCachedAt(cached.cachedAt);
       } else {
-        loadServices(servicesStatus, '', '', '', true);
+        loadServices(true);
       }
     }
     if (forcedTab === 'invoices') {
@@ -558,34 +560,36 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
     }
   }, []); // eslint-disable-line
 
-  const handleStatusChange = (val: string) => {
-    setServicesStatus(val);
-    loadServices(val, servicesSearch, servicesAsnFilter, servicesAsnValue);
-  };
+  const handleServicesSearch = () => { /* 搜索已改为客户端过滤，state 更新自动触发 */ };
 
-  const handleServicesSearch = () => {
-    loadServices(servicesStatus, servicesSearch, servicesAsnFilter, servicesAsnValue);
-  };
-
-  // ASN 过滤已移至服务端；RIR 和续费状态在客户端通过 Table 筛选状态过滤
+  // 所有过滤均在客户端进行，无需重新请求 API
+  // 仅处理搜索和 ASN 过滤；RIR / 续费状态由表格列的 onFilter 内部处理
   const filteredServices = useMemo(() => {
     let result = services;
-    const rir = servicesTableFilters['registry'];
-    const renewal = servicesTableFilters['renewalStatus'];
-    if (rir?.length) {
-      result = result.filter(r => rir.includes((r.market_service?.registry || '').toLowerCase()));
+    if (servicesSearch.trim()) {
+      const terms = servicesSearch.trim().split(/[\s,]+/).filter(Boolean).map(t => t.toLowerCase());
+      result = result.filter(r => {
+        const subnet = `${r.billing_service?.address || ''}/${r.billing_service?.cidr ?? ''}`.toLowerCase();
+        return terms.some(t => subnet.includes(t));
+      });
     }
-    if (renewal?.length) {
-      result = result.filter(r => renewal.includes(r._renewalStatus));
+    if (servicesAsnFilter === 'no_asn') {
+      result = result.filter(r => !Array.isArray(r.loa) || r.loa.length === 0);
+    } else if (servicesAsnFilter === 'specific' && servicesAsnValue.trim()) {
+      const asnNum = servicesAsnValue.trim().replace(/^AS/i, '').trim();
+      result = result.filter(r => {
+        const loas: any[] = Array.isArray(r.loa) ? r.loa : [];
+        return loas.some((l: any) => String(l.asn) === asnNum);
+      });
     }
     return result;
-  }, [services, servicesTableFilters]);
+  }, [services, servicesSearch, servicesAsnFilter, servicesAsnValue]);
 
   // 设置 ASN 提交
   const handleSetAsnSubmit = async () => {
     if (!setAsnNumber) { message.warning('请输入 ASN 号码'); return; }
-    const selected = filteredServices.filter(r => {
-      const key = r.market_service?.uuid || r.billing_service?.uuid;
+    const selected = services.filter(r => {
+      const key = r.billing_service?.uuid || r.market_service?.uuid;
       return servicesSelectedKeys.includes(key);
     });
     const subnets = selected.map(r => {
@@ -616,10 +620,48 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
     }
   };
 
+  // 取消 ASN 提交
+  const handleRemoveAsnSubmit = async () => {
+    setRemoveAsnLoading(true);
+    const selected = services.filter(r =>
+      servicesSelectedKeys.includes(r.billing_service?.uuid || r.market_service?.uuid) &&
+      Array.isArray(r.loa) && r.loa.length > 0
+    );
+    const results: typeof removeAsnResults = [];
+    for (const svc of selected) {
+      const serviceUuid = svc.market_service?.uuid;
+      const subnet = `${svc.billing_service?.address}/${svc.billing_service?.cidr}`;
+      for (const loa of (svc.loa as any[])) {
+        try {
+          const res = await fetch('/api/ipxo/loa/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serviceUuid, loaUuid: loa.uuid, subnet }),
+          });
+          const json = await res.json();
+          results.push({ subnet, asn: loa.asn, status: json.success ? 'ok' : 'err', msg: json.message });
+        } catch (e: any) {
+          results.push({ subnet, asn: loa.asn, status: 'err', msg: e.message });
+        }
+      }
+    }
+    setRemoveAsnResults(results);
+    setRemoveAsnLoading(false);
+    const okCount = results.filter(r => r.status === 'ok').length;
+    const errCount = results.filter(r => r.status === 'err').length;
+    if (errCount === 0) {
+      message.success(`已移除 ${okCount} 条 LOA 授权`);
+      setRemoveAsnVisible(false);
+      loadServices(false);
+    } else {
+      message.warning(`${okCount} 条成功，${errCount} 条失败，见弹窗详情`);
+    }
+  };
+
   // 取消续费提交
   const handleCancelSubmit = async () => {
-    const selected = filteredServices.filter(r => {
-      const key = r.market_service?.uuid || r.billing_service?.uuid;
+    const selected = services.filter(r => {
+      const key = r.billing_service?.uuid || r.market_service?.uuid;
       return servicesSelectedKeys.includes(key);
     });
     const serviceList = selected.map(r => ({
@@ -649,7 +691,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         }
         setCancelVisible(false);
         setServicesSelectedKeys([]);
-        loadServices(servicesStatus, servicesSearch);
+        loadServices();
       } else {
         message.error(json.message || '取消续费失败');
       }
@@ -723,9 +765,23 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       width: 180,
       render: (_: any, r: any) => {
         const bs = r.billing_service || {};
-        return bs.address && bs.cidr != null
-          ? <span style={{ fontFamily: 'monospace', fontWeight: 500, whiteSpace: 'nowrap' }}>{bs.address}/{bs.cidr}</span>
-          : '-';
+        if (!bs.address || bs.cidr == null) return '-';
+        const subnet = `${bs.address}/${bs.cidr}`;
+        return (
+          <Tooltip title="点击复制">
+            <span
+              style={{ fontFamily: 'monospace', fontWeight: 500, whiteSpace: 'nowrap', cursor: 'pointer' }}
+              onClick={() => {
+                navigator.clipboard.writeText(subnet).then(
+                  () => message.success('已复制'),
+                  () => message.error('复制失败'),
+                );
+              }}
+            >
+              {subnet}
+            </span>
+          </Tooltip>
+        );
       },
     },
     {
@@ -742,11 +798,31 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       title: 'RIR',
       key: 'registry',
       width: 90,
+      filters: [
+        { text: 'ARIN', value: 'arin' },
+        { text: 'RIPE NCC', value: 'ripencc' },
+        { text: 'APNIC', value: 'apnic' },
+        { text: 'AFRINIC', value: 'afrinic' },
+        { text: 'LACNIC', value: 'lacnic' },
+      ],
+      onFilter: (value: any, r: any) =>
+        (r.market_service?.registry || '').toLowerCase() === String(value),
       render: (_: any, r: any) => {
         const reg = r.market_service?.registry;
         if (!reg) return '-';
         return <Tag color={REGISTRY_COLORS[reg.toLowerCase()] || 'default'}>{reg.toUpperCase()}</Tag>;
       },
+    },
+    {
+      title: '购买时间',
+      key: 'start_date',
+      width: 110,
+      render: (_: any, r: any) => {
+        const ts = r.billing_service?.start_date;
+        return ts ? dayjs.unix(ts).format('YYYY-MM-DD') : '-';
+      },
+      sorter: (a: any, b: any) =>
+        (a.billing_service?.start_date ?? 0) - (b.billing_service?.start_date ?? 0),
     },
     {
       title: '月费 (USD)',
@@ -775,6 +851,12 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       title: '续费状态',
       key: 'renewalStatus',
       width: 110,
+      filters: [
+        { text: '未取消', value: 'active' },
+        { text: '到期取消', value: 'cancelled' },
+      ],
+      filterMultiple: false,
+      onFilter: (value: any, r: any) => r._renewalStatus === String(value),
       render: (_: any, r: any) => {
         const v = r._renewalStatus;
         if (v === 'cancelled') return <Tag color="warning">到期取消</Tag>;
@@ -818,7 +900,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       width: 120,
       ellipsis: true,
       render: (_: any, r: any) => {
-        const uuid = r.market_service?.uuid || r.billing_service?.uuid;
+        const uuid = r.billing_service?.uuid || r.market_service?.uuid;
         return uuid ? <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{uuid}</span> : '-';
       },
     },
@@ -826,64 +908,91 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
 
   return (
     <div>
-      <Card style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Title level={4} style={{ margin: 0 }}>IPXO 账单管理</Title>
-          <Space>
-            <Select
-              value={syncMode}
-              onChange={(val) => setSyncMode(val)}
-              style={{ width: 130 }}
-              options={[
-                { label: '同步全部', value: 'all' },
-                { label: '仅同步新增', value: 'add_only' },
-                { label: '仅同步状态', value: 'status_only' },
-              ]}
+      {/* 统计卡片 */}
+      <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
+        <Col xs={12} flex={1}>
+          <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+            <Statistic title="记录数" value={servicesMeta.total} valueStyle={{ fontSize: 22 }} />
+          </Card>
+        </Col>
+        <Col xs={12} flex={1}>
+          <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+            <Statistic
+              title="LOA"
+              value={services.reduce((acc, r) => acc + (Array.isArray(r.loa) ? r.loa.length : 0), 0)}
+              suffix={`/ ${services.length} 条`}
+              valueStyle={{ fontSize: 22 }}
             />
-            <Button
-              icon={<SyncOutlined />}
-              onClick={() => handleSyncPreview(syncMode)}
-              loading={syncPreviewLoading}
-            >
-              同步到 IP 管理
-            </Button>
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={() => { loadInvoices(); loadServices(servicesStatus); loadUpcoming(upcomingDays); }}
-              loading={invoicesLoading || servicesLoading || upcomingLoading}
-            >
-              刷新数据
-            </Button>
-          </Space>
-        </div>
-        {cacheStatus && (
-          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
-            {cacheStatus.exists ? (
+          </Card>
+        </Col>
+        <Col xs={12} flex={1}>
+          <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+            <Statistic
+              title="月费合计 (USD)"
+              value={services.reduce((acc, r) => acc + (r.billing_service?.recurring_amount ?? 0), 0).toFixed(2)}
+              prefix="$"
+              valueStyle={{ fontSize: 22, color: '#1677ff' }}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} flex={1}>
+          <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+            <Statistic
+              title="RIR 分布"
+              formatter={() => {
+                const counts: Record<string, number> = {};
+                services.forEach(r => {
+                  const reg = r.market_service?.registry?.toUpperCase();
+                  if (reg) counts[reg] = (counts[reg] || 0) + 1;
+                });
+                return (
+                  <Space wrap size={4}>
+                    {Object.entries(counts).map(([k, v]) => (
+                      <Tag key={k} color={REGISTRY_COLORS[k.toLowerCase()] || 'default'}>{k}: {v}</Tag>
+                    ))}
+                  </Space>
+                );
+              }}
+              valueStyle={{ fontSize: 14 }}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} flex={1}>
+          <Card size="small" bodyStyle={{ padding: '12px 16px' }}>
+            <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', marginBottom: 6 }}>IPXO 缓存</div>
+            {cacheStatus ? (
               <>
-                <Tag color={cacheStatus.isExpired ? 'orange' : 'green'}>
-                  {cacheStatus.isExpired ? '缓存已过期' : '缓存有效'}
-                </Tag>
-                <span style={{ fontSize: 12, color: '#666' }}>
-                  更新于 {cacheStatus.cachedAt?.slice(0, 16).replace('T', ' ')}（{cacheStatus.ageMinutes} 分钟前）
-                </span>
-                <span style={{ fontSize: 12, color: '#666' }}>
-                  服务 {cacheStatus.servicesCount} 条 · 发票 {cacheStatus.invoicesCount} 条
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                  <Tag
+                    color={cacheStatus.exists ? (cacheStatus.isExpired ? 'orange' : 'green') : 'red'}
+                    style={{ margin: 0 }}
+                  >
+                    {cacheStatus.exists ? (cacheStatus.isExpired ? '已过期' : '缓存有效') : '尚无缓存'}
+                  </Tag>
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<SyncOutlined spin={cacheRefreshing} />}
+                    loading={cacheRefreshing}
+                    onClick={handleCacheRefresh}
+                    style={{ padding: '0 4px', height: 22, fontSize: 12 }}
+                  >
+                    {cacheStatus.exists ? '刷新' : '立即缓存'}
+                  </Button>
+                </div>
+                {cacheStatus.exists && (
+                  <div style={{ fontSize: 11, color: '#888', lineHeight: 1.6 }}>
+                    <div>{cacheStatus.cachedAt?.slice(0, 16).replace('T', ' ')}</div>
+                    <div>服务 {cacheStatus.servicesCount} · 发票 {cacheStatus.invoicesCount}</div>
+                  </div>
+                )}
               </>
             ) : (
-              <Tag color="red">尚无缓存</Tag>
+              <span style={{ fontSize: 12, color: '#bbb' }}>加载中…</span>
             )}
-            <Button
-              size="small"
-              icon={<SyncOutlined spin={cacheRefreshing} />}
-              loading={cacheRefreshing}
-              onClick={handleCacheRefresh}
-            >
-              {cacheStatus.exists ? '刷新缓存' : '立即缓存'}
-            </Button>
-          </div>
-        )}
-      </Card>
+          </Card>
+        </Col>
+      </Row>
 
       <Card>
         <Tabs
@@ -1000,7 +1109,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                   <Table
                     loading={upcomingLoading}
                     dataSource={upcoming}
-                    rowKey={(r, i) => r.market_service?.uuid || r.billing_service?.uuid || `up-${i}`}
+                    rowKey={(r, i) => r.billing_service?.uuid || r.market_service?.uuid || `up-${i}`}
                     size="small"
                     scroll={{ x: 1100 }}
                     pagination={false}
@@ -1262,7 +1371,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                       <Table
                         loading={renewedLoading}
                         dataSource={filteredRenewed}
-                        rowKey={(r, i) => r.market_service?.uuid || r.billing_service?.uuid || `ren-${i}`}
+                        rowKey={(r, i) => r.billing_service?.uuid || r.market_service?.uuid || `ren-${i}`}
                         size="small"
                         scroll={{ x: 900 }}
                         pagination={false}
@@ -1387,77 +1496,13 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
               label: (
                 <Space>
                   <CloudServerOutlined />
-                  {`已租用 IP (${servicesMeta.total})`}
+                  {`已租用IP段 (${servicesMeta.total})`}
                 </Space>
               ),
               children: (
                 <>
-                  <Row gutter={16} style={{ marginBottom: 16 }}>
-                    <Col span={6}>
-                      <Card size="small">
-                        <Statistic title="记录数" value={servicesMeta.total} />
-                      </Card>
-                    </Col>
-                    <Col span={6}>
-                      <Card size="small">
-                        <Statistic title="LOA" value={services.reduce((acc, r) => acc + (Array.isArray(r.loa) ? r.loa.length : 0), 0)} suffix={`/ ${services.length} 条`} />
-                      </Card>
-                    </Col>
-                    <Col span={6}>
-                      <Card size="small">
-                        <Statistic
-                          title="月费合计 (USD)"
-                          value={services.reduce((acc, r) => acc + (r.billing_service?.recurring_amount ?? 0), 0).toFixed(2)}
-                          prefix="$"
-                        />
-                      </Card>
-                    </Col>
-                    <Col span={6}>
-                      <Card size="small">
-                        <Statistic
-                          title="RIR 分布"
-                          formatter={() => {
-                            const counts: Record<string, number> = {};
-                            services.forEach(r => {
-                              const reg = r.market_service?.registry?.toUpperCase();
-                              if (reg) counts[reg] = (counts[reg] || 0) + 1;
-                            });
-                            return (
-                              <Space wrap size={4}>
-                                {Object.entries(counts).map(([k, v]) => (
-                                  <Tag key={k} color={REGISTRY_COLORS[k.toLowerCase()] || 'default'}>{k}: {v}</Tag>
-                                ))}
-                              </Space>
-                            );
-                          }}
-                        />
-                      </Card>
-                    </Col>
-                  </Row>
-
-                  <div style={{ marginBottom: 12 }}>
-                    <Space wrap style={{ width: '100%' }}>
-                      {servicesCachedAt && (
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          缓存于 {new Date(servicesCachedAt).toLocaleString('zh-CN')}
-                        </Typography.Text>
-                      )}
-                      <Button
-                        icon={<ReloadOutlined />}
-                        size="small"
-                        loading={servicesLoading}
-                        onClick={() => {
-                          setServicesSearch('');
-                          setServicesAsnFilter('all');
-                          setServicesAsnValue('');
-                          loadServices('active', '', '', '', true);
-                          setServicesStatus('active');
-                        }}
-                      >
-                        刷新数据
-                      </Button>
-                    </Space>
-                    <Space wrap style={{ marginTop: 8 }}>
+                  <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <Space wrap style={{ flex: 1 }}>
                       <Input
                         placeholder="搜索IP段，多个用逗号/空格分隔"
                         value={servicesSearch}
@@ -1468,23 +1513,10 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                         suffix={<SearchOutlined style={{ cursor: 'pointer', color: '#999' }} onClick={handleServicesSearch} />}
                       />
                       <Select
-                        value={servicesStatus}
-                        onChange={handleStatusChange}
-                        style={{ width: 140 }}
-                        options={[
-                          { label: '全部', value: '' },
-                          { label: 'Active（租用中）', value: 'active' },
-                          { label: 'Terminated', value: 'terminated' },
-                          { label: 'Pending', value: 'pending' },
-                          { label: 'Suspended', value: 'suspended' },
-                        ]}
-                      />
-                      <Select
                         value={servicesAsnFilter}
                         onChange={(v) => {
                           setServicesAsnFilter(v as 'all' | 'no_asn' | 'specific');
                           setServicesAsnValue('');
-                          loadServices(servicesStatus, servicesSearch, v, '');
                         }}
                         style={{ width: 120 }}
                         options={[
@@ -1497,45 +1529,47 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                         <Input
                           placeholder="输入ASN号"
                           value={servicesAsnValue}
-                          onChange={e => {
-                            const val = e.target.value;
-                            setServicesAsnValue(val);
-                            loadServices(servicesStatus, servicesSearch, 'specific', val);
-                          }}
+                          onChange={e => setServicesAsnValue(e.target.value)}
                           style={{ width: 110 }}
                         />
                       )}
-                      <Select
-                        value={servicesTableFilters['registry']?.[0] || undefined}
-                        placeholder="RIR: 全部"
-                        allowClear
-                        style={{ width: 120 }}
-                        onChange={(v) => {
-                          setServicesTableFilters(f => ({ ...f, registry: v ? [v] : [] }));
-                          setServicesSelectedKeys([]);
+                    </Space>
+                    <Space>
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          setServicesSearch('');
+                          setServicesAsnFilter('all');
+                          setServicesAsnValue('');
+                          setServicesTableFilters({});
+                          setServicesTableKey(k => k + 1);
                         }}
-                        options={[
-                          { label: 'ARIN', value: 'arin' },
-                          { label: 'RIPE NCC', value: 'ripencc' },
-                          { label: 'APNIC', value: 'apnic' },
-                          { label: 'AFRINIC', value: 'afrinic' },
-                          { label: 'LACNIC', value: 'lacnic' },
-                        ]}
-                      />
-                      <Select
-                        value={servicesTableFilters['renewalStatus']?.[0] || undefined}
-                        placeholder="续费状态: 全部"
-                        allowClear
-                        style={{ width: 140 }}
-                        onChange={(v) => {
-                          setServicesTableFilters(f => ({ ...f, renewalStatus: v ? [v] : [] }));
-                          setServicesSelectedKeys([]);
+                      >
+                        清空筛选
+                      </Button>
+                      <Button
+                        icon={<SyncOutlined />}
+                        size="small"
+                        onClick={handleLeasedSyncPreview}
+                        loading={leasedSyncLoading}
+                      >
+                        同步到IP管理
+                      </Button>
+                      <Button
+                        icon={<ReloadOutlined />}
+                        size="small"
+                        loading={servicesLoading}
+                        onClick={() => {
+                          setServicesSearch('');
+                          setServicesAsnFilter('all');
+                          setServicesAsnValue('');
+                          setServicesTableFilters({});
+                          setServicesTableKey(k => k + 1);
+                          loadServices(true);
                         }}
-                        options={[
-                          { label: '未取消', value: 'active' },
-                          { label: '到期取消', value: 'cancelled' },
-                        ]}
-                      />
+                      >
+                        刷新数据
+                      </Button>
                     </Space>
                   </div>
                   <div style={{ marginBottom: 12 }}>
@@ -1548,6 +1582,22 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                         设置 ASN ({servicesSelectedKeys.length})
                       </Button>
                       <Button
+                        disabled={servicesSelectedKeys.length === 0 || !services.some(r => servicesSelectedKeys.includes(r.billing_service?.uuid || r.market_service?.uuid) && Array.isArray(r.loa) && r.loa.length > 0)}
+                        onClick={() => {
+                          const tasks = services
+                            .filter(r => servicesSelectedKeys.includes(r.billing_service?.uuid || r.market_service?.uuid) && Array.isArray(r.loa) && r.loa.length > 0)
+                            .flatMap(r => (r.loa as any[]).map((loa: any) => ({
+                              subnet: `${r.billing_service?.address}/${r.billing_service?.cidr}`,
+                              asn: loa.asn,
+                              status: 'pending' as const,
+                            })));
+                          setRemoveAsnResults(tasks);
+                          setRemoveAsnVisible(true);
+                        }}
+                      >
+                        取消 ASN ({servicesSelectedKeys.length})
+                      </Button>
+                      <Button
                         danger
                         disabled={servicesSelectedKeys.length === 0}
                         onClick={() => { setCancelType('end_of_period'); setCancelReason('End of project'); setCancelUseAgain(true); setCancelVisible(true); }}
@@ -1555,20 +1605,37 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                         取消续费 ({servicesSelectedKeys.length})
                       </Button>
                       <Button
-                        icon={<SyncOutlined />}
-                        onClick={handleLeasedSyncPreview}
-                        loading={leasedSyncLoading}
+                        icon={<CopyOutlined />}
+                        disabled={servicesSelectedKeys.length === 0}
+                        onClick={() => {
+                          const subnets = services
+                            .filter(r => servicesSelectedKeys.includes(r.billing_service?.uuid || r.market_service?.uuid))
+                            .map(r => `${r.billing_service?.address || ''}/${r.billing_service?.cidr ?? ''}`)
+                            .filter(Boolean);
+                          if (!subnets.length) { message.warning('无有效 IP 段'); return; }
+                          navigator.clipboard.writeText(subnets.join('\n')).then(
+                            () => message.success(`已复制 ${subnets.length} 个 IP 段`),
+                            () => message.error('复制失败'),
+                          );
+                        }}
                       >
-                        同步到 IP 管理
+                        复制IP段 ({servicesSelectedKeys.length})
+                      </Button>
+                      <Button
+                        disabled={servicesSelectedKeys.length === 0}
+                        onClick={() => setServicesSelectedKeys([])}
+                      >
+                        取消选择
                       </Button>
                     </Space>
                   </div>
 
                   <Table
+                    key={servicesTableKey}
                     loading={servicesLoading}
                     dataSource={filteredServices}
                     columns={serviceColumns}
-                    rowKey={(r) => r.market_service?.uuid || r.billing_service?.uuid || `${r.billing_service?.address || ''}/${r.billing_service?.cidr ?? ''}`}
+                    rowKey={(r, i) => r.billing_service?.uuid || r.market_service?.uuid || `idx-${i}`}
                     rowSelection={{
                       selectedRowKeys: servicesSelectedKeys,
                       onChange: (keys) => setServicesSelectedKeys(keys as string[]),
@@ -1576,7 +1643,9 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                     size="small"
                     scroll={{ x: 1100 }}
                     pagination={false}
-                    onChange={() => {}}
+                    onChange={() => {
+                      setServicesSelectedKeys([]);
+                    }}
                   />
                 </>
               ),
@@ -1822,8 +1891,8 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         <div style={{ marginBottom: 12 }}>
           <span style={{ display: 'block', marginBottom: 4, fontWeight: 500 }}>已选 IP 段（{servicesSelectedKeys.length} 个）</span>
           <div style={{ maxHeight: 120, overflow: 'auto', background: '#f5f5f5', padding: 8, borderRadius: 4, fontFamily: 'monospace', fontSize: 12 }}>
-            {filteredServices
-              .filter(r => servicesSelectedKeys.includes(r.market_service?.uuid || r.billing_service?.uuid))
+            {services
+              .filter(r => servicesSelectedKeys.includes(r.billing_service?.uuid || r.market_service?.uuid))
               .map(r => `${r.billing_service?.address || ''}/${r.billing_service?.cidr ?? ''}`)
               .join('\n')}
           </div>
@@ -1846,6 +1915,44 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
             onChange={e => setSetAsnCompany(e.target.value)}
           />
         </div>
+      </Modal>
+
+      {/* 取消 ASN 弹窗 */}
+      <Modal
+        title="取消 ASN 授权"
+        open={removeAsnVisible}
+        onCancel={() => { if (!removeAsnLoading) { setRemoveAsnVisible(false); setRemoveAsnResults([]); } }}
+        onOk={handleRemoveAsnSubmit}
+        confirmLoading={removeAsnLoading}
+        okText="确认移除"
+        okButtonProps={{ danger: true }}
+      >
+        {removeAsnResults.some(r => r.status !== 'pending') ? (
+          <div>
+            {removeAsnResults.map((r, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, fontSize: 13 }}>
+                {r.status === 'ok' && <Tag color="success" style={{ margin: 0 }}>成功</Tag>}
+                {r.status === 'err' && <Tag color="error" style={{ margin: 0 }}>失败</Tag>}
+                {r.status === 'pending' && <Tag color="default" style={{ margin: 0 }}>等待</Tag>}
+                <span style={{ fontFamily: 'monospace' }}>{r.subnet}</span>
+                <span style={{ color: '#666' }}>AS{r.asn}</span>
+                {r.status === 'err' && <span style={{ color: '#cf1322', fontSize: 12 }}>{r.msg}</span>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div>
+            <Alert type="warning" showIcon message="以下 LOA 授权将被移除，操作不可撤销" style={{ marginBottom: 12 }} />
+            <div style={{ maxHeight: 240, overflow: 'auto' }}>
+              {removeAsnResults.map((r, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 13 }}>
+                  <span style={{ fontFamily: 'monospace', minWidth: 160 }}>{r.subnet}</span>
+                  <span style={{ color: '#1677ff' }}>AS{r.asn}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* 取消续费弹窗 */}

@@ -298,21 +298,31 @@ const TracerouteDetection: React.FC<Props> = () => {
     const rows = results
       .map((r, i) => ({ r, i }))
       .filter(({ i }) => checkedSet.has(i))
-      .map(({ r }) => {
-        const serverCol = r.serverName || '本机';
-        const resultCol = r.status === 'error' ? '失败' : (r.reachable ? '通' : '不通');
-        return `${r.raw}\t${serverCol}\t${resultCol}`;
-      });
+      .map(({ r }) => r.raw);
     if (rows.length === 0) {
       message.warning('请先勾选要复制的项');
       return;
     }
-    const header = 'IP段\t检测服务器\t检测结果';
-    const text = [header, ...rows].join('\n');
-    navigator.clipboard.writeText(text).then(
-      () => message.success(`已复制 ${rows.length} 条记录`),
+    navigator.clipboard.writeText(rows.join('\n')).then(
+      () => message.success(`已复制 ${rows.length} 个 IP 段`),
       () => message.error('复制失败'),
     );
+  };
+
+  // 按检测状态批量追加勾选（不清空已有勾选）
+  const selectByStatus = (type: 'reachable' | 'unreachable' | 'error') => {
+    const indices = results.map((r, i) => {
+      if (type === 'error' && r.status === 'error') return i;
+      if (type === 'reachable' && r.status === 'done' && r.reachable === true) return i;
+      if (type === 'unreachable' && r.status === 'done' && r.reachable === false) return i;
+      return -1;
+    }).filter(i => i >= 0);
+    if (indices.length === 0) return;
+    setCheckedSet(prev => {
+      const next = new Set(prev);
+      indices.forEach(i => next.add(i));
+      return next;
+    });
   };
 
   const reachableCount = doneResults.filter(r => r.reachable === true).length;
@@ -526,10 +536,10 @@ const TracerouteDetection: React.FC<Props> = () => {
               style={{ marginBottom: 16 }}
             />
 
-            {/* 全选 + 复制工具栏 */}
+            {/* 全选 + 状态批量勾选 + 复制工具栏 */}
             {doneIndices.length > 0 && (
               <div style={{
-                display: 'flex', alignItems: 'center', gap: 12,
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
                 marginBottom: 12, padding: '8px 12px',
                 background: '#fafafa', borderRadius: 6, border: '1px solid #f0f0f0',
               }}>
@@ -540,17 +550,54 @@ const TracerouteDetection: React.FC<Props> = () => {
                 >
                   全选
                 </Checkbox>
-                <Text type="secondary" style={{ fontSize: 12 }}>
+                <Text type="secondary" style={{ fontSize: 12, marginRight: 4 }}>
                   已选 {checkedSet.size} / {doneIndices.length}
                 </Text>
-                <Tooltip title="复制选中项的 IP段、检测服务器、检测结果（Tab分隔，可直接粘贴到Excel）">
+
+                {/* 按状态批量勾选 */}
+                {reachableCount > 0 && (
                   <Button
                     size="small"
+                    onClick={() => selectByStatus('reachable')}
+                    style={{ color: '#389e0d', borderColor: '#b7eb8f', background: '#f6ffed' }}
+                  >
+                    选「通」({reachableCount})
+                  </Button>
+                )}
+                {unreachableCount > 0 && (
+                  <Button
+                    size="small"
+                    onClick={() => selectByStatus('unreachable')}
+                    style={{ color: '#cf1322', borderColor: '#ffa39e', background: '#fff1f0' }}
+                  >
+                    选「不通」({unreachableCount})
+                  </Button>
+                )}
+                {results.filter(r => r.status === 'error').length > 0 && (
+                  <Button
+                    size="small"
+                    onClick={() => selectByStatus('error')}
+                    style={{ color: '#d46b08', borderColor: '#ffd591', background: '#fff7e6' }}
+                  >
+                    选「失败」({results.filter(r => r.status === 'error').length})
+                  </Button>
+                )}
+
+                {checkedSet.size > 0 && (
+                  <Button size="small" onClick={() => setCheckedSet(new Set())}>
+                    清空勾选
+                  </Button>
+                )}
+
+                <Tooltip title="每行一个 IP 段，可直接粘贴">
+                  <Button
+                    size="small"
+                    type="primary"
                     icon={<CopyOutlined />}
                     disabled={checkedSet.size === 0}
                     onClick={handleCopySelected}
                   >
-                    复制选中结果
+                    复制 IP 段 ({checkedSet.size})
                   </Button>
                 </Tooltip>
               </div>

@@ -102,6 +102,25 @@ const UserManagement: React.FC = () => {
     }
   };
 
+  const handleToggleDisabled = async (record: User) => {
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: 'toggle-disabled', id: record.id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        message.success(data.disabled ? `已禁用用户 ${record.username}` : `已启用用户 ${record.username}`);
+        fetchUsers();
+      } else {
+        message.error(data.message || '操作失败');
+      }
+    } catch {
+      message.error('操作失败');
+    }
+  };
+
   const handleDelete = async (id: string) => {
     try {
       const res = await fetch('/api/users', {
@@ -203,14 +222,40 @@ const UserManagement: React.FC = () => {
   }
 
   const columns = [
-    { title: '用户名', dataIndex: 'username', key: 'username', width: 120 },
+    {
+      title: '用户名',
+      dataIndex: 'username',
+      key: 'username',
+      width: 120,
+      render: (name: string, record: User) => (
+        <Space size={4}>
+          <span style={record.disabled ? { color: '#bbb', textDecoration: 'line-through' } : undefined}>{name}</span>
+          {record.disabled && <Tag color="red" style={{ marginInlineStart: 0 }}>已禁用</Tag>}
+        </Space>
+      ),
+    },
     { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 120 },
     {
       title: '角色',
       dataIndex: 'role',
       key: 'role',
-      width: 100,
+      width: 90,
       render: (r: string) => <Tag color={r === 'admin' ? 'red' : r === 'editor' ? 'blue' : 'default'}>{ROLE_LABELS[r] || r}</Tag>,
+    },
+    {
+      title: '登录方式',
+      key: 'loginType',
+      width: 100,
+      render: (_: unknown, record: User) => {
+        if (record.loginType === 'google') {
+          return (
+            <Tooltip title={record.googleEmail}>
+              <Tag color="geekblue">Google</Tag>
+            </Tooltip>
+          );
+        }
+        return <Tag>密码</Tag>;
+      },
     },
     {
       title: '权限配置',
@@ -222,11 +267,11 @@ const UserManagement: React.FC = () => {
         return <Tag color="default">角色默认</Tag>;
       },
     },
-    { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 170, render: (t: string) => t ? new Date(t).toLocaleString('zh-CN') : '-' },
+    { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 160, render: (t: string) => t ? new Date(t).toLocaleString('zh-CN') : '-' },
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 240,
       render: (_: unknown, record: User) => (
         <Space size={0}>
           <Button type="link" size="small" onClick={() => handleEdit(record)}>编辑</Button>
@@ -244,6 +289,22 @@ const UserManagement: React.FC = () => {
                   </Popconfirm>
                 </>
               )}
+            </>
+          )}
+          {record.username !== 'admin' && record.id !== currentUser?.id && (
+            <>
+              <Divider type="vertical" />
+              <Popconfirm
+                title={record.disabled ? `确定启用用户 ${record.username}？` : `确定禁用用户 ${record.username}？`}
+                onConfirm={() => handleToggleDisabled(record)}
+                okText={record.disabled ? '启用' : '禁用'}
+                cancelText="取消"
+                okButtonProps={{ danger: !record.disabled }}
+              >
+                <Button type="link" size="small" danger={!record.disabled} style={record.disabled ? { color: '#52c41a' } : undefined}>
+                  {record.disabled ? '启用' : '禁用'}
+                </Button>
+              </Popconfirm>
             </>
           )}
           {record.username !== 'admin' && (
@@ -294,9 +355,16 @@ const UserManagement: React.FC = () => {
           <Form.Item name="username" label="用户名" rules={[{ required: !editingUser, message: '请输入用户名' }]}>
             <Input disabled={!!editingUser} placeholder="登录用户名" />
           </Form.Item>
-          <Form.Item name="password" label={editingUser ? '新密码（留空不变）' : '密码'} rules={editingUser ? [] : [{ required: true, message: '请输入密码' }]}>
-            <Input.Password placeholder={editingUser ? '留空则不修改' : '密码'} />
-          </Form.Item>
+          {editingUser?.loginType !== 'google' && (
+            <Form.Item name="password" label={editingUser ? '新密码（留空不变）' : '密码'} rules={editingUser ? [] : [{ required: true, message: '请输入密码' }]}>
+              <Input.Password placeholder={editingUser ? '留空则不修改' : '密码'} />
+            </Form.Item>
+          )}
+          {editingUser?.loginType === 'google' && editingUser.googleEmail && (
+            <Form.Item label="Google 邮箱">
+              <Input disabled value={editingUser.googleEmail} />
+            </Form.Item>
+          )}
           <Form.Item name="displayName" label="显示名称">
             <Input placeholder="用于显示的昵称" />
           </Form.Item>

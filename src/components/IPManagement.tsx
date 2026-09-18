@@ -57,7 +57,7 @@ const INTERLIR_SUPPLIER = 'Interlir';
 
 /** 各子 Tab 大表共用：virtual 必须配 scroll.y，减少「全表几千行 DOM」导致的切换卡顿 */
 /** 与各列 width 之和匹配，大屏下列可完整展示且不挤换行（续费时间等日期列单行） */
-const IP_SEGMENT_TABLE_VIRTUAL_SCROLL = { x: 2280, y: 560 } as const;
+const IP_SEGMENT_TABLE_VIRTUAL_SCROLL = { x: 2280 } as const;
 
 /** 列表勾选列宽度（Ant Design Table rowSelection.columnWidth） */
 const TABLE_SELECTION_COLUMN_WIDTH = 46;
@@ -294,6 +294,9 @@ const IPManagement: React.FC = () => {
   const [batchTableData, setBatchTableData] = useState<Partial<IPSegment>[]>([]);
   const [textImportValue, setTextImportValue] = useState('');
   const [blockedInfoImportValue, setBlockedInfoImportValue] = useState('');
+  // 文本导入预览：供应商/项目组/计费地区是否为必填，默认开启
+  const [previewRequiredFields, setPreviewRequiredFields] = useState(true);
+  const [tableScrollY, setTableScrollY] = useState(560);
   const [filteredSupplier, setFilteredSupplier] = useState<string | undefined>(undefined);
   const [filteredSegment, setFilteredSegment] = useState<string>('');
   const [sortBySearchOrder, setSortBySearchOrder] = useState(false);
@@ -365,6 +368,20 @@ const IPManagement: React.FC = () => {
     }, 60000); // 每分钟检查一次
     
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const updateTableScrollY = () => {
+      // 页面布局中表格滚动区以上的固定高度之和：
+      // Content padding-top(24) + app-content padding-top(12) +
+      // Card body padding-top(24) + 工具栏+间距(48) + 统计行+间距(52) +
+      // Tabs 导航栏(46) + 表格固定表头(42) + 底部内边距(60)
+      const OFFSET = 308;
+      setTableScrollY(Math.max(300, window.innerHeight - OFFSET));
+    };
+    updateTableScrollY();
+    window.addEventListener('resize', updateTableScrollY);
+    return () => window.removeEventListener('resize', updateTableScrollY);
   }, []);
 
   const loadData = () => {
@@ -2615,6 +2632,26 @@ const IPManagement: React.FC = () => {
       return;
     }
 
+    // 文本导入必填校验（被墙信息导入不做此校验）
+    const isBlockedInfoImportCheck = batchTableData.length > 0 && (batchTableData[0] as any)._detectedCountries !== undefined;
+    if (previewRequiredFields && !isBlockedInfoImportCheck) {
+      const missing: string[] = [];
+      batchTableData.forEach((row, i) => {
+        const n = i + 1;
+        if (!row.supplier) missing.push(`第${n}行缺少供应商`);
+        if (!row.projectGroups || row.projectGroups.length === 0) missing.push(`第${n}行缺少项目组`);
+        if (!row.serverLocations || row.serverLocations.length === 0) missing.push(`第${n}行缺少计费地区`);
+      });
+      if (missing.length > 0) {
+        const preview = missing.slice(0, 5).join('、');
+        message.error(
+          `必填项未完成，共 ${missing.length} 处：${preview}${missing.length > 5 ? ` 等` : ''}。可关闭「必填项」开关跳过校验。`,
+          5,
+        );
+        return;
+      }
+    }
+
     // 获取现有数据
     const existingSegments = ipSegmentStorage.getAll();
     const existingSegmentMap = new Map<string, IPSegment>();
@@ -3446,31 +3483,10 @@ const IPManagement: React.FC = () => {
       dataIndex: 'serverLocations',
       key: 'serverLocations',
       width: 208,
-      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }: any) => (
-        <div style={{ padding: 8 }}>
-          <Input
-            placeholder="搜索计费地区"
-            value={selectedKeys[0]}
-            onChange={(e) => setSelectedKeys(e.target.value ? [e.target.value] : [])}
-            onPressEnter={() => confirm()}
-            style={{ marginBottom: 8, display: 'block' }}
-          />
-          <Space>
-            <Button type="primary" onClick={() => confirm()} size="small" style={{ width: 90 }}>
-              搜索
-            </Button>
-            <Button onClick={() => clearFilters && clearFilters()} size="small" style={{ width: 90 }}>
-              重置
-            </Button>
-          </Space>
-        </div>
-      ),
-      onFilter: (value, record) => {
-        const searchValue = String(value).toLowerCase();
-        return (record.serverLocations || []).some(loc =>
-          loc.region.toLowerCase().includes(searchValue)
-        );
-      },
+      filters: SERVER_LOCATION_REGIONS.map(r => ({ text: r, value: r })),
+      filterMode: 'menu' as const,
+      onFilter: (value, record) =>
+        (record.serverLocations || []).some(loc => loc.region === String(value)),
       render: (locations: ServerLocation[]) => (
         <Space wrap size={[8, 6]}>
           {(locations || []).map((loc, index) => (
@@ -3642,9 +3658,6 @@ const IPManagement: React.FC = () => {
 
   return (
     <div>
-      <div className="app-header">
-        <h1 className="app-title">IP段管理平台</h1>
-      </div>
       <div className="app-content">
         <Card className="ip-management-card">
           <Space style={{ marginBottom: 16 }} wrap split={<Divider type="vertical" />}>
@@ -3918,7 +3931,7 @@ const IPManagement: React.FC = () => {
                       columns={columns}
                       dataSource={displayFilteredIpSegments}
                       rowKey="id"
-                      scroll={IP_SEGMENT_TABLE_VIRTUAL_SCROLL}
+                      scroll={{ ...IP_SEGMENT_TABLE_VIRTUAL_SCROLL, y: tableScrollY }}
                       rowSelection={{
                         columnWidth: TABLE_SELECTION_COLUMN_WIDTH,
                         selectedRowKeys,
@@ -3941,7 +3954,7 @@ const IPManagement: React.FC = () => {
                       columns={columns}
                       dataSource={displayCancelledButNotExpiredSegments}
                       rowKey="id"
-                      scroll={IP_SEGMENT_TABLE_VIRTUAL_SCROLL}
+                      scroll={{ ...IP_SEGMENT_TABLE_VIRTUAL_SCROLL, y: tableScrollY }}
                       rowSelection={{
                         columnWidth: TABLE_SELECTION_COLUMN_WIDTH,
                         selectedRowKeys: cancelledButNotExpiredSelectedKeys,
@@ -3964,7 +3977,7 @@ const IPManagement: React.FC = () => {
                       columns={columns}
                       dataSource={displayCancelledIpSegments}
                       rowKey="id"
-                      scroll={IP_SEGMENT_TABLE_VIRTUAL_SCROLL}
+                      scroll={{ ...IP_SEGMENT_TABLE_VIRTUAL_SCROLL, y: tableScrollY }}
                       rowSelection={{
                         columnWidth: TABLE_SELECTION_COLUMN_WIDTH,
                         selectedRowKeys: cancelledSelectedKeys,
@@ -3987,7 +4000,7 @@ const IPManagement: React.FC = () => {
                       columns={columns}
                       dataSource={displayAllIpSegments}
                       rowKey="id"
-                      scroll={IP_SEGMENT_TABLE_VIRTUAL_SCROLL}
+                      scroll={{ ...IP_SEGMENT_TABLE_VIRTUAL_SCROLL, y: tableScrollY }}
                       rowSelection={{
                         columnWidth: TABLE_SELECTION_COLUMN_WIDTH,
                         selectedRowKeys: allSegmentsSelectedKeys,
@@ -4869,26 +4882,40 @@ const IPManagement: React.FC = () => {
                   </Button>
                   {batchTableData.length > 0 && (
                     <div style={{ marginTop: 16 }}>
-                      <Space style={{ marginBottom: 8 }} wrap>
-                        <Text strong>预览数据（共 {batchTableData.length} 条）：</Text>
-                        {previewSelectedRowKeys.length > 0 && (
-                          <>
-                            <Button
-                              type="primary"
-                              size="small"
-                              onClick={() => setIsPreviewBatchEditVisible(true)}
-                            >
-                              批量编辑 ({previewSelectedRowKeys.length})
-                            </Button>
-                            <Button
-                              size="small"
-                              onClick={() => setPreviewSelectedRowKeys([])}
-                            >
-                              取消选择
-                            </Button>
-                          </>
-                        )}
-                      </Space>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                        <Space wrap>
+                          <Text strong>预览数据（共 {batchTableData.length} 条）：</Text>
+                          {previewSelectedRowKeys.length > 0 && (
+                            <>
+                              <Button
+                                type="primary"
+                                size="small"
+                                onClick={() => setIsPreviewBatchEditVisible(true)}
+                              >
+                                批量编辑 ({previewSelectedRowKeys.length})
+                              </Button>
+                              <Button
+                                size="small"
+                                onClick={() => setPreviewSelectedRowKeys([])}
+                              >
+                                取消选择
+                              </Button>
+                            </>
+                          )}
+                        </Space>
+                        <Space size={6}>
+                          <Text style={{ fontSize: 12, color: previewRequiredFields ? '#d46b08' : 'rgba(0,0,0,0.45)' }}>
+                            必填项（供应商 / 项目组 / 计费地区）
+                          </Text>
+                          <Switch
+                            size="small"
+                            checked={previewRequiredFields}
+                            onChange={setPreviewRequiredFields}
+                            checkedChildren="开"
+                            unCheckedChildren="关"
+                          />
+                        </Space>
+                      </div>
                       <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
                         解析结果已按配置与现有 IP 段对齐名称；请通过下拉选择宣告地区、供应商与项目组，勿依赖粘贴文本以免编码异常。
                       </Text>
@@ -4931,14 +4958,22 @@ const IPManagement: React.FC = () => {
                             ),
                           },
                           {
-                            title: '供应商',
+                            title: (
+                              <span>
+                                供应商
+                                {previewRequiredFields && <span style={{ color: '#ff4d4f', marginLeft: 2 }}>*</span>}
+                              </span>
+                            ),
                             dataIndex: 'supplier',
                             width: 130,
                             render: (text: string | undefined, _record, index) => (
                               <Select
                                 showSearch
                                 allowClear
-                                style={{ width: '100%' }}
+                                style={{
+                                  width: '100%',
+                                  ...(previewRequiredFields && !text ? { outline: '1px solid #ff4d4f', borderRadius: 6 } : {}),
+                                }}
                                 placeholder="选择供应商"
                                 value={text || undefined}
                                 options={previewSupplierOptions}
@@ -4952,13 +4987,21 @@ const IPManagement: React.FC = () => {
                             ),
                           },
                           {
-                            title: '项目组',
+                            title: (
+                              <span>
+                                项目组
+                                {previewRequiredFields && <span style={{ color: '#ff4d4f', marginLeft: 2 }}>*</span>}
+                              </span>
+                            ),
                             dataIndex: 'projectGroups',
                             width: 160,
                             render: (groups: string[] | undefined, _record, index) => (
                               <Select
                                 mode="multiple"
-                                style={{ width: '100%' }}
+                                style={{
+                                  width: '100%',
+                                  ...(previewRequiredFields && (!groups || groups.length === 0) ? { outline: '1px solid #ff4d4f', borderRadius: 6 } : {}),
+                                }}
                                 placeholder="选择项目组"
                                 value={groups || []}
                                 options={projectGroups.map((g) => ({
@@ -4968,6 +5011,34 @@ const IPManagement: React.FC = () => {
                                 onChange={(v) => handleTableDataChange(index, 'projectGroups', v)}
                               />
                             ),
+                          },
+                          {
+                            title: (
+                              <span>
+                                计费地区
+                                {previewRequiredFields && <span style={{ color: '#ff4d4f', marginLeft: 2 }}>*</span>}
+                              </span>
+                            ),
+                            dataIndex: 'serverLocations',
+                            width: 160,
+                            render: (locs: Array<{ supplier: string; region: string }> | undefined, _record, index) => {
+                              const regions = (locs || []).map(l => l.region).filter(Boolean);
+                              return (
+                                <Select
+                                  mode="multiple"
+                                  style={{
+                                    width: '100%',
+                                    ...(previewRequiredFields && regions.length === 0 ? { outline: '1px solid #ff4d4f', borderRadius: 6 } : {}),
+                                  }}
+                                  placeholder="选择计费地区"
+                                  value={regions}
+                                  options={SERVER_LOCATION_REGIONS.map(r => ({ label: r, value: r }))}
+                                  onChange={(v: string[]) =>
+                                    handleTableDataChange(index, 'serverLocations', v.map(r => ({ supplier: '', region: r })))
+                                  }
+                                />
+                              );
+                            },
                           },
                           {
                             title: '费用($)',

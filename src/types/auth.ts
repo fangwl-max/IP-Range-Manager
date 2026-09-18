@@ -6,6 +6,9 @@ export interface User {
   displayName?: string;
   role: UserRole;
   permissions?: string[];
+  googleEmail?: string;
+  loginType?: 'password' | 'google';
+  disabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,10 +28,14 @@ export interface LoginResponse {
 export interface UserRecord {
   id: string;
   username: string;
-  passwordHash: string;
+  passwordHash?: string;
   displayName?: string;
   role: UserRole;
   permissions?: string[];
+  googleEmail?: string;
+  googleId?: string;
+  loginType?: 'password' | 'google';
+  disabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
