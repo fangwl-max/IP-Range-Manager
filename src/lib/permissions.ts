@@ -82,7 +82,7 @@ const ALL_KEYS: string[] = Object.entries(PAGE_PERMS).flatMap(([pageKey, node]) 
 
 export const ROLE_DEFAULTS: Record<string, string[]> = {
   admin: ALL_KEYS,
-  editor: ALL_KEYS.filter(k => !k.startsWith('user-management')),
+  editor: ALL_KEYS.filter(k => !k.startsWith('user-management') && k !== 'audit-logs'),
   viewer: [
     'ip-management', 'ip-management.export',
     'irr-detection',

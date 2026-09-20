@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
   Card, Table, Button, Modal, Form, Input, Select, message, Popconfirm, Tag,
-  Drawer, Tree, Space, Divider, Badge, Tooltip,
+  Drawer, Tree, Space, Divider, Badge, Tooltip, Switch,
 } from 'antd';
-import { PlusOutlined, UserOutlined, KeyOutlined } from '@ant-design/icons';
+import { PlusOutlined, UserOutlined, KeyOutlined, SettingOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import type { User } from '../types/auth';
 import { buildPermTree, ROLE_DEFAULTS, PAGE_PERMS } from '../lib/permissions';
@@ -46,6 +46,42 @@ const UserManagement: React.FC = () => {
   const [checkedKeys, setCheckedKeys] = useState<string[]>([]);
   const [savingPerms, setSavingPerms] = useState(false);
 
+  // 平台设置
+  const [restrictIpAccess, setRestrictIpAccess] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+
+  const fetchPlatformSettings = async () => {
+    try {
+      const res = await fetch('/api/admin/platform-settings', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      if (json.success) setRestrictIpAccess(!!json.settings?.restrict_ip_access);
+    } catch {}
+  };
+
+  const handleRestrictIpToggle = async (checked: boolean) => {
+    setSettingsLoading(true);
+    try {
+      const res = await fetch('/api/admin/platform-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ restrict_ip_access: checked }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setRestrictIpAccess(checked);
+        message.success(checked ? '已开启：仅域名可访问' : '已关闭：IP+端口访问已允许');
+      } else {
+        message.error(json.message || '设置失败');
+      }
+    } catch (e: any) {
+      message.error('请求失败: ' + e.message);
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
   const fetchUsers = async () => {
     if (!hasPermission('user-management')) return;
     setLoading(true);
@@ -63,7 +99,7 @@ const UserManagement: React.FC = () => {
     }
   };
 
-  useEffect(() => { fetchUsers(); }, []);
+  useEffect(() => { fetchUsers(); fetchPlatformSettings(); }, []);
 
   const handleAdd = () => {
     setEditingUser(null);
@@ -324,6 +360,26 @@ const UserManagement: React.FC = () => {
 
   return (
     <>
+      {currentUser?.role === 'admin' && (
+        <Card
+          title={<><SettingOutlined style={{ marginRight: 8 }} />平台设置</>}
+          style={{ marginBottom: 16 }}
+          size="small"
+        >
+          <Space align="center">
+            <Switch
+              checked={restrictIpAccess}
+              loading={settingsLoading}
+              onChange={handleRestrictIpToggle}
+            />
+            <span style={{ fontWeight: 500 }}>禁止通过 IP+端口直接访问</span>
+            <span style={{ color: 'rgba(0,0,0,0.45)', fontSize: 12 }}>
+              开启后仅允许通过域名访问，直接使用 IP 地址访问将返回 403
+            </span>
+          </Space>
+        </Card>
+      )}
+
       <Card
         title={<><UserOutlined style={{ marginRight: 8 }} />用户与权限管理</>}
         extra={

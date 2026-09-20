@@ -12,6 +12,8 @@ services:
       # ── 敏感配置文件（需在宿主机上提前创建）──────────────────────────────
       - ./data/zen-config.json:/app/zen-config.json
       - ./data/users.json:/app/users.json
+      - ./data/audit.log:/app/audit.log
+      - ./data/platform-settings.json:/app/platform-settings.json
       - ./data/ipxo-config.json:/app/ipxo-config.json
       - ./data/notify-config.json:/app/notify-config.json
       - ./data/cds-config.json:/app/cds-config.json

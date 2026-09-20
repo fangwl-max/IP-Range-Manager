@@ -34,6 +34,8 @@ const zenConfigFilePath = path.resolve(__dirname, 'zen-config.json');
 const cdsConfigFilePath = path.resolve(__dirname, 'cds-config.json');
 // 操作审计日志文件路径（NDJSON，追加写入）
 const auditLogPath = path.resolve(__dirname, 'audit.log');
+// 平台设置文件路径
+const platformSettingsPath = path.resolve(__dirname, 'platform-settings.json');
 // 内存中的 token 存储 (token -> { userId, username })
 const tokenStore = new Map<string, { userId: string; username: string; role: string }>();
 
@@ -206,6 +208,19 @@ function loadUsers(): any[] {
 
 function saveUsers(users: any[]): void {
   fs.writeFileSync(usersFilePath, JSON.stringify({ users, updatedAt: new Date().toISOString() }, null, 2), 'utf-8');
+}
+
+function loadPlatformSettings(): Record<string, any> {
+  try {
+    if (fs.existsSync(platformSettingsPath)) {
+      return JSON.parse(fs.readFileSync(platformSettingsPath, 'utf-8'));
+    }
+  } catch {}
+  return { restrict_ip_access: false };
+}
+
+function savePlatformSettings(settings: Record<string, any>): void {
+  fs.writeFileSync(platformSettingsPath, JSON.stringify(settings, null, 2), 'utf-8');
 }
 
 function initDefaultUserIfNeeded(): void {
@@ -3040,6 +3055,57 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       console.error('[uncaughtException]', err);
     });
   }
+
+  // ─── IP+端口访问限制（最高优先级，所有请求通过此处）────────────────────
+  server.middlewares.use((req: any, res: any, next: any) => {
+    const host = (req.headers.host || '').split(':')[0];
+    const isIpHost = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+    if (isIpHost) {
+      const settings = loadPlatformSettings();
+      if (settings.restrict_ip_access) {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end('<!DOCTYPE html><html><head><meta charset="utf-8"><title>访问受限</title></head><body style="font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0f172a"><div style="text-align:center;color:#fff"><h2 style="font-size:24px;margin-bottom:12px">访问受限</h2><p style="color:rgba(255,255,255,0.6)">请通过域名访问本系统</p></div></body></html>');
+        return;
+      }
+    }
+    next();
+  });
+
+  // ─── GET/POST /api/admin/platform-settings ───────────────────────────
+  server.middlewares.use('/api/admin/platform-settings', async (req: any, res: any, next: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    const session = getSession(req);
+    if (!session || session.role !== 'admin') {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ success: false, message: '无权限' }));
+      return;
+    }
+    if (req.method === 'GET') {
+      res.end(JSON.stringify({ success: true, settings: loadPlatformSettings() }));
+      return;
+    }
+    if (req.method === 'POST') {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: any) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+      req.on('end', () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+          const current = loadPlatformSettings();
+          const updated = { ...current, ...body };
+          savePlatformSettings(updated);
+          logAudit(req, session.userId, session.username, session.role, 'platform_settings.update', 'platform-settings', body);
+          res.end(JSON.stringify({ success: true, settings: updated }));
+        } catch (e: any) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: e.message }));
+        }
+      });
+      return;
+    }
+    next();
+  });
+
   // ─── /cds-proxy → CDS-Auto-Announce Flask 服务（端口 9010）────────────
   server.middlewares.use('/cds-proxy', (req: any, res: any, _next: any) => {
     const proxyPath = req.url || '/';
