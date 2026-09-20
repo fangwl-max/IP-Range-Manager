@@ -3074,8 +3074,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
   // ─── GET/POST /api/admin/platform-settings ───────────────────────────
   server.middlewares.use('/api/admin/platform-settings', async (req: any, res: any, next: any) => {
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     res.setHeader('Content-Type', 'application/json');
-    const session = getSession(req);
+    const session = getTokenSession(req);
     if (!session || session.role !== 'admin') {
       res.statusCode = 403;
       res.end(JSON.stringify({ success: false, message: '无权限' }));
