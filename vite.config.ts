@@ -3271,6 +3271,19 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         res.end('<h2>首都在线宣告服务未启动</h2><p>请确保 CDS-Auto-Announce 服务运行在端口 ' + cdsPort + '</p>');
       }
     });
+    // 宣告/撤播操作审计日志
+    if (req.method === 'POST' || req.method === 'DELETE') {
+      const cdsSess = mainToken ? tokenStore.get(mainToken) : null;
+      if (cdsSess) {
+        const pLow = proxyPath.toLowerCase();
+        const isWithdraw = pLow.includes('withdraw') || pLow.includes('cancel') || pLow.includes('revoke');
+        const isAnnounce = pLow.includes('announce') || pLow.includes('batch');
+        if (isAnnounce || isWithdraw) {
+          const cdsAction = isWithdraw ? 'withdraw.cds' : 'announce.cds';
+          logAudit(req, (cdsSess as any).userId, (cdsSess as any).username, (cdsSess as any).role, cdsAction, proxyPath);
+        }
+      }
+    }
     req.pipe(proxyReq, { end: true });
   });
   // 保存数据接口
@@ -3296,6 +3309,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           try {
             // 解析后再美化写入，保证文件可读性；同时允许前端发送紧凑 JSON 减小传输体积
             const savedData = JSON.parse(body);
+            // 写入前读取旧数据，用于 diff 日志
+            let oldSaveData: any = {};
+            try {
+              if (fs.existsSync(dataFilePath)) {
+                oldSaveData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8') || '{}');
+              }
+            } catch {}
             fs.writeFileSync(dataFilePath, JSON.stringify(savedData, null, 2), 'utf-8');
 
             // ── 同步备注到 ipxo-upcoming-status.json ──────────────────────────
@@ -3335,8 +3355,36 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
             const saveSession = getTokenSession(req);
             if (saveSession) {
-              const segCount = Array.isArray(savedData?.ipSegments) ? savedData.ipSegments.length : 0;
-              logAudit(req, saveSession.userId, saveSession.username, saveSession.role, 'ip_segment.save', 'ip-data', { segmentCount: segCount });
+              const oldSegs: any[] = Array.isArray(oldSaveData?.ipSegments) ? oldSaveData.ipSegments : [];
+              const newSegs: any[] = Array.isArray(savedData?.ipSegments) ? savedData.ipSegments : [];
+              const oldSegMap = new Map(oldSegs.map((s: any) => [s.segment, s]));
+              const newSegMap = new Map(newSegs.map((s: any) => [s.segment, s]));
+              const deletedSegs: string[] = oldSegs.filter((s: any) => !newSegMap.has(s.segment)).map((s: any) => s.segment);
+              const addedSegs: string[] = newSegs.filter((s: any) => !oldSegMap.has(s.segment)).map((s: any) => s.segment);
+              const TRACKED_FIELDS = ['asn', 'additionalAsns', 'status', 'supplier', 'projectGroup', 'usageArea', 'remark', 'monthlyFee', 'purchaseDate', 'renewalDate', 'renewalStatus'];
+              const changedSegs: { segment: string; changes: Record<string, { from: any; to: any }> }[] = [];
+              for (const [seg, newSeg] of newSegMap) {
+                const oldSeg = oldSegMap.get(seg);
+                if (!oldSeg) continue;
+                const diff: Record<string, { from: any; to: any }> = {};
+                for (const f of TRACKED_FIELDS) {
+                  const ov = Array.isArray(oldSeg[f]) ? oldSeg[f].join(',') : String(oldSeg[f] ?? '');
+                  const nv = Array.isArray(newSeg[f]) ? newSeg[f].join(',') : String(newSeg[f] ?? '');
+                  if (ov !== nv) diff[f] = { from: oldSeg[f], to: newSeg[f] };
+                }
+                if (Object.keys(diff).length > 0) changedSegs.push({ segment: seg, changes: diff });
+              }
+              if (deletedSegs.length > 0) logAudit(req, saveSession.userId, saveSession.username, saveSession.role, 'ip_segment.delete', deletedSegs.slice(0, 10).join(','), { count: deletedSegs.length, segments: deletedSegs.slice(0, 50) });
+              if (addedSegs.length > 0) logAudit(req, saveSession.userId, saveSession.username, saveSession.role, 'ip_segment.create', addedSegs.slice(0, 10).join(','), { count: addedSegs.length, segments: addedSegs.slice(0, 50) });
+              if (changedSegs.length > 0) logAudit(req, saveSession.userId, saveSession.username, saveSession.role, 'ip_segment.update', changedSegs.slice(0, 5).map((c: any) => c.segment).join(','), { count: changedSegs.length, changes: changedSegs.slice(0, 20) });
+              if (deletedSegs.length === 0 && addedSegs.length === 0 && changedSegs.length === 0) {
+                logAudit(req, saveSession.userId, saveSession.username, saveSession.role, 'ip_segment.save', 'ip-data', { segmentCount: newSegs.length });
+              }
+              for (const cfgKey of ['suppliers', 'projectGroups', 'usageAreas'] as const) {
+                if (JSON.stringify(oldSaveData?.[cfgKey] ?? []) !== JSON.stringify(savedData?.[cfgKey] ?? [])) {
+                  logAudit(req, saveSession.userId, saveSession.username, saveSession.role, 'config.update', cfgKey, { oldCount: (oldSaveData?.[cfgKey] || []).length, newCount: (savedData?.[cfgKey] || []).length });
+                }
+              }
             }
             res.setHeader('Content-Type', 'application/json');
             res.statusCode = 200;
@@ -3556,7 +3604,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               const newUser = { id: 'user-' + Date.now(), username: username.trim(), passwordHash: hashPassword(password), displayName: displayName || username.trim(), role: role || 'viewer', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
               users.push(newUser);
               saveUsers(users);
-              logAudit(req, session.userId, session.username, session.role, 'user.create', newUser.username, { role: newUser.role });
+              logAudit(req, session.userId, session.username, session.role, 'user.create', newUser.username, { role: newUser.role, displayName: newUser.displayName });
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true, user: { id: newUser.id, username: newUser.username, displayName: newUser.displayName, role: newUser.role, createdAt: newUser.createdAt, updatedAt: newUser.updatedAt } }));
@@ -3568,12 +3616,17 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
                 res.end(JSON.stringify({ success: false, message: '用户不存在' }));
                 return;
               }
+              const userBefore = { role: users[idx].role, displayName: users[idx].displayName };
               if (password) users[idx].passwordHash = hashPassword(password);
               if (displayName !== undefined) users[idx].displayName = displayName;
               if (role) users[idx].role = role;
               users[idx].updatedAt = new Date().toISOString();
               saveUsers(users);
-              logAudit(req, session.userId, session.username, session.role, 'user.update', users[idx].username, { role: users[idx].role });
+              const updateChanges: Record<string, any> = {};
+              if (password) updateChanges.password = '已修改';
+              if (displayName !== undefined && displayName !== userBefore.displayName) updateChanges.displayName = { from: userBefore.displayName, to: displayName };
+              if (role && role !== userBefore.role) updateChanges.role = { from: userBefore.role, to: role };
+              logAudit(req, session.userId, session.username, session.role, 'user.update', users[idx].username, { changes: updateChanges });
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true, user: { id: users[idx].id, username: users[idx].username, displayName: users[idx].displayName, role: users[idx].role, createdAt: users[idx].createdAt, updatedAt: users[idx].updatedAt } }));
@@ -3594,7 +3647,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               users[idx].permissions = Array.isArray(permissions) ? permissions : null;
               users[idx].updatedAt = new Date().toISOString();
               saveUsers(users);
-              logAudit(req, session.userId, session.username, session.role, 'user.set_permissions', users[idx].username, { count: Array.isArray(permissions) ? permissions.length : 'reset' });
+              logAudit(req, session.userId, session.username, session.role, 'user.set_permissions', users[idx].username, { mode: Array.isArray(permissions) ? 'custom' : 'reset_to_role_default', count: Array.isArray(permissions) ? permissions.length : null, permissions: Array.isArray(permissions) ? permissions : null });
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true }));
@@ -6207,6 +6260,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               || cartResult.body?.error
               || (typeof cartResult.body === 'string' && cartResult.body ? cartResult.body : `HTTP ${cartResult.status}`);
             console.log(`[LOA Cart] status=${cartResult.status}, body=`, cartResult.body);
+            const loaCartSess = getTokenSession(req);
+            if (loaCartSess && (cartOk || cartDuplicate)) {
+              logAudit(req, loaCartSess.userId, loaCartSess.username, loaCartSess.role, 'ipxo.loa_add_to_cart', `ASN${asn}`, { asn, subnets, cartStatus: cartResult.status });
+            }
             res.statusCode = 200;
             res.end(JSON.stringify({
               success: cartOk || cartDuplicate,
@@ -6357,6 +6414,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               `/billing/v1/{tenant_uuid}/market/ipv4/services/${serviceUuid}/loa/${loaUuid}`
             );
             if (r.status >= 200 && r.status < 300) {
+              const loaRemoveSess = getTokenSession(req);
+              if (loaRemoveSess) logAudit(req, loaRemoveSess.userId, loaRemoveSess.username, loaRemoveSess.role, 'ipxo.loa_remove', subnet || serviceUuid, { serviceUuid, loaUuid, subnet });
               res.statusCode = 200;
               res.end(JSON.stringify({ success: true, message: `已移除 ${subnet || serviceUuid} 的 LOA 授权` }));
             } else {
@@ -6789,6 +6848,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             }
 
             const successCount = results.filter(r => r.ok).length;
+            const cancelSess = getTokenSession(req);
+            if (cancelSess) {
+              const cancelSubnets = results.map((r: any) => r.subnet || r.billingUuid || '').filter(Boolean);
+              logAudit(req, cancelSess.userId, cancelSess.username, cancelSess.role, 'ipxo.cancel_renewal', cancelSubnets.slice(0, 10).join(','), { type, reason, total: results.length, successCount, results: results.slice(0, 20) });
+            }
             res.statusCode = 200;
             res.end(JSON.stringify({
               success: true,
@@ -8454,7 +8518,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const zenPipeSession = getTokenSession(req);
       if (zenPipeSession) {
         const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
-        logAudit(req, zenPipeSession.userId, zenPipeSession.username, zenPipeSession.role, 'announce.zen', 'pipeline', { taskCount: tasks.length });
+        const zenCidrs = tasks.map((t: any) => t.cidrBlock || t.cidr || '').filter(Boolean);
+        logAudit(req, zenPipeSession.userId, zenPipeSession.username, zenPipeSession.role, 'announce.zen', zenCidrs.slice(0, 10).join(',') || 'pipeline', { taskCount: tasks.length, cidrs: zenCidrs.slice(0, 50) });
       }
       const { ak, sk } = getZenCreds();
       const { runPipeline } = await import('./src/lib/zen/pipeline.js' as any);
@@ -8494,6 +8559,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         normalized = { tasks: [{ regionId, cidrBlock }], scanRegionIds: (body.scanRegionIds || []).map((x: any) => String(x).trim()).filter(Boolean), dryRun: Boolean(body.dryRun), unbindBeforeDelete: Boolean(body.unbindBeforeDelete) };
       }
       if (!normalized.tasks.length) throw new Error('请至少填写一行 CIDR');
+      const eipDelSess = getTokenSession(req);
+      if (eipDelSess) logAudit(req, eipDelSess.userId, eipDelSess.username, eipDelSess.role, 'withdraw.zen_eip_delete', normalized.tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: normalized.tasks.length, dryRun: Boolean(body?.dryRun) });
       const { runEipDelete } = await import('./src/lib/zen/eip-delete.js' as any);
       await streamNdjson(res, runEipDelete(normalized, ak, sk));
     } catch (e: any) {
@@ -8602,6 +8669,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         tasks = [{ regionId: String(body?.regionId ?? '').trim(), cidrBlock }];
       }
       if (!tasks.length) throw new Error('请至少填写一行 CIDR');
+      const zecDelSess = getTokenSession(req);
+      if (zecDelSess) logAudit(req, zecDelSess.userId, zecDelSess.username, zecDelSess.role, 'withdraw.zen_zec_cidr', tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: tasks.length, dryRun: Boolean(body?.dryRun) });
       const scanRegionIds = (body?.scanRegionIds || []).map((x: any) => String(x).trim()).filter(Boolean);
       const { runZecCidrDelete } = await import('./src/lib/zen/zec-cidr-delete.js' as any);
       await streamNdjson(res, runZecCidrDelete({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk));
@@ -8633,6 +8702,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const ids: string[] = (Array.isArray(body?.cidrBlockIds) ? body.cidrBlockIds : [])
         .map((x: any) => String(x).trim()).filter(Boolean);
       if (!ids.length) throw new Error('请至少填写一个 cidrBlockId');
+      const byoipByIdSess = getTokenSession(req);
+      if (byoipByIdSess) logAudit(req, byoipByIdSess.userId, byoipByIdSess.username, byoipByIdSess.role, 'withdraw.zen_byoip_by_id', ids.join(','), { count: ids.length, dryRun });
       const { bmcCall, unwrapResponse } = await import('./src/lib/zen/zenlayer.js' as any);
       const { apiVersion } = await import('./src/lib/zen/credentials.js' as any);
       const ver = apiVersion();
