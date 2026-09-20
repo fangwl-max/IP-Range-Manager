@@ -35,6 +35,7 @@ services:
     environment:
       - NODE_ENV=production
       - TZ=Asia/Shanghai
+      - VITE_GOOGLE_CLIENT_ID=1000065300611-667qkdmoqons4mqpb9lnqlsi89tj29u9.apps.googleusercontent.com
 
     # 健康检查（node:20-slim 无 wget/curl，使用 node 内置 http）
     healthcheck:
