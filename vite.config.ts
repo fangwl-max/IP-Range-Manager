@@ -3271,20 +3271,34 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         res.end('<h2>首都在线宣告服务未启动</h2><p>请确保 CDS-Auto-Announce 服务运行在端口 ' + cdsPort + '</p>');
       }
     });
-    // 宣告/撤播操作审计日志
-    if (req.method === 'POST' || req.method === 'DELETE') {
-      const cdsSess = mainToken ? tokenStore.get(mainToken) : null;
-      if (cdsSess) {
-        const pLow = proxyPath.toLowerCase();
-        const isWithdraw = pLow.includes('withdraw') || pLow.includes('cancel') || pLow.includes('revoke');
-        const isAnnounce = pLow.includes('announce') || pLow.includes('batch');
-        if (isAnnounce || isWithdraw) {
-          const cdsAction = isWithdraw ? 'withdraw.cds' : 'announce.cds';
-          logAudit(req, (cdsSess as any).userId, (cdsSess as any).username, (cdsSess as any).role, cdsAction, proxyPath);
+    // 宣告/撤播操作：先缓冲正文以提取 IP 段，再转发给 Flask
+    const pLow = proxyPath.toLowerCase();
+    const isCdsAnnounce = pLow.includes('announce') || pLow.includes('batch');
+    const isCdsWithdraw = pLow.includes('withdraw') || pLow.includes('cancel') || pLow.includes('revoke');
+    if ((req.method === 'POST' || req.method === 'DELETE') && (isCdsAnnounce || isCdsWithdraw)) {
+      const cdsBodyChunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => cdsBodyChunks.push(chunk));
+      req.on('end', () => {
+        const rawBody = Buffer.concat(cdsBodyChunks);
+        // 用正则从正文中提取 CIDR（兼容 JSON / form-urlencoded / 纯文本）
+        let cdsCidrs: string[] = [];
+        try {
+          const bodyStr = rawBody.toString('utf-8');
+          const matches = bodyStr.match(/\b(\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2})\b/g);
+          cdsCidrs = matches ? [...new Set(matches)] : [];
+        } catch {}
+        const cdsSess = mainToken ? tokenStore.get(mainToken) : null;
+        if (cdsSess) {
+          const cdsAction = isCdsWithdraw ? 'withdraw.cds' : 'announce.cds';
+          logAudit(req, (cdsSess as any).userId, (cdsSess as any).username, (cdsSess as any).role, cdsAction, cdsCidrs.slice(0, 10).join(',') || proxyPath, { path: proxyPath, cidrs: cdsCidrs.slice(0, 50) });
         }
-      }
+        proxyReq.write(rawBody);
+        proxyReq.end();
+      });
+      req.on('error', () => proxyReq.destroy());
+    } else {
+      req.pipe(proxyReq, { end: true });
     }
-    req.pipe(proxyReq, { end: true });
   });
   // 保存数据接口
   server.middlewares.use('/api/save-data', (req, res, next) => {
