@@ -3404,14 +3404,18 @@ const IPManagement: React.FC = () => {
         if (!b.renewalDate) return -1;
         return dayjs(a.renewalDate).valueOf() - dayjs(b.renewalDate).valueOf();
       },
-      render: (date: string, seg: IPSegment) =>
-        seg.renewalStatus === 'not_renewed' ? (
-          <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>取消续费</Text>
-        ) : date ? (
+      render: (date: string, seg: IPSegment) => {
+        const hasCancellation = !!(seg.cancellationDate && seg.cancellationDate.trim());
+        const isCancelledOrRefunded = seg.renewalStatus === 'cancelled' || seg.renewalStatus === 'refunded';
+        if (hasCancellation || isCancelledOrRefunded) {
+          return <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>-</Text>;
+        }
+        return date ? (
           <span style={{ whiteSpace: 'nowrap' }}>{dayjs(date).format('YYYY-MM-DD')}</span>
         ) : (
-          '-'
-        ),
+          <Text type="secondary">-</Text>
+        );
+      },
     },
     {
       title: '到期时间',
