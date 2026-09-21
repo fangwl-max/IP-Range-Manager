@@ -2320,6 +2320,11 @@ function loadLarusConfig(): { cookie: string; cacheHours: number } | null {
 }
 
 function saveLarusConfig(data: any): void {
+  try {
+    if (fs.statSync(larusConfigPath).isDirectory()) {
+      fs.rmSync(larusConfigPath, { recursive: true, force: true });
+    }
+  } catch { /* 文件不存在或非目录，正常继续 */ }
   fs.writeFileSync(larusConfigPath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
@@ -2331,6 +2336,11 @@ function loadLarusData(): any | null {
 }
 
 function saveLarusData(data: any): void {
+  try {
+    if (fs.statSync(larusDataPath).isDirectory()) {
+      fs.rmSync(larusDataPath, { recursive: true, force: true });
+    }
+  } catch { /* 文件不存在或非目录，正常继续 */ }
   fs.writeFileSync(larusDataPath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
