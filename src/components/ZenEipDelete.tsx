@@ -184,6 +184,12 @@ const ZenEipDelete: React.FC<{ regionOptions: RegionOption[] }> = ({ regionOptio
   };
 
   const handleStop = () => { abortRef.current?.(); setRunning(false); };
+  useEffect(() => {
+    if (!running) return;
+    const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [running]);
 
   const phaseLabel: Record<string, string> = { listing: '扫描中', unbinding: '解绑中', deleting: '删除中', done: '完成', error: '出错' };
   const phaseColor: Record<string, string> = { listing: 'processing', unbinding: 'warning', deleting: 'error', done: 'success', error: 'error' };

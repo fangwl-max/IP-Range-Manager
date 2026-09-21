@@ -237,6 +237,12 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
   };
 
   const handleStop = () => { abortRef.current?.(); setRunning(false); message.info("已中断"); };
+  useEffect(() => {
+    if (!running) return;
+    const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [running]);
 
   // 区分有效行和无效行
   const validCount = rows.filter(r => r.cidrBlock.trim() && r.asn !== "" && r.zoneId).length;

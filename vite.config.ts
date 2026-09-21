@@ -9496,10 +9496,7 @@ export default defineConfig({
     strictPort: true,
     allowedHosts: ['localhost', '127.0.0.1', 'ip-rm.dulvora.xyz'],
     hmr: false,
-    watch: {
-      usePolling: false,
-      ignored: ['**/*'],
-    },
+    watch: null,
   },
   preview: {
     port: Number(process.env.VITE_PORT) || 9010,

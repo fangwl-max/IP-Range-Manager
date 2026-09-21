@@ -167,6 +167,12 @@ const ZenCidrDeleteTab: React.FC<{ regionOptions: RegionOption[] }> = ({ regionO
   };
 
   const handleStop = () => { abortRef.current?.(); setRunning(false); message.info('已中断'); };
+  useEffect(() => {
+    if (!running) return;
+    const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [running]);
 
   const toggleLog = (i: number) =>
     setCollapsedLogs(prev => prev.map((v, idx) => idx === i ? !v : v));

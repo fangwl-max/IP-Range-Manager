@@ -153,6 +153,12 @@ const ZenByoipWithdrawTab: React.FC<{ regionOptions?: any[] }> = () => {
   };
 
   const handleStop = () => { abortRef.current?.(); setRunning(false); message.info('已中断'); };
+  useEffect(() => {
+    if (!running) return;
+    const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [running]);
 
   const handleRunById = async () => {
     const ids = idInput.split('\n').map(l => l.trim()).filter(Boolean);

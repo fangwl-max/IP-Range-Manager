@@ -235,6 +235,12 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
   };
 
   const handleStop = () => { abortRef.current?.(); setRunning(false); message.info('已中断，当前批次继续完成后停止'); };
+  useEffect(() => {
+    if (!running) return;
+    const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [running]);
 
   // ── 渲染 ─────────────────────────────────────────────────────────────────
   return (
