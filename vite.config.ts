@@ -2563,9 +2563,10 @@ async function fetchLarusAllocationDetail(routeId: number, cookie: string): Prom
   };
 }
 
-/** 从 /ipv4/contract/{contractId} 同时获取购买时间和到期时间。
- *  购买时间：effective_date / start_date / begin_date / activation_date / contract_start_date
- *  到期时间：expiration_date / end_date / expire_date / expiry_date / due_date / next_due_date / contract_end_date
+/** 从 Larus 合同接口同时获取购买时间（Start time）和到期时间（Expiration time）。
+ *  先试 /ipv4/my-order/detail/{contractId}，再试 /ipv4/contract/{contractId}。
+ *  购买时间字段：start_time / effective_date / start_date / begin_date / activation_date / contract_start_date
+ *  到期时间字段：expiration_time / expiration_date / end_date / expire_date / expiry_date / due_date / next_due_date / contract_end_date
  */
 async function fetchLarusContractDates(contractId: number, cookie: string): Promise<{ purchase_date: string | null; expiry_date: string | null }> {
   const tryParse = (ts: any): string | null => {
@@ -2576,22 +2577,32 @@ async function fetchLarusContractDates(contractId: number, cookie: string): Prom
     return null;
   };
   const startCandidates = (d: any): string | null =>
-    tryParse(d?.effective_date) ?? tryParse(d?.start_date) ?? tryParse(d?.begin_date) ??
-    tryParse(d?.activation_date) ?? tryParse(d?.contract_start_date) ?? tryParse(d?.create_time) ?? null;
+    tryParse(d?.start_time) ?? tryParse(d?.effective_date) ?? tryParse(d?.start_date) ??
+    tryParse(d?.begin_date) ?? tryParse(d?.activation_date) ?? tryParse(d?.contract_start_date) ?? null;
   const endCandidates = (d: any): string | null =>
-    tryParse(d?.expiration_date) ?? tryParse(d?.end_date) ?? tryParse(d?.expire_date) ??
-    tryParse(d?.expiry_date) ?? tryParse(d?.due_date) ?? tryParse(d?.next_due_date) ??
-    tryParse(d?.contract_end_date) ?? null;
+    tryParse(d?.expiration_time) ?? tryParse(d?.expiration_date) ?? tryParse(d?.end_date) ??
+    tryParse(d?.expire_date) ?? tryParse(d?.expiry_date) ?? tryParse(d?.due_date) ??
+    tryParse(d?.next_due_date) ?? tryParse(d?.contract_end_date) ?? null;
 
-  try {
-    const { body } = await larusRequest(`/ipv4/contract/${contractId}`, cookie);
-    const d = body?.data || body;
-    const purchase_date = startCandidates(d) ?? startCandidates(d?.contract) ?? null;
-    const expiry_date = endCandidates(d) ?? endCandidates(d?.contract) ?? null;
-    return { purchase_date, expiry_date };
-  } catch {
-    return { purchase_date: null, expiry_date: null };
-  }
+  const tryEndpoint = async (path: string): Promise<{ purchase_date: string | null; expiry_date: string | null } | null> => {
+    try {
+      const { body } = await larusRequest(path, cookie);
+      const d = body?.data || body;
+      const purchase_date = startCandidates(d) ?? startCandidates(d?.contract) ?? null;
+      const expiry_date = endCandidates(d) ?? endCandidates(d?.contract) ?? null;
+      if (purchase_date || expiry_date) return { purchase_date, expiry_date };
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  return (
+    await tryEndpoint(`/ipv4/lease-in/order-detail/${contractId}`) ??
+    await tryEndpoint(`/ipv4/my-order/detail/${contractId}`) ??
+    await tryEndpoint(`/ipv4/contract/${contractId}`) ??
+    { purchase_date: null, expiry_date: null }
+  );
 }
 
 /** 尝试从 Larus 合同/路由详情接口获取到期日期（保留供旧路径兼容）。 */
