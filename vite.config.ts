@@ -9023,6 +9023,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const existing = loadLarusConfig() || {};
         const updated: any = { ...existing, cookie: body.cookie, cacheHours: body.cacheHours ?? existing.cacheHours ?? 2 };
         if (body.loa_contact) updated.loa_contact = body.loa_contact;
+        // 检查路径是否被 Docker 误创建为目录
+        try {
+          const stat = fs.statSync(larusConfigPath);
+          if (stat.isDirectory()) {
+            fs.rmSync(larusConfigPath, { recursive: true, force: true });
+          }
+        } catch {}
         fs.writeFileSync(larusConfigPath, JSON.stringify(updated, null, 2), 'utf-8');
         // 不删除旧缓存：保留历史数据，新 cookie 拉取成功后会自动覆盖
         res.statusCode = 200;

@@ -413,10 +413,15 @@ const LarusManagement: React.FC = () => {
       });
       const data = await res.json();
       if (data.success) {
-        setCookieInput('');
+        antdMessage.success('Cookie 已保存，正在刷新数据...');
         setCookieDrawerOpen(false);
+        setCookieInput('');
         loadIps(true);
+      } else {
+        antdMessage.error('保存失败：' + (data.message || '未知错误'));
       }
+    } catch (e: any) {
+      antdMessage.error('请求失败：' + e.message);
     } finally {
       setSavingCookie(false);
     }
