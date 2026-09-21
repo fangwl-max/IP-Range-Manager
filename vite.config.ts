@@ -2577,10 +2577,10 @@ async function fetchLarusContractDates(contractId: number, cookie: string): Prom
     return null;
   };
   const startCandidates = (d: any): string | null =>
-    tryParse(d?.start_time) ?? tryParse(d?.effective_date) ?? tryParse(d?.start_date) ??
-    tryParse(d?.begin_date) ?? tryParse(d?.activation_date) ?? tryParse(d?.contract_start_date) ?? null;
+    tryParse(d?.effect_date) ?? tryParse(d?.start_time) ?? tryParse(d?.effective_date) ??
+    tryParse(d?.start_date) ?? tryParse(d?.begin_date) ?? tryParse(d?.activation_date) ?? null;
   const endCandidates = (d: any): string | null =>
-    tryParse(d?.expiration_time) ?? tryParse(d?.expiration_date) ?? tryParse(d?.end_date) ??
+    tryParse(d?.expiration_date) ?? tryParse(d?.expiration_time) ?? tryParse(d?.end_date) ??
     tryParse(d?.expire_date) ?? tryParse(d?.expiry_date) ?? tryParse(d?.due_date) ??
     tryParse(d?.next_due_date) ?? tryParse(d?.contract_end_date) ?? null;
 
@@ -2603,6 +2603,43 @@ async function fetchLarusContractDates(contractId: number, cookie: string): Prom
     await tryEndpoint(`/ipv4/contract/${contractId}`) ??
     { purchase_date: null, expiry_date: null }
   );
+}
+
+/**
+ * 批量从 /ipv4/lease-in/order 拉取所有合同，返回 contractId → { purchase_date, expiry_date } 的 Map。
+ * effect_date = 购买时间（Effective Date），expiration_date = 到期时间（Expiration Date）。
+ */
+async function fetchLarusContractList(cookie: string): Promise<Map<number, { purchase_date: string | null; expiry_date: string | null }>> {
+  const result = new Map<number, { purchase_date: string | null; expiry_date: string | null }>();
+  const tryParse = (ts: any): string | null => {
+    if (!ts) return null;
+    if (typeof ts === 'string' && ts.match(/^\d{4}-\d{2}-\d{2}/)) return ts.slice(0, 10);
+    const num = Number(ts);
+    if (!isNaN(num) && num > 0) return new Date(num * 1000).toISOString().slice(0, 10);
+    return null;
+  };
+  const addLists = (lists: any[]) => {
+    for (const item of lists) {
+      if (!item?.id) continue;
+      result.set(Number(item.id), {
+        purchase_date: tryParse(item.effect_date) ?? null,
+        expiry_date: tryParse(item.expiration_date) ?? null,
+      });
+    }
+  };
+  try {
+    const { body: first } = await larusRequest('/ipv4/lease-in/order?page=1&limit=500', cookie);
+    addLists(first?.data?.lists || []);
+    const total: number = first?.data?.total || 0;
+    if (total > 500) {
+      const pages = Math.ceil(total / 500);
+      for (let page = 2; page <= pages; page++) {
+        const { body } = await larusRequest(`/ipv4/lease-in/order?page=${page}&limit=500`, cookie);
+        addLists(body?.data?.lists || []);
+      }
+    }
+  } catch { /* 批量失败时返回空 Map，调用方会回退到已缓存数据 */ }
+  return result;
 }
 
 /** 尝试从 Larus 合同/路由详情接口获取到期日期（保留供旧路径兼容）。 */
@@ -2644,6 +2681,10 @@ async function enrichLarusItems(
   let latestCookie = cookie;
   const concurrency = 10;
 
+  // 批量拉取所有合同日期（一次请求），避免每条 IP 单独调合同接口
+  const contractDateMap = await fetchLarusContractList(latestCookie).catch(() => new Map<number, { purchase_date: string | null; expiry_date: string | null }>());
+  console.log(`[Larus] 合同日期批量获取完成: ${contractDateMap.size} 条`);
+
   const results: any[] = [];
   const queue = [...items];
   async function worker() {
@@ -2654,11 +2695,7 @@ async function enrichLarusItems(
         const detail = await fetchLarusAllocationDetail(item.id, latestCookie);
         if (detail.updatedCookie) latestCookie = detail.updatedCookie;
         const prev = fallback?.get(String(item.id));
-        // 从合同接口获取购买时间和到期时间
-        const contractId: number = item.contract_id ?? 0;
-        const contractDates = contractId
-          ? await fetchLarusContractDates(contractId, latestCookie).catch(() => ({ purchase_date: null, expiry_date: null }))
-          : { purchase_date: null, expiry_date: null };
+        const contractDates = contractDateMap.get(Number(item.contract_id)) ?? { purchase_date: null, expiry_date: null };
         const purchase_date = contractDates.purchase_date ?? prev?.purchase_date ?? null;
         const expiry_date = contractDates.expiry_date ?? prev?.expiry_date ?? null;
         results.push({
@@ -9260,17 +9297,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const cacheMap = new Map<string, any>((cache?.items || []).map((it: any) => [String(it.id), it]));
       const results: Array<{ id: number; purchase_date: string | null; expiry_date: string | null }> = [];
 
+      // 批量拉取所有合同日期，按 contractId 建索引
+      const contractDateMap = await fetchLarusContractList(cfg.cookie).catch(() => new Map<number, { purchase_date: string | null; expiry_date: string | null }>());
+
       for (const routeId of routeIds) {
         const cached = cacheMap.get(String(routeId));
         try {
           const contractId: number = cached?.contract_id ?? 0;
-          // 从合同接口同时获取购买时间和到期时间
-          const contractDates = contractId
-            ? await fetchLarusContractDates(contractId, cfg.cookie)
-            : { purchase_date: null, expiry_date: null };
-          // allocation detail 仅用于更新 cookie，purchase_date 以合同接口为准
-          const detail = await fetchLarusAllocationDetail(routeId, cfg.cookie);
-          if (detail.updatedCookie) { cfg = { ...cfg, cookie: detail.updatedCookie }; saveLarusConfig(cfg); }
+          const contractDates = contractDateMap.get(contractId) ?? { purchase_date: null, expiry_date: null };
           const purchase_date = contractDates.purchase_date ?? cached?.purchase_date ?? null;
           const expiry_date = contractDates.expiry_date ?? cached?.expiry_date ?? null;
           const updated = { ...(cached || { id: routeId }), purchase_date, expiry_date };
