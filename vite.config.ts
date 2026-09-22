@@ -9029,7 +9029,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     res.setHeader('Content-Type', 'application/json');
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
 
-    const forceRefresh = req.url?.includes('refresh=1');
+    const forceRefresh = req.url?.includes('refresh=1') || req.originalUrl?.includes('refresh=1');
     let cfg = loadLarusConfig();
 
     // 未配置时：先尝试返回旧缓存，没有缓存才报错
