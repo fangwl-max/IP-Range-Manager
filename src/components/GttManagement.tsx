@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  Table, Tabs, Button, Space, Tag, Switch, Input, Modal, message,
-  Typography, Card, Popconfirm, Tooltip, Statistic, Row, Col,
+  Table, Tabs, Button, Space, Tag, Switch, Input, Modal, message, Form, Select,
+  Typography, Card, Popconfirm, Tooltip, Statistic, Row, Col, Checkbox,
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined,
+  CheckOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -22,18 +23,24 @@ const GttManagement: React.FC = () => {
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('gtt-management.edit');
 
-  const [activeTab, setActiveTab] = useUrlTab(1, ['active', 'unused', 'cancelled'] as const, 'active');
+  const [activeTab, setActiveTab] = useUrlTab(1, ['active', 'unused', 'cancelled', 'all'] as const, 'active');
   const [ipSegments, setIpSegments] = useState<IPSegment[]>([]);
   const [searchText, setSearchText] = useState('');
 
-  // 使用方式编辑
-  const [editingRecord, setEditingRecord] = useState<IPSegment | null>(null);
-  const [usageMethodValue, setUsageMethodValue] = useState('');
+  // 使用方式内联编辑
+  const [editingUsageId, setEditingUsageId] = useState<string | null>(null);
+  const [editingUsageValue, setEditingUsageValue] = useState('');
+  const usageSavingRef = useRef(false);
 
   // 手动添加 Modal
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addSearch, setAddSearch] = useState('');
   const [addSelectedKeys, setAddSelectedKeys] = useState<string[]>([]);
+
+  // 批量编辑
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
+  const [batchEditVisible, setBatchEditVisible] = useState(false);
+  const [batchEditForm] = Form.useForm();
 
   const saveDataToFile = useCallback(async (silent = false) => {
     try {
@@ -100,6 +107,12 @@ const GttManagement: React.FC = () => {
     fetchData();
   }, [loadData]);
 
+  // Tab 切换清空选中
+  const handleTabChange = useCallback((key: string) => {
+    setActiveTab(key);
+    setSelectedRowKeys([]);
+  }, [setActiveTab]);
+
   // GTT 管理的 IP 段
   const gttSegments = useMemo(() =>
     ipSegments.filter(seg => seg.gttManaged === true),
@@ -141,21 +154,28 @@ const GttManagement: React.FC = () => {
   const displayActive = useMemo(() => filterBySearch(activeSegments), [filterBySearch, activeSegments]);
   const displayUnused = useMemo(() => filterBySearch(unusedSegments), [filterBySearch, unusedSegments]);
   const displayCancelled = useMemo(() => filterBySearch(cancelledSegments), [filterBySearch, cancelledSegments]);
+  const displayAll = useMemo(() => filterBySearch(gttSegments), [filterBySearch, gttSegments]);
 
-  // 使用方式编辑
-  const openUsageEdit = (record: IPSegment) => {
-    setEditingRecord(record);
-    setUsageMethodValue(record.usageMethod || '');
+  // ── 使用方式内联编辑 ──
+
+  const startUsageEdit = (record: IPSegment) => {
+    setEditingUsageId(record.id);
+    setEditingUsageValue(record.usageMethod || '');
   };
 
-  const handleUsageSave = () => {
-    if (!editingRecord) return;
-    ipSegmentStorage.update(editingRecord.id, { usageMethod: usageMethodValue });
-    loadData();
-    saveDataToFile(true);
-    setEditingRecord(null);
-    message.success('使用方式已更新');
-  };
+  const saveUsageInline = useCallback(() => {
+    if (usageSavingRef.current || !editingUsageId) return;
+    usageSavingRef.current = true;
+    const seg = ipSegments.find(s => s.id === editingUsageId);
+    const oldVal = seg?.usageMethod || '';
+    if (editingUsageValue !== oldVal) {
+      ipSegmentStorage.update(editingUsageId, { usageMethod: editingUsageValue });
+      loadData();
+      saveDataToFile(true);
+    }
+    setEditingUsageId(null);
+    setTimeout(() => { usageSavingRef.current = false; }, 0);
+  }, [editingUsageId, editingUsageValue, ipSegments, loadData, saveDataToFile]);
 
   // 是否在用切换
   const handleInUseToggle = (record: IPSegment, checked: boolean) => {
@@ -172,7 +192,8 @@ const GttManagement: React.FC = () => {
     message.success('已移出 GTT 管理');
   };
 
-  // 手动添加
+  // ── 手动添加 ──
+
   const nonGttSegments = useMemo(() => {
     if (!addModalOpen) return [];
     return ipSegments
@@ -201,6 +222,81 @@ const GttManagement: React.FC = () => {
     setAddSearch('');
     message.success(`已添加 ${addSelectedKeys.length} 个 IP 段到 GTT 管理`);
   };
+
+  // ── 批量编辑 ──
+
+  const handleBatchEditSubmit = async () => {
+    if (!selectedRowKeys.length) { message.warning('请先选择要编辑的 IP 段'); return; }
+    try {
+      const values = await batchEditForm.validateFields();
+      const updateData: Partial<IPSegment> = {};
+
+      const usageVal = (values.usageMethod || '').trim();
+      if (usageVal) updateData.usageMethod = usageVal;
+
+      if (values.gttInUse !== undefined && values.gttInUse !== null) {
+        updateData.gttInUse = values.gttInUse;
+      }
+
+      const remarkVal = (values.remark || '').trim();
+      const remarkOverwrite = !!values.remarkOverwrite;
+      if (remarkVal && remarkOverwrite) {
+        updateData.remark = remarkVal;
+      }
+
+      if (Object.keys(updateData).length === 0 && remarkVal === '') {
+        message.warning('请至少填写一个要修改的字段');
+        return;
+      }
+
+      let successCount = 0;
+      const allSnap = ipSegmentStorage.getAll();
+      selectedRowKeys.forEach(key => {
+        try {
+          if (remarkVal && !remarkOverwrite) {
+            const existing = allSnap.find(s => s.id === key);
+            const existingRemark = (existing?.remark || '').trim();
+            const newRemark = existingRemark ? `${existingRemark} ${remarkVal}` : remarkVal;
+            ipSegmentStorage.update(key, { ...updateData, remark: newRemark });
+          } else {
+            ipSegmentStorage.update(key, updateData);
+          }
+          successCount++;
+        } catch (e) {
+          console.error('批量更新失败:', key, e);
+        }
+      });
+
+      if (successCount > 0) {
+        message.success(`成功更新 ${successCount} 条记录`);
+        setBatchEditVisible(false);
+        batchEditForm.resetFields();
+        setSelectedRowKeys([]);
+        loadData();
+        saveDataToFile(true);
+      }
+    } catch (e) {
+      console.error('批量编辑失败:', e);
+    }
+  };
+
+  const handleBatchToggleInUse = (inUse: boolean) => {
+    let count = 0;
+    selectedRowKeys.forEach(key => {
+      try {
+        ipSegmentStorage.update(key, { gttInUse: inUse });
+        count++;
+      } catch { /* skip */ }
+    });
+    if (count > 0) {
+      message.success(`已将 ${count} 个 IP 段设为${inUse ? '在用' : '未使用'}`);
+      setSelectedRowKeys([]);
+      loadData();
+      saveDataToFile(true);
+    }
+  };
+
+  // ── 表格列 ──
 
   const columns: ColumnsType<IPSegment> = [
     {
@@ -265,24 +361,53 @@ const GttManagement: React.FC = () => {
       dataIndex: 'usageMethod',
       key: 'usageMethod',
       width: 180,
-      render: (text: string, record: IPSegment) => (
-        <Space size={4}>
-          {text ? (
-            <Tooltip title={text}><span style={{ maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{text}</span></Tooltip>
-          ) : (
-            <Text type="secondary">-</Text>
-          )}
-          {canEdit && (
-            <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openUsageEdit(record)} style={{ padding: 0 }} />
-          )}
-        </Space>
-      ),
+      render: (text: string, record: IPSegment) => {
+        if (canEdit && editingUsageId === record.id) {
+          return (
+            <Input
+              size="small"
+              autoFocus
+              value={editingUsageValue}
+              onChange={e => setEditingUsageValue(e.target.value)}
+              onPressEnter={saveUsageInline}
+              onBlur={saveUsageInline}
+              style={{ width: '100%' }}
+              placeholder="输入使用方式"
+            />
+          );
+        }
+        return (
+          <div
+            style={{ cursor: canEdit ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: 4, minHeight: 22 }}
+            onClick={() => canEdit && startUsageEdit(record)}
+          >
+            {text ? (
+              <Tooltip title={text}>
+                <span style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{text}</span>
+              </Tooltip>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>{canEdit ? '点击输入' : '-'}</Text>
+            )}
+            {canEdit && <EditOutlined style={{ color: '#999', fontSize: 12 }} />}
+          </div>
+        );
+      },
     },
     {
       title: '是否在用',
       dataIndex: 'gttInUse',
       key: 'gttInUse',
       width: 90,
+      filters: [
+        { text: '在用', value: 'active' },
+        { text: '未使用', value: 'unused' },
+        { text: '已取消', value: 'cancelled' },
+      ],
+      onFilter: (value, record) => {
+        if (value === 'cancelled') return isCancelled(record);
+        if (value === 'unused') return !isCancelled(record) && record.gttInUse === false;
+        return !isCancelled(record) && record.gttInUse !== false;
+      },
       render: (val: boolean | undefined, record: IPSegment) => {
         if (isCancelled(record)) return <Tag color="default">已取消</Tag>;
         return canEdit ? (
@@ -336,6 +461,11 @@ const GttManagement: React.FC = () => {
       size="small"
       scroll={{ x: 1300 }}
       pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+      rowSelection={canEdit ? {
+        columnWidth: 46,
+        selectedRowKeys,
+        onChange: (keys) => setSelectedRowKeys(keys as string[]),
+      } : undefined}
     />
   );
 
@@ -364,35 +494,33 @@ const GttManagement: React.FC = () => {
         )}
       </div>
 
+      {/* 批量操作工具栏 */}
+      {canEdit && selectedRowKeys.length > 0 && (
+        <div style={{ background: '#e6f7ff', border: '1px solid #91d5ff', borderRadius: 6, padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Text strong>已选择 {selectedRowKeys.length} 项</Text>
+          <Button type="primary" size="small" onClick={() => { setBatchEditVisible(true); batchEditForm.resetFields(); }}>
+            批量编辑
+          </Button>
+          <Popconfirm title={`确定将选中的 ${selectedRowKeys.length} 个 IP 段设为在用？`} onConfirm={() => handleBatchToggleInUse(true)} okText="确定" cancelText="取消">
+            <Button size="small" icon={<CheckOutlined />}>批量设为在用</Button>
+          </Popconfirm>
+          <Popconfirm title={`确定将选中的 ${selectedRowKeys.length} 个 IP 段设为未使用？`} onConfirm={() => handleBatchToggleInUse(false)} okText="确定" cancelText="取消">
+            <Button size="small" icon={<CloseOutlined />}>批量设为未使用</Button>
+          </Popconfirm>
+          <Button size="small" onClick={() => setSelectedRowKeys([])}>取消选择</Button>
+        </div>
+      )}
+
       <Tabs
         activeKey={activeTab}
-        onChange={setActiveTab}
+        onChange={handleTabChange}
         items={[
           { key: 'active', label: `在用IP段 (${activeSegments.length})`, children: renderTable(displayActive) },
           { key: 'unused', label: `未使用IP段 (${unusedSegments.length})`, children: renderTable(displayUnused) },
           { key: 'cancelled', label: `已取消IP段 (${cancelledSegments.length})`, children: renderTable(displayCancelled) },
+          { key: 'all', label: `全部IP段 (${gttSegments.length})`, children: renderTable(displayAll) },
         ]}
       />
-
-      {/* 使用方式编辑 Modal */}
-      <Modal
-        title={`编辑使用方式 — ${editingRecord?.segment || ''}`}
-        open={!!editingRecord}
-        onOk={handleUsageSave}
-        onCancel={() => setEditingRecord(null)}
-        okText="保存"
-        cancelText="取消"
-        destroyOnClose
-      >
-        <Input.TextArea
-          value={usageMethodValue}
-          onChange={e => setUsageMethodValue(e.target.value)}
-          placeholder="请输入使用方式描述"
-          rows={3}
-          maxLength={500}
-          showCount
-        />
-      </Modal>
 
       {/* 手动添加 Modal */}
       <Modal
@@ -426,6 +554,43 @@ const GttManagement: React.FC = () => {
             onChange: (keys) => setAddSelectedKeys(keys as string[]),
           }}
         />
+      </Modal>
+
+      {/* 批量编辑 Modal */}
+      <Modal
+        title={`批量编辑 (已选择 ${selectedRowKeys.length} 条)`}
+        open={batchEditVisible}
+        onOk={handleBatchEditSubmit}
+        onCancel={() => { setBatchEditVisible(false); batchEditForm.resetFields(); }}
+        okText="批量更新"
+        cancelText="取消"
+        width={600}
+        destroyOnClose
+      >
+        <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
+          只填写需要批量修改的字段，留空的字段将保持不变
+        </Text>
+        <Form form={batchEditForm} layout="vertical">
+          <Form.Item name="usageMethod" label="使用方式">
+            <Input.TextArea placeholder="留空则不修改" rows={2} maxLength={500} showCount />
+          </Form.Item>
+          <Form.Item name="gttInUse" label="是否在用">
+            <Select allowClear placeholder="留空则不修改">
+              <Select.Option value={true}>在用</Select.Option>
+              <Select.Option value={false}>未使用</Select.Option>
+            </Select>
+          </Form.Item>
+          <Form.Item label="备注">
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Form.Item name="remark" noStyle>
+                <Input.TextArea placeholder="留空则不修改" rows={2} maxLength={500} showCount />
+              </Form.Item>
+              <Form.Item name="remarkOverwrite" valuePropName="checked" noStyle>
+                <Checkbox>覆盖原备注（不勾选则追加）</Checkbox>
+              </Form.Item>
+            </Space>
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   );
