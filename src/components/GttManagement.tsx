@@ -32,6 +32,11 @@ const GttManagement: React.FC = () => {
   const [editingUsageValue, setEditingUsageValue] = useState('');
   const usageSavingRef = useRef(false);
 
+  // 备注内联编辑
+  const [editingRemarkId, setEditingRemarkId] = useState<string | null>(null);
+  const [editingRemarkValue, setEditingRemarkValue] = useState('');
+  const remarkSavingRef = useRef(false);
+
   // 手动添加 Modal
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addSearch, setAddSearch] = useState('');
@@ -176,6 +181,27 @@ const GttManagement: React.FC = () => {
     setEditingUsageId(null);
     setTimeout(() => { usageSavingRef.current = false; }, 0);
   }, [editingUsageId, editingUsageValue, ipSegments, loadData, saveDataToFile]);
+
+  // ── 备注内联编辑 ──
+
+  const startRemarkEdit = (record: IPSegment) => {
+    setEditingRemarkId(record.id);
+    setEditingRemarkValue(record.remark || '');
+  };
+
+  const saveRemarkInline = useCallback(() => {
+    if (remarkSavingRef.current || !editingRemarkId) return;
+    remarkSavingRef.current = true;
+    const seg = ipSegments.find(s => s.id === editingRemarkId);
+    const oldVal = seg?.remark || '';
+    if (editingRemarkValue !== oldVal) {
+      ipSegmentStorage.update(editingRemarkId, { remark: editingRemarkValue });
+      loadData();
+      saveDataToFile(true);
+    }
+    setEditingRemarkId(null);
+    setTimeout(() => { remarkSavingRef.current = false; }, 0);
+  }, [editingRemarkId, editingRemarkValue, ipSegments, loadData, saveDataToFile]);
 
   // 是否在用切换
   const handleInUseToggle = (record: IPSegment, checked: boolean) => {
@@ -425,10 +451,38 @@ const GttManagement: React.FC = () => {
       title: '备注',
       dataIndex: 'remark',
       key: 'remark',
-      width: 120,
-      render: (text: string) => text ? (
-        <Tooltip title={text}><span style={{ maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{text}</span></Tooltip>
-      ) : <Text type="secondary">-</Text>,
+      width: 150,
+      render: (text: string, record: IPSegment) => {
+        if (canEdit && editingRemarkId === record.id) {
+          return (
+            <Input
+              size="small"
+              autoFocus
+              value={editingRemarkValue}
+              onChange={e => setEditingRemarkValue(e.target.value)}
+              onPressEnter={saveRemarkInline}
+              onBlur={saveRemarkInline}
+              style={{ width: '100%' }}
+              placeholder="输入备注"
+            />
+          );
+        }
+        return (
+          <div
+            style={{ cursor: canEdit ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: 4, minHeight: 22 }}
+            onClick={() => canEdit && startRemarkEdit(record)}
+          >
+            {text ? (
+              <Tooltip title={text}>
+                <span style={{ maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{text}</span>
+              </Tooltip>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>{canEdit ? '点击输入' : '-'}</Text>
+            )}
+            {canEdit && <EditOutlined style={{ color: '#999', fontSize: 12 }} />}
+          </div>
+        );
+      },
     },
     ...(canEdit ? [{
       title: '操作',
