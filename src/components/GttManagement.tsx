@@ -459,8 +459,8 @@ const GttManagement: React.FC = () => {
       dataSource={data}
       rowKey="id"
       size="small"
-      scroll={{ x: 1300 }}
-      pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+      scroll={{ x: 1300, y: 'calc(100vh - 380px)' }}
+      pagination={false}
       rowSelection={canEdit ? {
         columnWidth: 46,
         selectedRowKeys,
