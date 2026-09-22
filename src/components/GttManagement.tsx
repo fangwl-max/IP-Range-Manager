@@ -128,8 +128,12 @@ const GttManagement: React.FC = () => {
     seg.renewalStatus === 'cancelled' || seg.renewalStatus === 'refunded' ||
     !!(seg.cancellationDate && seg.cancellationDate.trim());
 
+  // gttInUse 手动标记优先于取消状态：
+  // 在用 = 明确标记 gttInUse===true 或（未取消且未标记为 false）
+  // 未使用 = 未取消且 gttInUse===false
+  // 已取消 = 已取消且 gttInUse 未被手动设为 true
   const activeSegments = useMemo(() =>
-    gttSegments.filter(seg => !isCancelled(seg) && seg.gttInUse !== false),
+    gttSegments.filter(seg => seg.gttInUse === true || (!isCancelled(seg) && seg.gttInUse !== false)),
     [gttSegments],
   );
 
@@ -139,7 +143,7 @@ const GttManagement: React.FC = () => {
   );
 
   const cancelledSegments = useMemo(() =>
-    gttSegments.filter(seg => isCancelled(seg)),
+    gttSegments.filter(seg => isCancelled(seg) && seg.gttInUse !== true),
     [gttSegments],
   );
 
