@@ -143,18 +143,26 @@ const GttManagement: React.FC = () => {
     [gttSegments],
   );
 
-  // 搜索过滤
+  // 搜索过滤（支持多个关键词，空格/逗号/换行分隔）
+  const parseKeywords = useCallback((text: string): string[] => {
+    if (!text.trim()) return [];
+    return text.split(/[\s,，\n]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  }, []);
+
   const filterBySearch = useCallback((list: IPSegment[]) => {
-    if (!searchText.trim()) return list;
-    const kw = searchText.trim().toLowerCase();
-    return list.filter(seg =>
-      seg.segment.toLowerCase().includes(kw) ||
-      String(seg.supplier || '').toLowerCase().includes(kw) ||
-      String(seg.asn || '').toLowerCase().includes(kw) ||
-      String(seg.usageMethod || '').toLowerCase().includes(kw) ||
-      String(seg.remark || '').toLowerCase().includes(kw),
-    );
-  }, [searchText]);
+    const keywords = parseKeywords(searchText);
+    if (!keywords.length) return list;
+    return list.filter(seg => {
+      const fields = [
+        seg.segment,
+        String(seg.supplier || ''),
+        String(seg.asn || ''),
+        String(seg.usageMethod || ''),
+        String(seg.remark || ''),
+      ].map(f => f.toLowerCase());
+      return keywords.some(kw => fields.some(f => f.includes(kw)));
+    });
+  }, [searchText, parseKeywords]);
 
   const displayActive = useMemo(() => filterBySearch(activeSegments), [filterBySearch, activeSegments]);
   const displayUnused = useMemo(() => filterBySearch(unusedSegments), [filterBySearch, unusedSegments]);
@@ -225,11 +233,14 @@ const GttManagement: React.FC = () => {
     return ipSegments
       .filter(seg => !seg.gttManaged)
       .filter(seg => {
-        if (!addSearch.trim()) return true;
-        const kw = addSearch.trim().toLowerCase();
-        return seg.segment.toLowerCase().includes(kw) ||
-          String(seg.supplier || '').toLowerCase().includes(kw) ||
-          String(seg.asn || '').toLowerCase().includes(kw);
+        const keywords = parseKeywords(addSearch);
+        if (!keywords.length) return true;
+        const fields = [
+          seg.segment,
+          String(seg.supplier || ''),
+          String(seg.asn || ''),
+        ].map(f => f.toLowerCase());
+        return keywords.some(kw => fields.some(f => f.includes(kw)));
       });
   }, [ipSegments, addModalOpen, addSearch]);
 
@@ -532,14 +543,14 @@ const GttManagement: React.FC = () => {
         <Col span={6}><Card size="small"><Statistic title="已取消" value={cancelledSegments.length} valueStyle={{ color: '#ff4d4f' }} /></Card></Col>
       </Row>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <Input
-          placeholder="搜索 IP段 / 供应商 / ASN / 使用方式"
-          prefix={<SearchOutlined />}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+        <Input.TextArea
+          placeholder="搜索 IP段 / 供应商 / ASN / 使用方式（多个用空格、逗号或换行分隔）"
           value={searchText}
           onChange={e => setSearchText(e.target.value)}
           allowClear
-          style={{ width: 320 }}
+          autoSize={{ minRows: 1, maxRows: 4 }}
+          style={{ width: 400 }}
         />
         {canEdit && (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => { setAddModalOpen(true); setAddSelectedKeys([]); setAddSearch(''); }}>
@@ -588,12 +599,12 @@ const GttManagement: React.FC = () => {
         destroyOnClose
       >
         <div style={{ marginBottom: 12 }}>
-          <Input
-            placeholder="搜索 IP段 / 供应商 / ASN"
-            prefix={<SearchOutlined />}
+          <Input.TextArea
+            placeholder="搜索 IP段 / 供应商 / ASN（多个用空格、逗号或换行分隔）"
             value={addSearch}
             onChange={e => setAddSearch(e.target.value)}
             allowClear
+            autoSize={{ minRows: 1, maxRows: 4 }}
           />
         </div>
         <Table
