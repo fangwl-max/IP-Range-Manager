@@ -144,10 +144,10 @@ const GttManagement: React.FC = () => {
     const kw = searchText.trim().toLowerCase();
     return list.filter(seg =>
       seg.segment.toLowerCase().includes(kw) ||
-      (seg.supplier || '').toLowerCase().includes(kw) ||
-      (seg.asn || '').toLowerCase().includes(kw) ||
-      (seg.usageMethod || '').toLowerCase().includes(kw) ||
-      (seg.remark || '').toLowerCase().includes(kw),
+      String(seg.supplier || '').toLowerCase().includes(kw) ||
+      String(seg.asn || '').toLowerCase().includes(kw) ||
+      String(seg.usageMethod || '').toLowerCase().includes(kw) ||
+      String(seg.remark || '').toLowerCase().includes(kw),
     );
   }, [searchText]);
 
@@ -202,8 +202,8 @@ const GttManagement: React.FC = () => {
         if (!addSearch.trim()) return true;
         const kw = addSearch.trim().toLowerCase();
         return seg.segment.toLowerCase().includes(kw) ||
-          (seg.supplier || '').toLowerCase().includes(kw) ||
-          (seg.asn || '').toLowerCase().includes(kw);
+          String(seg.supplier || '').toLowerCase().includes(kw) ||
+          String(seg.asn || '').toLowerCase().includes(kw);
       });
   }, [ipSegments, addModalOpen, addSearch]);
 
