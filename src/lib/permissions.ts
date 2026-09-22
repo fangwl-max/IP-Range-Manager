@@ -70,6 +70,12 @@ export const PAGE_PERMS: Record<string, PermNode> = {
       'loa-delete': 'LOA 管理删除',
     },
   },
+  'gtt-management': {
+    label: 'GTT 管理',
+    features: {
+      'edit': '编辑使用方式 / 关联IP段',
+    },
+  },
   'remote-sync': { label: '远程数据同步' },
   'user-management': { label: '用户与权限', adminOnly: true },
   'audit-logs': { label: '操作日志', adminOnly: true },
@@ -91,6 +97,7 @@ export const ROLE_DEFAULTS: Record<string, string[]> = {
     'asn-standby-b', 'asn-standby-b.edit',
     'announce-zen', 'announce-zen.announce',
     'announce-capital-online', 'announce-capital-online.announce',
+    'gtt-management',
   ],
 };
 

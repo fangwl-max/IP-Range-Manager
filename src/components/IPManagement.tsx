@@ -2008,6 +2008,9 @@ const IPManagement: React.FC = () => {
         previousPurchaseDates: previousPurchaseDatesSorted.length > 0 ? previousPurchaseDatesSorted : undefined,
         previousPurchaseRecords: previousPurchaseRecordsSorted.length > 0 ? previousPurchaseRecordsSorted : undefined,
         additionalAsns: editingSegment?.additionalAsns,
+        gttManaged: editingSegment?.gttManaged,
+        gttInUse: editingSegment?.gttInUse,
+        usageMethod: editingSegment?.usageMethod,
         createdAt: editingSegment?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };

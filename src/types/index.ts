@@ -61,6 +61,12 @@ export interface IPSegment {
   ipxoLastSyncAt?: string;
   /** 备注信息（可选） */
   remark?: string;
+  /** GTT 管理标记：true 表示此 IP 段在 GTT 子页面管理 */
+  gttManaged?: boolean;
+  /** 是否在用（GTT 子页面手动标记） */
+  gttInUse?: boolean;
+  /** 使用方式（GTT 子页面专用，自由文本） */
+  usageMethod?: string;
   createdAt: string; // 创建时间
   updatedAt: string; // 更新时间
 }
