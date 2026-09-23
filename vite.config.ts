@@ -2540,9 +2540,22 @@ async function larusRequest(path: string, cookie: string, opts?: { method?: stri
 }
 
 async function fetchLarusIps(cookie: string): Promise<{ items: any[]; updatedCookie?: string }> {
-  const { body, updatedCookie } = await larusRequest('/ipv4/lease-in/ip-list?page=1&limit=500', cookie);
-  if (!body.status) throw new Error(body.msg || 'Larus API 返回失败');
-  return { items: body.data?.lists || [], updatedCookie };
+  let latestCookie: string | undefined;
+  const { body: first, updatedCookie: uc1 } = await larusRequest('/ipv4/lease-in/ip-list?page=1&limit=500', cookie);
+  if (uc1) latestCookie = uc1;
+  if (!first.status) throw new Error(first.msg || 'Larus API 返回失败');
+  const allItems: any[] = first.data?.lists || [];
+  const total: number = first.data?.total || allItems.length;
+  if (total > 500) {
+    const pages = Math.ceil(total / 500);
+    for (let page = 2; page <= pages; page++) {
+      const { body, updatedCookie: uc } = await larusRequest(`/ipv4/lease-in/ip-list?page=${page}&limit=500`, latestCookie || cookie);
+      if (uc) latestCookie = uc;
+      const lists = body?.data?.lists || [];
+      allItems.push(...lists);
+    }
+  }
+  return { items: allItems, updatedCookie: latestCookie };
 }
 
 async function fetchLarusAllocationDetail(routeId: number, cookie: string): Promise<{
@@ -2571,48 +2584,6 @@ async function fetchLarusAllocationDetail(routeId: number, cookie: string): Prom
     purchase_date,
     updatedCookie,
   };
-}
-
-/** 从 Larus 合同接口同时获取购买时间（Start time）和到期时间（Expiration time）。
- *  先试 /ipv4/my-order/detail/{contractId}，再试 /ipv4/contract/{contractId}。
- *  购买时间字段：start_time / effective_date / start_date / begin_date / activation_date / contract_start_date
- *  到期时间字段：expiration_time / expiration_date / end_date / expire_date / expiry_date / due_date / next_due_date / contract_end_date
- */
-async function fetchLarusContractDates(contractId: number, cookie: string): Promise<{ purchase_date: string | null; expiry_date: string | null }> {
-  const tryParse = (ts: any): string | null => {
-    if (!ts) return null;
-    if (typeof ts === 'string' && ts.match(/^\d{4}-\d{2}-\d{2}/)) return ts.slice(0, 10);
-    const num = Number(ts);
-    if (!isNaN(num) && num > 0) return new Date(num * 1000).toISOString().slice(0, 10);
-    return null;
-  };
-  const startCandidates = (d: any): string | null =>
-    tryParse(d?.effect_date) ?? tryParse(d?.start_time) ?? tryParse(d?.effective_date) ??
-    tryParse(d?.start_date) ?? tryParse(d?.begin_date) ?? tryParse(d?.activation_date) ?? null;
-  const endCandidates = (d: any): string | null =>
-    tryParse(d?.expiration_date) ?? tryParse(d?.expiration_time) ?? tryParse(d?.end_date) ??
-    tryParse(d?.expire_date) ?? tryParse(d?.expiry_date) ?? tryParse(d?.due_date) ??
-    tryParse(d?.next_due_date) ?? tryParse(d?.contract_end_date) ?? null;
-
-  const tryEndpoint = async (path: string): Promise<{ purchase_date: string | null; expiry_date: string | null } | null> => {
-    try {
-      const { body } = await larusRequest(path, cookie);
-      const d = body?.data || body;
-      const purchase_date = startCandidates(d) ?? startCandidates(d?.contract) ?? null;
-      const expiry_date = endCandidates(d) ?? endCandidates(d?.contract) ?? null;
-      if (purchase_date || expiry_date) return { purchase_date, expiry_date };
-      return null;
-    } catch {
-      return null;
-    }
-  };
-
-  return (
-    await tryEndpoint(`/ipv4/lease-in/order-detail/${contractId}`) ??
-    await tryEndpoint(`/ipv4/my-order/detail/${contractId}`) ??
-    await tryEndpoint(`/ipv4/contract/${contractId}`) ??
-    { purchase_date: null, expiry_date: null }
-  );
 }
 
 /**
@@ -2650,37 +2621,6 @@ async function fetchLarusContractList(cookie: string): Promise<Map<number, { pur
     }
   } catch { /* 批量失败时返回空 Map，调用方会回退到已缓存数据 */ }
   return result;
-}
-
-/** 尝试从 Larus 合同/路由详情接口获取到期日期（保留供旧路径兼容）。 */
-async function fetchLarusExpiryDate(routeId: number, contractId: number, cookie: string): Promise<string | null> {
-  const tryParse = (ts: any): string | null => {
-    if (!ts) return null;
-    const num = Number(ts);
-    if (!isNaN(num) && num > 0) return new Date(num * 1000).toISOString().slice(0, 10);
-    if (typeof ts === 'string' && ts.match(/^\d{4}-\d{2}-\d{2}/)) return ts.slice(0, 10);
-    return null;
-  };
-  const candidates = (data: any): string | null =>
-    tryParse(data?.expiration_date) ?? tryParse(data?.end_date) ?? tryParse(data?.expire_date) ??
-    tryParse(data?.expiry_date) ?? tryParse(data?.due_date) ?? tryParse(data?.next_due_date) ??
-    tryParse(data?.contract_end_date) ?? null;
-
-  try {
-    const { body } = await larusRequest(`/ipv4/lease-in/detail/${routeId}`, cookie);
-    const d = body?.data || body;
-    const result = candidates(d) ?? candidates(d?.contract);
-    if (result) return result;
-  } catch { /* try next */ }
-
-  try {
-    const { body } = await larusRequest(`/ipv4/contract/${contractId}`, cookie);
-    const d = body?.data || body;
-    const result = candidates(d) ?? candidates(d?.contract);
-    if (result) return result;
-  } catch { /* ignore */ }
-
-  return null;
 }
 
 async function enrichLarusItems(
@@ -2734,7 +2674,7 @@ async function enrichLarusItems(
 }
 
 /**
- * 每 90 分钟向 Larus 发一次轻量请求，防止 larus_session 因长期不访问而过期。
+ * 每 30 分钟向 Larus 发一次轻量请求，防止 larus_session 因长期不访问而过期。
  * 若响应携带 Set-Cookie，自动合并并持久化，保持 remember_web token 持续续期。
  */
 function startLarusKeepAlive(): void {
@@ -2745,7 +2685,7 @@ function startLarusKeepAlive(): void {
     try {
       const { updatedCookie } = await larusRequest('/ipv4/lease-in/ip-list?page=1&limit=1', cfg.cookie);
       if (updatedCookie) {
-        fs.writeFileSync(larusConfigPath, JSON.stringify({ ...cfg, cookie: updatedCookie }, null, 2), 'utf-8');
+        saveLarusConfig({ ...cfg, cookie: updatedCookie });
         console.log('[Larus] KeepAlive: Session 已自动续期');
       } else {
         console.log('[Larus] KeepAlive: Session 有效');
@@ -9065,14 +9005,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const result = await fetchLarusIps(cfg.cookie);
       if (result.updatedCookie) {
         cfg = { ...cfg, cookie: result.updatedCookie };
-        fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
+        saveLarusConfig(cfg);
       }
       // 全量补全 allocation（每次刷新都请求所有 item 的 ASN/LOA，保证数据最新）
       const { items: enrichedItems, updatedCookie: enrichCookie } = await enrichLarusItems(result.items, cfg.cookie, fallback);
       console.log(`[Larus] enrich 完成: 共 ${result.items.length} 条`);
       if (enrichCookie) {
         cfg = { ...cfg, cookie: enrichCookie };
-        fs.writeFileSync(larusConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
+        saveLarusConfig(cfg);
       }
       const payload = { cachedAt: new Date().toISOString(), items: enrichedItems };
       saveLarusData(payload);
@@ -9113,14 +9053,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const existing = loadLarusConfig() || {};
         const updated: any = { ...existing, cookie: body.cookie, cacheHours: body.cacheHours ?? existing.cacheHours ?? 2 };
         if (body.loa_contact) updated.loa_contact = body.loa_contact;
-        // 检查路径是否被 Docker 误创建为目录
-        try {
-          const stat = fs.statSync(larusConfigPath);
-          if (stat.isDirectory()) {
-            fs.rmSync(larusConfigPath, { recursive: true, force: true });
-          }
-        } catch {}
-        fs.writeFileSync(larusConfigPath, JSON.stringify(updated, null, 2), 'utf-8');
+        saveLarusConfig(updated);
         // 不删除旧缓存：保留历史数据，新 cookie 拉取成功后会自动覆盖
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true }));
@@ -9207,7 +9140,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     try {
       const apiPath = path || `/ipv4/lease-in/allocation/${id}`;
       const { body, updatedCookie } = await larusRequest(apiPath, cfg.cookie);
-      if (updatedCookie) fs.writeFileSync(larusConfigPath, JSON.stringify({ ...cfg, cookie: updatedCookie }, null, 2), 'utf-8');
+      if (updatedCookie) saveLarusConfig({ ...cfg, cookie: updatedCookie });
       const lists: any[] = body?.data?.lists || [];
       const allocations = lists.map((item: any) => ({
         asn: String(item.asn),
