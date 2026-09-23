@@ -9467,7 +9467,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         email: String(body.email || contact.email || ''),
         address: String(body.address || contact.address || ''),
       };
-      const { body: apiBody, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation/${route_id}`, cfg.cookie, {
+      const { body: apiBody, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation`, cfg.cookie, {
         method: 'POST',
         formEncoded: true,
         body: formBody,
