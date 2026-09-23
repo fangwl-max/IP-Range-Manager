@@ -243,7 +243,7 @@ const LarusManagement: React.FC = () => {
       const res = await fetch('/api/larus/asn-set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ route_id: asnSetItem.id, asn }),
+        body: JSON.stringify({ route_id: asnSetItem.id, asn, ip_cidr: asnSetItem.ip_cidr }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.message);
@@ -275,7 +275,7 @@ const LarusManagement: React.FC = () => {
         const res = await fetch('/api/larus/asn-set', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ route_id: routeId, asn }),
+          body: JSON.stringify({ route_id: routeId, asn, ip_cidr: item?.ip_cidr || '' }),
         });
         const data = await res.json();
         if (!data.success) throw new Error(data.message || '设置失败');

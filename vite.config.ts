@@ -9452,13 +9452,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         req.on('data', (chunk: any) => { data += chunk; });
         req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { reject(new Error('JSON 解析失败')); } });
       });
-      const { route_id, asn } = body;
+      const { route_id, asn, ip_cidr } = body;
       if (!route_id || !asn) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_id 或 asn' })); return; }
       // 合并请求中的联系信息与 config 中存储的默认值
       const contact = cfg.loa_contact || {};
       const formBody: Record<string, string> = {
         route_id: String(route_id),
         asn: String(asn),
+        prefix: String(ip_cidr || ''),
         country_code: String(body.country_code || contact.country_code || ''),
         country_name: String(body.country_name || contact.country_name || ''),
         name: String(body.name || contact.name || ''),
