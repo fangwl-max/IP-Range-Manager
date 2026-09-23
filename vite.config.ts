@@ -2350,8 +2350,8 @@ async function downloadLarusLoa(
   loaPath: string,
   cookie: string,
 ): Promise<{ buffer: Buffer; fileName: string } | null> {
-  const upstream = await fetch(`https://larus.net${loaPath}`, {
-    headers: { Cookie: cookie, Referer: 'https://larus.net/ipv4/manage-leased-ips', 'User-Agent': 'Mozilla/5.0' },
+  const upstream = await fetch(`https://erp.larus.net${loaPath}`, {
+    headers: { Cookie: cookie, Referer: 'https://erp.larus.net/ipv4/manage-leased-ips', 'User-Agent': 'Mozilla/5.0' },
   });
   if (!upstream.ok) return null;
   const buffer = Buffer.from(await upstream.arrayBuffer());
@@ -2507,15 +2507,17 @@ async function larusRequest(path: string, cookie: string, opts?: { method?: stri
     redirect: 'manual',
     headers: {
       Cookie: cookie,
-      Accept: 'application/json',
+      Accept: 'application/json, text/javascript, */*; q=0.01',
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      Referer: 'https://larus.net/ipv4/manage-leased-ips',
+      Origin: 'https://erp.larus.net',
+      Referer: 'https://erp.larus.net/ipv4/manage-leased-ips',
       'X-Requested-With': 'XMLHttpRequest',
       ...ctHeader,
     },
     ...(reqBody ? { body: reqBody } : {}),
   };
-  const resp = await fetch(`https://larus.net${path}`, fetchOpts);
+  const resp = await fetch(`https://erp.larus.net${path}`, fetchOpts);
+  console.log(`[Larus] 请求 ${path} → HTTP ${resp.status} (content-type: ${resp.headers.get('content-type') || 'N/A'})`);
   // 检测重定向（Cookie 过期时 Larus 返回 302 跳转到登录页）
   if (resp.status >= 300 && resp.status < 400) {
     const location = resp.headers.get('location') || '';
@@ -2550,6 +2552,7 @@ async function fetchLarusIps(cookie: string): Promise<{ items: any[]; updatedCoo
   let latestCookie: string | undefined;
   const { body: first, updatedCookie: uc1 } = await larusRequest('/ipv4/lease-in/ip-list?page=1&limit=500', cookie);
   if (uc1) latestCookie = uc1;
+  console.log(`[Larus] fetchLarusIps 首页响应: status=${first.status}, hasData=${!!first.data}, total=${first.data?.total}, lists=${first.data?.lists?.length}, _html=${!!first._html}, keys=${Object.keys(first).join(',')}`);
   if (!first.status) {
     const hint = first._html ? 'Cookie 已过期（返回了 HTML 登录页），请重新设置 Cookie' : (first.msg || 'Larus API 返回失败');
     throw new Error(hint);
@@ -9045,6 +9048,44 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     }
   });
 
+  // ─── Larus Cookie 诊断 ─────────────────────────────────────────────
+  server.middlewares.use('/api/larus/diagnose', async (_req: any, res: any, _next: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    const cfg = loadLarusConfig();
+    if (!cfg?.cookie) { res.statusCode = 400; res.end(JSON.stringify({ error: 'Cookie 未配置' })); return; }
+    try {
+      const cookieStr = cfg.cookie;
+      const resp = await fetch('https://erp.larus.net/ipv4/lease-in/ip-list?page=1&limit=10', {
+        method: 'GET',
+        redirect: 'manual',
+        headers: {
+          Cookie: cookieStr,
+          Accept: 'application/json, text/javascript, */*; q=0.01',
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          Origin: 'https://erp.larus.net',
+          Referer: 'https://erp.larus.net/ipv4/manage-leased-ips',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      });
+      const status = resp.status;
+      const ct = resp.headers.get('content-type') || '';
+      const raw = await resp.text();
+      res.statusCode = 200;
+      res.end(JSON.stringify({
+        httpStatus: status,
+        contentType: ct,
+        cookieLength: cookieStr.length,
+        cookieFirst60: cookieStr.slice(0, 60),
+        responseLength: raw.length,
+        responseFirst500: raw.slice(0, 500),
+        redirectLocation: resp.headers.get('location') || null,
+      }, null, 2));
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: e.message }));
+    }
+  });
+
   // ─── Larus Cookie 更新 ────────────────────────────────────────────
   server.middlewares.use('/api/larus/config', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -9062,11 +9103,53 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       try {
         const body = JSON.parse(await readRequestBody(req));
         if (!body.cookie) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '请提供 cookie' })); return; }
+        // 保存前先验证 cookie 是否有效
+        try {
+          const testResp = await fetch('https://erp.larus.net/ipv4/lease-in/ip-list?page=1&limit=1', {
+            redirect: 'manual',
+            headers: {
+              Cookie: body.cookie,
+              Accept: 'application/json, text/javascript, */*; q=0.01',
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+              Origin: 'https://erp.larus.net',
+              Referer: 'https://erp.larus.net/ipv4/manage-leased-ips',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+          });
+          console.log(`[Larus] Cookie 验证: HTTP ${testResp.status}, content-type: ${testResp.headers.get('content-type')}`);
+          if (testResp.status >= 300 && testResp.status < 400) {
+            const loc = testResp.headers.get('location') || '';
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: `Cookie 无效：服务端返回重定向到 ${loc}，请确认复制了完整的 Cookie 值且未过期（有效期约 2 小时）` }));
+            return;
+          }
+          if (!testResp.ok) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: `Cookie 无效：Larus 返回 HTTP ${testResp.status}` }));
+            return;
+          }
+          const ct = testResp.headers.get('content-type') || '';
+          if (!ct.includes('json')) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: 'Cookie 无效：Larus 返回了 HTML 页面而非 JSON 数据，Cookie 可能已过期' }));
+            return;
+          }
+          const testBody = await testResp.json() as any;
+          if (!testBody.status) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: `Cookie 无效：API 返回失败 (${testBody.msg || JSON.stringify(testBody).slice(0, 100)})` }));
+            return;
+          }
+          console.log(`[Larus] Cookie 验证通过，total=${testBody.data?.total}`);
+        } catch (ve: any) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, message: `Cookie 验证失败：${ve.message}` }));
+          return;
+        }
         const existing = loadLarusConfig() || {};
         const updated: any = { ...existing, cookie: body.cookie, cacheHours: body.cacheHours ?? existing.cacheHours ?? 2 };
         if (body.loa_contact) updated.loa_contact = body.loa_contact;
         saveLarusConfig(updated);
-        // 不删除旧缓存：保留历史数据，新 cookie 拉取成功后会自动覆盖
         res.statusCode = 200;
         res.end(JSON.stringify({ success: true }));
       } catch (e: any) {
@@ -9477,8 +9560,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     const cfg = loadLarusConfig();
     if (!cfg) { res.statusCode = 400; res.end('Cookie 未配置'); return; }
     try {
-      const upstream = await fetch(`https://larus.net${loaPath}`, {
-        headers: { Cookie: cfg.cookie, Referer: 'https://larus.net/ipv4/manage-leased-ips', 'User-Agent': 'Mozilla/5.0' },
+      const upstream = await fetch(`https://erp.larus.net${loaPath}`, {
+        headers: { Cookie: cfg.cookie, Referer: 'https://erp.larus.net/ipv4/manage-leased-ips', 'User-Agent': 'Mozilla/5.0' },
       });
       if (!upstream.ok) { res.statusCode = upstream.status; res.end(`上游返回 ${upstream.status}`); return; }
       res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream');
