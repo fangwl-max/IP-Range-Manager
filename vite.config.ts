@@ -2504,6 +2504,7 @@ async function larusRequest(path: string, cookie: string, opts?: { method?: stri
   }
   const fetchOpts: RequestInit = {
     method,
+    redirect: 'manual',
     headers: {
       Cookie: cookie,
       Accept: 'application/json',
@@ -2515,6 +2516,12 @@ async function larusRequest(path: string, cookie: string, opts?: { method?: stri
     ...(reqBody ? { body: reqBody } : {}),
   };
   const resp = await fetch(`https://larus.net${path}`, fetchOpts);
+  // 检测重定向（Cookie 过期时 Larus 返回 302 跳转到登录页）
+  if (resp.status >= 300 && resp.status < 400) {
+    const location = resp.headers.get('location') || '';
+    console.warn(`[Larus] 请求 ${path} 被重定向到 ${location}，Cookie 可能已过期`);
+    throw new Error('Cookie 已过期（服务端返回重定向），请重新设置 Cookie');
+  }
   // 自动续期：捕获 Set-Cookie 并合并
   let updatedCookie: string | undefined;
   try {
@@ -2543,7 +2550,10 @@ async function fetchLarusIps(cookie: string): Promise<{ items: any[]; updatedCoo
   let latestCookie: string | undefined;
   const { body: first, updatedCookie: uc1 } = await larusRequest('/ipv4/lease-in/ip-list?page=1&limit=500', cookie);
   if (uc1) latestCookie = uc1;
-  if (!first.status) throw new Error(first.msg || 'Larus API 返回失败');
+  if (!first.status) {
+    const hint = first._html ? 'Cookie 已过期（返回了 HTML 登录页），请重新设置 Cookie' : (first.msg || 'Larus API 返回失败');
+    throw new Error(hint);
+  }
   const allItems: any[] = first.data?.lists || [];
   const total: number = first.data?.total || allItems.length;
   if (total > 500) {
@@ -8997,6 +9007,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
     // 无缓存 或 强制刷新：从 Larus API 拉取 IP 列表 + 自动补全所有 allocation（ASN/LOA）
     try {
+      console.log(`[Larus] 开始刷新 IP 列表（cookie 前 20 字符: ${cfg.cookie.slice(0, 20)}...）`);
       // 旧缓存按 id 建索引，供 enrich 单条失败时回填 ASN/LOA
       const prevCache = loadLarusData();
       const fallback = new Map<string, any>(
@@ -9021,6 +9032,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, fromCache: false, cookieAutoRenewed: !!(result.updatedCookie || enrichCookie), cachedAt: payload.cachedAt, items: enrichedItems }));
     } catch (e: any) {
+      console.error(`[Larus] 刷新 IP 列表失败:`, e.message);
       // 拉取失败时降级到旧缓存（包含 ASN/LOA 等已获取的信息）
       const stale = loadLarusData();
       if (stale?.items?.length) {
