@@ -36,6 +36,7 @@ data/
 # Larus 相关（含 Cookie / Token / 缓存，不上传）
 larus-config.json
 larus-data.json
+larus-cache.json
 .cds-token
 
 # 数据文件（线上为准，不用 git 管理）
