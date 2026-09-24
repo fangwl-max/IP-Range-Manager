@@ -9517,6 +9517,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const tokenMatch = pageHtml.match(/name="_token"\s+value="([^"]+)"/);
       if (!tokenMatch) throw new Error('未找到 CSRF token，Larus 页面结构可能已变更');
       const token = tokenMatch[1];
+      // 表单页注入的账户注册公司名。Larus 会与我们提交的 authorizer 做严格字符串比较，
+      // 不一致即要求上传营业执照（RIR 政策），故一律以页面值为准，忽略配置里的手填值。
+      const authorizerMatch = pageHtml.match(/var\s+authorizer\s*=\s*"([^"]*)"/);
+      const accountCompany = authorizerMatch ? authorizerMatch[1] : '';
+      const authorizerValue = accountCompany || contact.company || '';
       const countryMap: Record<string, string> = {};
       const selMatch = pageHtml.match(/<select[^>]*name="data_center_country"[^>]*>([\s\S]*?)<\/select>/);
       if (selMatch) {
@@ -9605,7 +9610,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         data_center_city: city,
         data_center_name: city,
         data_center_address: contact.address || '',
-        authorizer: contact.company || '',
+        authorizer: authorizerValue,
         abuse_contact: contact.name || '',
         abuse_mobile: contact.phone || '',
         abuse_email: contact.email || '',
@@ -9617,7 +9622,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         body: formBody,
       });
       if (updatedCookie) saveLarusConfig({ ...cfg, cookie: updatedCookie });
-      if (!apiBody?.status) throw new Error(apiBody?.msg || apiBody?.message || JSON.stringify(apiBody));
+      if (!apiBody?.status) {
+        const msg: string = apiBody?.msg || apiBody?.message || '';
+        // 营业执照要求：Larus 认为提交的公司名与 Whois 登记不一致。附上我们提交的值便于对照。
+        if (/business registration/i.test(msg)) {
+          throw new Error(`${msg}（已提交的公司名：「${authorizerValue}」，须与 Larus 账户注册公司名完全一致，包括标点）`);
+        }
+        throw new Error(msg || JSON.stringify(apiBody));
+      }
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, data: apiBody.data }));
     } catch (e: any) {
