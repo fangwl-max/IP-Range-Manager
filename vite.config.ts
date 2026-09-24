@@ -9521,9 +9521,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const selMatch = pageHtml.match(/<select[^>]*name="data_center_country"[^>]*>([\s\S]*?)<\/select>/);
       if (selMatch) {
         for (const m of selMatch[1].matchAll(/<option[^>]*value="([^"]*)"[^>]*>([^<]*)<\/option>/g)) {
-          countryMap[m[2].trim()] = m[1];
+          // 选项文本含 HTML 实体（如「Côte d&#039;Ivoire」），解码后再作为表单值回传
+          const text = m[2].trim()
+            .replace(/&#0?39;|&apos;/g, "'")
+            .replace(/&quot;/g, '"')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&');
+          countryMap[text] = m[1];
         }
       }
+      if (!Object.keys(countryMap).length) throw new Error('未解析到国家下拉列表，Larus 页面结构可能已变更');
 
       // 取该 route 现有分配的地区信息：新增 route 必须与已有记录的地区一致
       const { body: allocBody } = await larusRequest(`/ipv4/lease-in/allocation/${route_id}`, cfg.cookie);
@@ -9531,18 +9540,61 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const cidr: string = alloc.ip_cidr || body.ip_cidr || '';
       if (!cidr) throw new Error('未能获取该 IP 段 CIDR');
       const prefix = cidr.includes('/') ? cidr.split('/')[1] : '24';
-      const countryName: string = alloc.country || contact.country_name || '';
-      let countryCode = countryMap[countryName] || '';
-      if (!countryCode) {
-        const hit = Object.keys(countryMap).find(k => k.toLowerCase().includes(countryName.toLowerCase()) || countryName.toLowerCase().includes(k.toLowerCase()));
-        if (hit) countryCode = countryMap[hit];
+
+      // 国家：首次设置 ASN 时该段还没有任何分配记录，取不到 country，
+      // 此时回退到 LOA 联系信息所在国家（它的 country_code 就是 Larus 的选项值）。
+      const codeSet = new Set(Object.values(countryMap));
+      const nameList = Object.keys(countryMap);
+      const resolveByCode = (code: string) => (code && codeSet.has(code) ? code : '');
+      // 选项文本可能带后缀（如 HK 的选项是「Hong Kong China」，而联系信息里只写「Hong Kong」），
+      // 故按匹配强度分级：完全相同 > 选项以名称开头 > 名称以选项开头，同级取选项名最短的一条。
+      // 不做「任意包含」：下拉里没有独立的大陆选项，宽松匹配会把「China」静默选成「Taiwan, China」，
+      // 这种情况宁可报错让人工确认，也不要提交一个错误的地区。
+      const resolveByName = (name: string) => {
+        const n = (name || '').trim().toLowerCase();
+        if (!n) return { code: '', text: '' };
+        const rank = (k: string) => {
+          const kk = k.toLowerCase();
+          if (kk === n) return 0;
+          if (kk.startsWith(n)) return 1;
+          if (n.startsWith(kk)) return 2;
+          return 9;
+        };
+        const hit = nameList
+          .map(k => ({ k, r: rank(k) }))
+          .filter(x => x.r < 9)
+          .sort((a, b) => a.r - b.r || a.k.length - b.k.length)[0];
+        return hit ? { code: countryMap[hit.k], text: hit.k } : { code: '', text: '' };
+      };
+
+      let countryCode = '';
+      let countryText = '';
+      if (alloc.country) {
+        // 已有分配：必须与既有记录一致，不做跨国家回退
+        const byName = resolveByName(alloc.country);
+        countryCode = byName.code || resolveByCode(alloc.country);
+        countryText = byName.text || alloc.country;
       }
-      if (!countryCode) throw new Error(`无法将地区「${countryName}」映射为 Larus 国家代码`);
+      if (!countryCode) {
+        // 首次设置 ASN：回退到 LOA 联系信息的国家（country_code 即 Larus 选项值，优先直查）
+        const byName = resolveByName(contact.country_name);
+        countryCode = resolveByCode(contact.country_code) || byName.code;
+        countryText = byName.text || contact.country_name || '';
+      }
+      if (!countryCode) {
+        throw new Error(`无法确定该 IP 段的数据中心国家（分配记录与 LOA 联系信息均未提供有效地区，联系信息为「${contact.country_name || contact.country_code || '空'}」）`);
+      }
+
       // 城市必须来自 Larus 的城市列表
       const cityList = await larusRequest('/ipv4/api/country/city', cfg.cookie, { method: 'POST', formEncoded: true, body: { country: countryCode } });
       const cities: string[] = (cityList.body?.citys || []).map((c: any) => c.city);
-      const cityName: string = alloc.data_center_name || '';
-      const city = cities.includes(cityName) ? cityName : (cities[0] || cityName);
+      if (!cities.length) throw new Error(`无法获取国家「${countryText}」的城市列表（${countryCode}）`);
+      // 优先级：已有分配的城市（保持与既有记录一致）> LOA 联系信息配置的城市 > 国家名（如 HK 的国家名恰为「Hong Kong」）
+      const cityCandidates = [alloc.data_center_name, contact.city, contact.country_name, countryText];
+      const city = cityCandidates.find(c => c && cities.includes(c)) || cities[0];
+      if (alloc.data_center_name && !cities.includes(alloc.data_center_name)) {
+        console.warn(`[Larus] 分配记录中的城市「${alloc.data_center_name}」不在 ${countryCode} 城市列表中，改用「${city}」`);
+      }
 
       const formBody: Record<string, string> = {
         _token: token,

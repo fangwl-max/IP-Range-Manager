@@ -97,8 +97,8 @@ const LarusManagement: React.FC = () => {
   const [asnSetItem, setAsnSetItem] = useState<LarusItem | null>(null);
 
   // LOA 联系信息
-  interface LoaContact { name: string; company: string; country_code: string; country_name: string; phone: string; email: string; address: string; }
-  const emptyContact: LoaContact = { name: '', company: '', country_code: '', country_name: '', phone: '', email: '', address: '' };
+  interface LoaContact { name: string; company: string; country_code: string; country_name: string; city: string; phone: string; email: string; address: string; }
+  const emptyContact: LoaContact = { name: '', company: '', country_code: '', country_name: '', city: '', phone: '', email: '', address: '' };
   const [loaContact, setLoaContact] = useState<LoaContact>(emptyContact);
   const [loaContactDraft, setLoaContactDraft] = useState<LoaContact>(emptyContact);
   const [savingContact, setSavingContact] = useState(false);
@@ -1069,16 +1069,21 @@ const LarusManagement: React.FC = () => {
               </Form.Item>
             </Col>
             <Col span={16}>
-              <Form.Item label="国家名称">
-                <Input value={loaContactDraft.country_name} onChange={e => setLoaContactDraft(d => ({ ...d, country_name: e.target.value }))} placeholder="Hong Kong" />
+              <Form.Item label="国家名称" extra="需与 Larus 国家下拉的文本一致，如 Hong Kong China">
+                <Input value={loaContactDraft.country_name} onChange={e => setLoaContactDraft(d => ({ ...d, country_name: e.target.value }))} placeholder="Hong Kong China" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={8}>
+              <Form.Item label="城市" extra="首次建 Route 时用作数据中心城市/名称">
+                <Input value={loaContactDraft.city} onChange={e => setLoaContactDraft(d => ({ ...d, city: e.target.value }))} placeholder="Hong Kong" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
               <Form.Item label="电话">
                 <Input value={loaContactDraft.phone} onChange={e => setLoaContactDraft(d => ({ ...d, phone: e.target.value }))} placeholder="6462880788" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item label="邮箱">
                 <Input value={loaContactDraft.email} onChange={e => setLoaContactDraft(d => ({ ...d, email: e.target.value }))} placeholder="contact@example.com" />
               </Form.Item>
