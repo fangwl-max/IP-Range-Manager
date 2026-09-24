@@ -2485,7 +2485,24 @@ function mergeLarusCookies(existing: string, setCookieHeaders: string[]): { cook
   return { cookie: order.map(n => `${n}=${cookieMap.get(n)}`).join('; '), changed };
 }
 
-async function larusRequest(path: string, cookie: string, opts?: { method?: string; body?: any; formEncoded?: boolean }): Promise<{ body: any; updatedCookie?: string }> {
+/**
+ * 取 Larus 页面的 CSRF token。Larus 每个 ajax 写操作都带 X-CSRF-TOKEN，
+ * token 随会话变化且不随 Cookie 持久化，故每次写操作前现取。
+ */
+async function fetchLarusCsrfToken(cookie: string): Promise<string> {
+  const resp = await fetch('https://erp.larus.net/ipv4/manage-leased-ips', {
+    headers: {
+      Cookie: cookie,
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    },
+  });
+  const html = await resp.text();
+  const m = html.match(/name="csrf-token"\s+content="([^"]+)"/);
+  if (!m) throw new Error('未能从 Larus 页面提取 csrf-token');
+  return m[1];
+}
+
+async function larusRequest(path: string, cookie: string, opts?: { method?: string; body?: any; formEncoded?: boolean; csrfToken?: string }): Promise<{ body: any; updatedCookie?: string }> {
   const method = opts?.method || 'GET';
   let reqBody: string | undefined;
   let ctHeader: Record<string, string> = {};
@@ -2502,6 +2519,7 @@ async function larusRequest(path: string, cookie: string, opts?: { method?: stri
       ctHeader = { 'Content-Type': 'application/json' };
     }
   }
+  const csrfHeader: Record<string, string> = opts?.csrfToken ? { 'X-CSRF-TOKEN': opts.csrfToken } : {};
   const fetchOpts: RequestInit = {
     method,
     redirect: 'manual',
@@ -2512,6 +2530,7 @@ async function larusRequest(path: string, cookie: string, opts?: { method?: stri
       Origin: 'https://erp.larus.net',
       Referer: 'https://erp.larus.net/ipv4/manage-leased-ips',
       'X-Requested-With': 'XMLHttpRequest',
+      ...csrfHeader,
       ...ctHeader,
     },
     ...(reqBody ? { body: reqBody } : {}),
@@ -9653,9 +9672,17 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       });
       const { alloc_id } = body;
       if (!alloc_id) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 alloc_id' })); return; }
-      const { body: apiBody, updatedCookie } = await larusRequest(`/ipv4/lease-in/allocation/${alloc_id}`, cfg.cookie, { method: 'DELETE' });
+      // Larus 的删除路由是 POST /ipv4/lease-in/route/delete（表单传 id），
+      // 不存在 DELETE /ipv4/lease-in/allocation/{id}。
+      const csrfToken = await fetchLarusCsrfToken(cfg.cookie);
+      const { body: apiBody, updatedCookie } = await larusRequest('/ipv4/lease-in/route/delete', cfg.cookie, {
+        method: 'POST',
+        formEncoded: true,
+        csrfToken,
+        body: { id: String(alloc_id) },
+      });
       if (updatedCookie) saveLarusConfig({ ...cfg, cookie: updatedCookie });
-      if (!apiBody?.status) throw new Error(apiBody?.msg || 'Larus API 返回失败');
+      if (!apiBody?.status) throw new Error(apiBody?.msg || apiBody?.message || 'Larus API 返回失败');
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true }));
     } catch (e: any) {
@@ -9689,10 +9716,16 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
       let cancelled = 0;
       const errors: string[] = [];
+      const csrfToken = await fetchLarusCsrfToken(cfg.cookie);
       for (const alloc of lists) {
         try {
-          const { body: cancelBody } = await larusRequest(`/ipv4/lease-in/allocation/${alloc.id}`, cfg.cookie, { method: 'DELETE' });
-          if (!cancelBody?.status) throw new Error(cancelBody?.msg || '取消失败');
+          const { body: cancelBody } = await larusRequest('/ipv4/lease-in/route/delete', cfg.cookie, {
+            method: 'POST',
+            formEncoded: true,
+            csrfToken,
+            body: { id: String(alloc.id) },
+          });
+          if (!cancelBody?.status) throw new Error(cancelBody?.msg || cancelBody?.message || '取消失败');
           cancelled++;
         } catch (e: any) {
           errors.push(`alloc_id=${alloc.id}: ${e.message}`);
