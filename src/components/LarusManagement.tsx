@@ -166,6 +166,39 @@ const LarusManagement: React.FC = () => {
     }
   }, []);
 
+  // 按 IP 段刷新核心信息（ASN / LOA / allocations）
+  const [routesLoading, setRoutesLoading] = useState<Set<number>>(new Set());
+
+  const refreshRoutes = useCallback(async (routeIds: number[]) => {
+    if (!routeIds.length) return;
+    setRoutesLoading(prev => new Set([...prev, ...routeIds]));
+    try {
+      const res = await fetch('/api/larus/routes-refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ route_ids: routeIds }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setItems(prev => prev.map(it => {
+        const updated = (data.results as Array<{ id: number; asn: string | null; loa_path: string | null; allocations: LarusAllocation[] }>)
+          .find(r => r.id === it.id);
+        return updated !== undefined
+          ? { ...it, asn: updated.asn ?? undefined, loa_path: updated.loa_path ?? undefined, allocations: updated.allocations }
+          : it;
+      }));
+      antdMessage.success(`已刷新 ${data.results?.length ?? routeIds.length} 条 IP 段`);
+    } catch (e: any) {
+      antdMessage.error(e.message || '刷新失败');
+    } finally {
+      setRoutesLoading(prev => {
+        const next = new Set(prev);
+        routeIds.forEach(id => next.delete(id));
+        return next;
+      });
+    }
+  }, []);
+
   // 批量操作
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [batchSetOpen, setBatchSetOpen] = useState(false);
@@ -671,10 +704,19 @@ const LarusManagement: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 140,
+      width: 200,
       fixed: 'right',
       render: (_: any, r: LarusItem) => (
         <Space size={4}>
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            loading={routesLoading.has(r.id)}
+            onClick={() => refreshRoutes([r.id])}
+            title="重新拉取该 IP 段的分配记录 / ASN / LOA"
+          >
+            刷新
+          </Button>
           <Button
             size="small"
             icon={<PlusOutlined />}
@@ -776,7 +818,13 @@ const LarusManagement: React.FC = () => {
       )}
 
       {/* 工具栏 */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
+      <div style={{
+        display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+        position: 'sticky', top: -24, zIndex: 20,
+        background: '#f4f6f9',
+        padding: '24px 0 10px',
+        margin: '-24px 0 4px',
+      }}>
         <Input
           prefix={<SearchOutlined />}
           placeholder="搜索 IP段 / 合同 ID / ASN"
@@ -797,6 +845,13 @@ const LarusManagement: React.FC = () => {
         <Button icon={<ReloadOutlined />} onClick={() => loadIps(true)} loading={loading}>刷新</Button>
         <Button icon={<SyncOutlined />} onClick={() => refreshIrr(items.map(it => it.id))} loading={irrLoading.size > 0 && selectedRowKeys.length === 0}>IRR刷新</Button>
         <Button icon={<SyncOutlined />} onClick={() => refreshDates(items.map(it => it.id))} loading={datesLoading.size > 0 && selectedRowKeys.length === 0}>日期刷新</Button>
+        <Button
+          icon={<SyncOutlined />}
+          onClick={() => refreshRoutes(selectedRowKeys.length ? selectedRowKeys as number[] : items.map(it => it.id))}
+          loading={routesLoading.size > 0}
+        >
+          {selectedRowKeys.length ? `刷新选中 (${selectedRowKeys.length})` : '明细刷新'}
+        </Button>
         <Button icon={<CloudUploadOutlined />} onClick={syncLoa} loading={syncing}>同步LOA到首都在线</Button>
         <Button icon={<SyncOutlined />} onClick={() => setCookieDrawerOpen(true)}>更新 Cookie</Button>
         {isAdmin && (
@@ -821,6 +876,7 @@ const LarusManagement: React.FC = () => {
           alignItems: 'center',
           gap: 12,
           flexWrap: 'wrap',
+          position: 'sticky', top: 58, zIndex: 19,
         }}>
           <span style={{ color: '#1677ff', fontWeight: 500 }}>已选 {selectedRowKeys.length} 条</span>
           <Button
@@ -873,6 +929,14 @@ const LarusManagement: React.FC = () => {
             }}
           >
             复制ASN
+          </Button>
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            loading={routesLoading.size > 0 && selectedRowKeys.length > 0}
+            onClick={() => refreshRoutes(selectedRowKeys as number[])}
+          >
+            刷新明细 ({selectedRowKeys.length})
           </Button>
           <Button
             size="small"

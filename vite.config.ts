@@ -9318,6 +9318,59 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     }
   });
 
+  // ─── Larus 按 IP 段刷新核心信息（allocations / ASN / LOA）─────────────
+  server.middlewares.use('/api/larus/routes-refresh', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: '仅支持 POST' })); return; }
+    let cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'Cookie 未配置' })); return; }
+    try {
+      const body = JSON.parse(await readRequestBody(req));
+      const routeIds: number[] = body.route_ids || [];
+      if (!routeIds.length) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_ids' })); return; }
+
+      const cache = loadLarusData();
+      const cacheMap = new Map<string, any>((cache?.items || []).map((it: any) => [String(it.id), it]));
+      const results: Array<{ id: number; asn: string | null; loa_path: string | null; allocations: any[] }> = [];
+
+      for (const routeId of routeIds) {
+        const cached = cacheMap.get(String(routeId));
+        try {
+          const detail = await fetchLarusAllocationDetail(routeId, cfg.cookie);
+          if (detail.updatedCookie) { cfg = { ...cfg, cookie: detail.updatedCookie }; saveLarusConfig(cfg); }
+          const updated = {
+            ...(cached || { id: routeId }),
+            allocations: detail.allocations,
+            asn: detail.asn,
+            loa_path: detail.loa_path,
+          };
+          cacheMap.set(String(routeId), updated);
+          results.push({ id: routeId, asn: detail.asn, loa_path: detail.loa_path, allocations: detail.allocations });
+        } catch (e: any) {
+          results.push({
+            id: routeId,
+            asn: cached?.asn ?? null,
+            loa_path: cached?.loa_path ?? null,
+            allocations: cached?.allocations ?? [],
+          });
+        }
+      }
+
+      if (cache?.items) {
+        cache.items = cache.items.map((it: any) => cacheMap.get(String(it.id)) ?? it);
+        saveLarusData(cache);
+      }
+
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, results }));
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
   // ─── Larus 合同日期刷新（purchase_date / expiry_date）────────────────────────────
   server.middlewares.use('/api/larus/dates-refresh', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
