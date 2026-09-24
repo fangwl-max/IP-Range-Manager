@@ -1374,7 +1374,10 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
         renewalDate: meta.renewalDate,
         cancellationDate: '',
         monthlyPrice: bs.recurring_amount ?? 0,
-        renewalStatus: svc.ecommerce_pending_order ? 'not_renewed' : 'cancelled',
+        // 能走到这里说明 bs.status === 'active'（上方守卫已过滤），即仍在租用。
+        // ecommerce_pending_order 只表示「当前有结账订单」，无单时它同样为 null，
+        // 不能用它反推取消，否则所有未在下单的活跃段都会被误判为取消续费。
+        renewalStatus: svc.ecommerce_pending_order ? 'not_renewed' : 'renewed',
         projectGroups: [],
         serverLocations: [],
         blockedCountries: [],
@@ -1416,9 +1419,11 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
     const ipxoMonthlyPrice = bs.recurring_amount ?? null;
     if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
-    const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'cancelled';
-    if (ipxoRenewalStatus === 'cancelled' && seg.renewalStatus !== 'cancelled') { seg.renewalStatus = 'cancelled'; changed = true; }
-    else if (ipxoRenewalStatus === 'not_renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'not_renewed'; changed = true; }
+    // 仍在 IPXO active 列表中即未取消。ecommerce_pending_order 仅表示「当前有结账订单」，
+    // 无单时为 null 属正常（多数段平时都没有待处理订单），不可据此判定取消。
+    // 真正的取消由下方「本地有、缓存已无 active」分支处理。
+    const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'renewed';
+    if (ipxoRenewalStatus === 'renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'renewed'; changed = true; }
     if (changed) {
       seg.ipxoLastSyncAt = nowIso;
       seg.updatedAt = nowIso;
@@ -7501,9 +7506,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
           const ipxoMonthlyPrice = bs.recurring_amount ?? null;
           if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
-          const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'cancelled';
-          if (ipxoRenewalStatus === 'cancelled' && seg.renewalStatus !== 'cancelled') { seg.renewalStatus = 'cancelled'; changed = true; }
-          else if (ipxoRenewalStatus === 'not_renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'not_renewed'; changed = true; }
+          // 同上：在 active 列表中即视为未取消，仅在有结账订单时降级为待续费。
+          const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'renewed';
+          if (ipxoRenewalStatus === 'renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'renewed'; changed = true; }
           if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
         }
 
@@ -7650,7 +7655,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             renewalDate,
             cancellationDate: '',
             monthlyPrice: item.monthlyPrice,
-            renewalStatus: item.hasPendingOrder ? 'not_renewed' : 'cancelled',
+            // 同 /api/ipxo/services/sync：能进 toAdd 说明该段在缓存里是 active，
+            // hasPendingOrder 为 false 只是「暂时没有结账订单」，不构成取消。
+            renewalStatus: item.hasPendingOrder ? 'not_renewed' : 'renewed',
             projectGroups: [],
             serverLocations: [],
             blockedCountries: [],
@@ -7702,9 +7709,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
           const ipxoMonthlyPrice = bs.recurring_amount ?? null;
           if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
-          const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'cancelled';
-          if (ipxoRenewalStatus === 'cancelled' && seg.renewalStatus !== 'cancelled') { seg.renewalStatus = 'cancelled'; changed = true; }
-          else if (ipxoRenewalStatus === 'not_renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'not_renewed'; changed = true; }
+          // 同上：在 active 列表中即视为未取消，仅在有结账订单时降级为待续费。
+          const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'renewed';
+          if (ipxoRenewalStatus === 'renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'renewed'; changed = true; }
           if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
         }
 
