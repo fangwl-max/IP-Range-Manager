@@ -237,7 +237,7 @@ const LarusManagement: React.FC = () => {
     }
   }, []);
 
-  const cancelAsn = async (alloc_id: number, asn: string) => {
+  const cancelAsn = async (routeId: number, alloc_id: number, asn: string) => {
     const key = `cancel-${alloc_id}`;
     setAsnActionLoading(key);
     try {
@@ -249,15 +249,14 @@ const LarusManagement: React.FC = () => {
       const data = await res.json();
       if (!data.success) throw new Error(data.message);
       antdMessage.success(`AS${asn} 已取消`);
-      if (detailItem) {
-        setDetailData((prev: any) => prev ? {
-          ...prev,
-          allocations: (prev.allocations || []).filter((a: any) => a.alloc_id !== alloc_id),
-        } : prev);
-        setItems(prev => prev.map(it => it.id === detailItem.id ? {
-          ...it,
-          allocations: (it.allocations || []).filter(a => a.alloc_id !== alloc_id),
-        } : it));
+      const remaining = (list?: LarusAllocation[]) => (list || []).filter(a => a.alloc_id !== alloc_id);
+      setItems(prev => prev.map(it => {
+        if (it.id !== routeId) return it;
+        const allocations = remaining(it.allocations);
+        return { ...it, allocations, asn: allocations[0]?.asn, loa_path: allocations[0]?.loa_path ?? undefined };
+      }));
+      if (detailItem?.id === routeId) {
+        setDetailData((prev: any) => prev ? { ...prev, allocations: remaining(prev.allocations) } : prev);
       }
       loadStats();
     } catch (e: any) {
@@ -618,16 +617,37 @@ const LarusManagement: React.FC = () => {
     {
       title: 'ASN',
       key: 'asn',
-      width: 130,
+      width: 190,
       render: (_: any, r: LarusItem) => {
         const allocs = r.allocations;
         if (allocs?.length) {
           return (
             <Space direction="vertical" size={2}>
               {allocs.map(a => (
-                <Tooltip key={a.alloc_id} title="点击复制" mouseEnterDelay={0.5}>
-                  <Text code style={{ fontSize: 14, cursor: 'pointer' }} onClick={() => copyToClipboard(`AS${a.asn}`)}>AS{a.asn}</Text>
-                </Tooltip>
+                <Space key={a.alloc_id} size={4}>
+                  <Tooltip title="点击复制" mouseEnterDelay={0.5}>
+                    <Text code style={{ fontSize: 14, cursor: 'pointer' }} onClick={() => copyToClipboard(`AS${a.asn}`)}>AS{a.asn}</Text>
+                  </Tooltip>
+                  <Button
+                    size="small"
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    loading={asnActionLoading === `cancel-${a.alloc_id}`}
+                    title="移除该条 ASN 分配"
+                    style={{ fontSize: 11, height: 20, padding: '0 4px' }}
+                    onClick={() => {
+                      Modal.confirm({
+                        title: `移除 ${r.ip_cidr} 的 AS${a.asn}？`,
+                        content: '将删除该条 ASN 分配记录，不影响该 IP 段的其它 ASN，不可撤销。',
+                        okType: 'danger',
+                        okText: '确认移除',
+                        cancelText: '返回',
+                        onOk: () => cancelAsn(r.id, a.alloc_id, a.asn),
+                      });
+                    }}
+                  />
+                </Space>
               ))}
             </Space>
           );
@@ -966,7 +986,7 @@ const LarusManagement: React.FC = () => {
         loading={loading}
         size="small"
         pagination={false}
-        scroll={{ x: 1050 }}
+        scroll={{ x: 1660 }}
         rowSelection={{
           selectedRowKeys,
           onChange: (keys) => setSelectedRowKeys(keys),
@@ -1137,7 +1157,7 @@ const LarusManagement: React.FC = () => {
                               title: `确定取消 AS${a.asn}？`,
                               content: '此操作将从 Larus 系统中移除该 ASN 分配，不可撤销。',
                               okType: 'danger',
-                              onOk: () => cancelAsn(a.alloc_id, a.asn),
+                              onOk: () => cancelAsn(detailItem!.id, a.alloc_id, a.asn),
                             });
                           }}
                         >
