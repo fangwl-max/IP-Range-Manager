@@ -9452,23 +9452,61 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         req.on('data', (chunk: any) => { data += chunk; });
         req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { reject(new Error('JSON 解析失败')); } });
       });
-      const { route_id, asn, ip_cidr } = body;
+      const { route_id, asn } = body;
       if (!route_id || !asn) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 route_id 或 asn' })); return; }
-      // 合并请求中的联系信息与 config 中存储的默认值
       const contact = cfg.loa_contact || {};
+
+      // 取表单页：拿 _token 与国家名称→代码映射（每次请求 token 会变）
+      const pageUrl = `/ipv4/lease-in/create-route-object/${route_id}`;
+      const { body: pageBody } = await larusRequest(pageUrl, cfg.cookie);
+      const pageHtml: string = pageBody?._html || '';
+      if (!pageHtml) throw new Error('无法获取 Larus 表单页（Cookie 可能已过期）');
+      const tokenMatch = pageHtml.match(/name="_token"\s+value="([^"]+)"/);
+      if (!tokenMatch) throw new Error('未找到 CSRF token，Larus 页面结构可能已变更');
+      const token = tokenMatch[1];
+      const countryMap: Record<string, string> = {};
+      const selMatch = pageHtml.match(/<select[^>]*name="data_center_country"[^>]*>([\s\S]*?)<\/select>/);
+      if (selMatch) {
+        for (const m of selMatch[1].matchAll(/<option[^>]*value="([^"]*)"[^>]*>([^<]*)<\/option>/g)) {
+          countryMap[m[2].trim()] = m[1];
+        }
+      }
+
+      // 取该 route 现有分配的地区信息：新增 route 必须与已有记录的地区一致
+      const { body: allocBody } = await larusRequest(`/ipv4/lease-in/allocation/${route_id}`, cfg.cookie);
+      const alloc = (allocBody?.data?.lists || [])[0] || {};
+      const cidr: string = alloc.ip_cidr || body.ip_cidr || '';
+      if (!cidr) throw new Error('未能获取该 IP 段 CIDR');
+      const prefix = cidr.includes('/') ? cidr.split('/')[1] : '24';
+      const countryName: string = alloc.country || contact.country_name || '';
+      let countryCode = countryMap[countryName] || '';
+      if (!countryCode) {
+        const hit = Object.keys(countryMap).find(k => k.toLowerCase().includes(countryName.toLowerCase()) || countryName.toLowerCase().includes(k.toLowerCase()));
+        if (hit) countryCode = countryMap[hit];
+      }
+      if (!countryCode) throw new Error(`无法将地区「${countryName}」映射为 Larus 国家代码`);
+      // 城市必须来自 Larus 的城市列表
+      const cityList = await larusRequest('/ipv4/api/country/city', cfg.cookie, { method: 'POST', formEncoded: true, body: { country: countryCode } });
+      const cities: string[] = (cityList.body?.citys || []).map((c: any) => c.city);
+      const cityName: string = alloc.data_center_name || '';
+      const city = cities.includes(cityName) ? cityName : (cities[0] || cityName);
+
       const formBody: Record<string, string> = {
-        route_id: String(route_id),
+        _token: token,
+        ip_prefix: prefix,
+        ip_cidr: cidr,
         asn: String(asn),
-        prefix: String(ip_cidr || ''),
-        country_code: String(body.country_code || contact.country_code || ''),
-        country_name: String(body.country_name || contact.country_name || ''),
-        name: String(body.name || contact.name || ''),
-        company: String(body.company || contact.company || ''),
-        phone: String(body.phone || contact.phone || ''),
-        email: String(body.email || contact.email || ''),
-        address: String(body.address || contact.address || ''),
+        data_center_country: countryCode,
+        data_center_city: city,
+        data_center_name: city,
+        data_center_address: contact.address || '',
+        authorizer: contact.company || '',
+        abuse_contact: contact.name || '',
+        abuse_mobile: contact.phone || '',
+        abuse_email: contact.email || '',
+        abuse_address: contact.address || '',
       };
-      const { body: apiBody, updatedCookie } = await larusRequest(`/ipv4/lease-in/create-route-object/${route_id}`, cfg.cookie, {
+      const { body: apiBody, updatedCookie } = await larusRequest(pageUrl, cfg.cookie, {
         method: 'POST',
         formEncoded: true,
         body: formBody,
