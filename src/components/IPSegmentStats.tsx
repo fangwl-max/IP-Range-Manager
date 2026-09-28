@@ -2,9 +2,9 @@ import React, { useState, useEffect, useCallback, useMemo, useDeferredValue } fr
 import { useUrlTab } from '../hooks/useUrlTab';
 import {
   Card, Row, Col, Spin, Typography, Tag, Modal, Table, Space,
-  Empty, Badge, Select, Tooltip, Button, message, Radio, DatePicker, Tabs,
+  Empty, Badge, Select, Tooltip, Button, message, Radio, DatePicker, Tabs, Switch,
 } from 'antd';
-import { SyncOutlined, PieChartOutlined, ReloadOutlined, CalendarOutlined, SendOutlined } from '@ant-design/icons';
+import { SyncOutlined, PieChartOutlined, ReloadOutlined, CalendarOutlined, SendOutlined, SwapOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
 
 const { Title, Text } = Typography;
@@ -52,6 +52,83 @@ function classifyByRegion(serverLocations: { supplier: string; region: string }[
   return 'other_region';
 }
 
+// ─── 购买统计聚合 ─────────────────────────────────────────────────────────────
+
+interface StatBucket { count: number; fee: number; segs: any[] }
+
+export interface GroupStats {
+  total: number;
+  fee: number;
+  regionEntries: [string, StatBucket][];
+  blockedEntries: [string, StatBucket][];
+  untestedEntries: [string, StatBucket][];
+}
+
+// 一个分组内各段的计费地区 / 被墙 / 未检测聚合。单独周期视图与 A-B 对比视图共用，
+// 避免两处各写一份后随需求漂移出不一致的口径。
+function collectGroupStats(segs: any[]): GroupStats {
+  const regionStats:   Record<string, StatBucket> = {};
+  const blockedStats:  Record<string, StatBucket> = {};
+  const untestedStats: Record<string, StatBucket> = {};
+
+  const addTo = (map: Record<string, StatBucket>, key: string, seg: any, price: number) => {
+    if (!map[key]) map[key] = { count: 0, fee: 0, segs: [] };
+    map[key].count++;
+    map[key].fee += price;
+    map[key].segs.push(seg);
+  };
+
+  segs.forEach(seg => {
+    const blocked: string[] = seg.blockedCountries || [];
+    const detected: string[] = seg.detectedCountries || [];
+    const price = seg.monthlyPrice || 0;
+    const uniqueRegions = [
+      ...new Set((seg.serverLocations || []).map((l: any) => l.region).filter(Boolean)),
+    ] as string[];
+
+    if (uniqueRegions.length === 0) {
+      addTo(regionStats, '未知地区', seg, price);
+      if (blocked.length > 0) addTo(blockedStats, '未知地区', seg, price);
+      if (blocked.length === 0 && detected.length === 0) addTo(untestedStats, '未知地区', seg, price);
+      return;
+    }
+
+    uniqueRegions.forEach(region => {
+      addTo(regionStats, region, seg, price);
+      const ck = REGION_KEY_MAP[region];
+      if (ck) {
+        if (blocked.includes(ck)) addTo(blockedStats, region, seg, price);
+        if (!blocked.includes(ck) && !detected.includes(ck)) addTo(untestedStats, region, seg, price);
+      }
+    });
+  });
+
+  const sortEntries = (entries: [string, StatBucket][]) =>
+    entries.sort((a, b) => {
+      if (a[0] === '未知地区') return 1;
+      if (b[0] === '未知地区') return -1;
+      return b[1].count - a[1].count;
+    });
+
+  return {
+    total: segs.length,
+    fee: segs.reduce((s, seg) => s + (seg.monthlyPrice || 0), 0),
+    regionEntries:   sortEntries(Object.entries(regionStats)),
+    blockedEntries:  sortEntries(Object.entries(blockedStats)),
+    untestedEntries: sortEntries(Object.entries(untestedStats)),
+  };
+}
+
+// 分组键排序：整体 / 未分配项目组 / 未知供应商 / 未知地区 置后
+function sortGroupKeys(keys: string[]): string[] {
+  const isSpecial = (k: string) => ['整体', '未分配项目组', '未知供应商', '未知地区'].includes(k);
+  return keys.sort((a, b) => {
+    if (isSpecial(a) && !isSpecial(b)) return 1;
+    if (!isSpecial(a) && isSpecial(b)) return -1;
+    return a.localeCompare(b, 'zh-CN');
+  });
+}
+
 // ─── 类型 ─────────────────────────────────────────────────────────────────────
 
 interface SliceData {
@@ -90,6 +167,22 @@ function getLastWeekRange(): [Dayjs, Dayjs] {
   const thisMonday = today.subtract(daysFromMon, 'day').startOf('day');
   return [thisMonday.subtract(7, 'day'), thisMonday.subtract(1, 'day').endOf('day')];
 }
+
+// monthsAgo=1 取上月，=2 取上上月。按自然月取整，不做等长回推——
+// 3 月对比 2 月时等长回推会落到 1/29，而自然月才是财务口径。
+function getMonthRange(monthsAgo: number): [Dayjs, Dayjs] {
+  const d = dayjs().subtract(monthsAgo, 'month');
+  return [d.startOf('month'), d.endOf('month')];
+}
+
+// 上上周：把「上周」整体再往前挪一周
+function getWeekBeforeLastRange(): [Dayjs, Dayjs] {
+  const [lastMon, lastSun] = getLastWeekRange();
+  return [lastMon.subtract(7, 'day'), lastSun.subtract(7, 'day')];
+}
+
+const sameRange = (r: [Dayjs, Dayjs] | null, a: Dayjs, b: Dayjs): boolean =>
+  !!r && r[0].format('YYYY-MM-DD') === a.format('YYYY-MM-DD') && r[1].format('YYYY-MM-DD') === b.format('YYYY-MM-DD');
 
 function isInTimeRange(purchaseDate: string | null, filter: TimeFilter, range: [Dayjs, Dayjs] | null): boolean {
   if (filter === 'all') return true;
@@ -433,6 +526,12 @@ const IPSegmentStats: React.FC = () => {
   // 购买统计细分维度（默认按项目组）
   const [purchaseGroupBy, setPurchaseGroupBy] = useState<'overall' | 'project' | 'supplier' | 'region'>('project');
   const [gchatSending, setGchatSending] = useState(false);
+
+  // 购买统计「时间段对比」：A 为基准段，B 留空时按 A 的长度自动向前回推
+  const [purchaseCompareEnabled, setPurchaseCompareEnabled] = useState(false);
+  const [purchaseCompareA, setPurchaseCompareA] = useState<[Dayjs, Dayjs] | null>(null);
+  const [purchaseCompareB, setPurchaseCompareB] = useState<[Dayjs, Dayjs] | null>(null);
+  const [compareSending, setCompareSending] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -821,29 +920,9 @@ const IPSegmentStats: React.FC = () => {
     return byGroup;
   }, [purchaseGroupBy]);
 
-  const periodStats = useMemo(() =>
-    PERIOD_DEFS.map(({ key, label }) => {
-      const [from, to] = getPurchasePeriod(key);
-      const segs = allSegsForPurchase.filter(s => {
-        if (!s.purchaseDate) return false;
-        if (s.purchaseDate < from || s.purchaseDate > to) return false;
-        if (purchaseRegionFilter.length > 0) {
-          const regions = (s.serverLocations || []).map((l: any) => l.region).filter(Boolean);
-          if (!purchaseRegionFilter.some(r => regions.includes(r))) return false;
-        }
-        return true;
-      });
-      return { label, range: [from, to] as [string, string], segs, byGroup: buildByGroup(segs) };
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allSegsForPurchase, purchaseRegionFilter, buildByGroup]
-  );
-
-  const customPeriodStat = useMemo(() => {
-    if (!purchaseCustomRange) return null;
-    const from = purchaseCustomRange[0].format('YYYY-MM-DD');
-    const to   = purchaseCustomRange[1].format('YYYY-MM-DD');
-    const label = `${purchaseCustomRange[0].format('MM/DD')} ~ ${purchaseCustomRange[1].format('MM/DD')}`;
+  // 按显式区间取购买段并分组。固定周期、自定义段、对比 A/B 段共用同一实现，
+  // 保证「同一区间在三种视图下取到的数据完全一致」。
+  const buildPeriodStat = useCallback((label: string, from: string, to: string) => {
     const segs = allSegsForPurchase.filter(s => {
       if (!s.purchaseDate) return false;
       if (s.purchaseDate < from || s.purchaseDate > to) return false;
@@ -854,7 +933,75 @@ const IPSegmentStats: React.FC = () => {
       return true;
     });
     return { label, range: [from, to] as [string, string], segs, byGroup: buildByGroup(segs) };
-  }, [purchaseCustomRange, allSegsForPurchase, purchaseRegionFilter, buildByGroup]);
+  }, [allSegsForPurchase, purchaseRegionFilter, buildByGroup]);
+
+  const periodStats = useMemo(() =>
+    PERIOD_DEFS.map(({ key, label }) => {
+      const [from, to] = getPurchasePeriod(key);
+      return buildPeriodStat(label, from, to);
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [buildPeriodStat]
+  );
+
+  const customPeriodStat = useMemo(() => {
+    if (!purchaseCustomRange) return null;
+    const from = purchaseCustomRange[0].format('YYYY-MM-DD');
+    const to   = purchaseCustomRange[1].format('YYYY-MM-DD');
+    const label = `${purchaseCustomRange[0].format('MM/DD')} ~ ${purchaseCustomRange[1].format('MM/DD')}`;
+    return buildPeriodStat(label, from, to);
+  }, [purchaseCustomRange, buildPeriodStat]);
+
+  // 对比模式下的 A/B 两段。B 未手填时按 A 的长度向前回推一段等长区间
+  // （含首尾，故为 len 天而非 len-1，否则两段会差一天）。
+  const comparePeriods = useMemo(() => {
+    if (!purchaseCompareEnabled || !purchaseCompareA) return null;
+    const aStart = purchaseCompareA[0].startOf('day');
+    const aEnd   = purchaseCompareA[1].startOf('day');
+    const aFrom = aStart.format('YYYY-MM-DD');
+    const aTo   = aEnd.format('YYYY-MM-DD');
+    const aLabel = aFrom === aTo ? aFrom : `${aStart.format('MM/DD')} ~ ${aEnd.format('MM/DD')}`;
+
+    let bRange: [Dayjs, Dayjs];
+    if (purchaseCompareB) {
+      bRange = [purchaseCompareB[0].startOf('day'), purchaseCompareB[1].startOf('day')];
+    } else {
+      const spanDays = aEnd.diff(aStart, 'day') + 1;
+      bRange = [aStart.subtract(spanDays, 'day'), aStart.subtract(1, 'day')];
+    }
+    const bFrom = bRange[0].format('YYYY-MM-DD');
+    const bTo   = bRange[1].format('YYYY-MM-DD');
+    const bLabel = bFrom === bTo ? bFrom : `${bRange[0].format('MM/DD')} ~ ${bRange[1].format('MM/DD')}`;
+    const bIsDerived = !purchaseCompareB;
+
+    return {
+      a: { ...buildPeriodStat(aLabel, aFrom, aTo), key: 'a' as const },
+      b: { ...buildPeriodStat(bLabel, bFrom, bTo), key: 'b' as const },
+      bIsDerived,
+    };
+  }, [purchaseCompareEnabled, purchaseCompareA, purchaseCompareB, buildPeriodStat]);
+
+  // 快捷键：A/B 都显式写死，不留空。
+  // 等长回推对「月 vs 月」是错的（8/31 天 vs 7/31 天，回推会跨到 6/30），
+  // 所以预设一律直接给出两段自然区间，精确到日。
+  const applyComparePreset = useCallback((preset: 'week' | 'month') => {
+    const [aStart, aEnd] = preset === 'week' ? getLastWeekRange() : getMonthRange(1);
+    const [bStart, bEnd] = preset === 'week' ? getWeekBeforeLastRange() : getMonthRange(2);
+    setPurchaseCompareA([aStart, aEnd]);
+    setPurchaseCompareB([bStart, bEnd]);
+  }, []);
+
+  const isWeekPreset = useMemo(() => {
+    const [aStart, aEnd] = getLastWeekRange();
+    const [bStart, bEnd] = getWeekBeforeLastRange();
+    return sameRange(purchaseCompareA, aStart, aEnd) && sameRange(purchaseCompareB, bStart, bEnd);
+  }, [purchaseCompareA, purchaseCompareB]);
+
+  const isMonthPreset = useMemo(() => {
+    const [aStart, aEnd] = getMonthRange(1);
+    const [bStart, bEnd] = getMonthRange(2);
+    return sameRange(purchaseCompareA, aStart, aEnd) && sameRange(purchaseCompareB, bStart, bEnd);
+  }, [purchaseCompareA, purchaseCompareB]);
 
   const allPeriodStats = useMemo(() =>
     customPeriodStat ? [...periodStats, customPeriodStat] : periodStats,
@@ -880,103 +1027,120 @@ const IPSegmentStats: React.FC = () => {
     setPurchaseModalVisible(true);
   }, []);
 
-  const sendPurchaseStatsToGchat = useCallback(async () => {
-    setGchatSending(true);
-    try {
-      const SPECIAL_KEYS = ['整体', '未分配项目组', '未知供应商', '未知地区'];
-      const sortGroups = (keys: string[]) =>
-        [...keys].sort((a, b) => {
-          if (SPECIAL_KEYS.includes(a) && !SPECIAL_KEYS.includes(b)) return 1;
-          if (!SPECIAL_KEYS.includes(a) && SPECIAL_KEYS.includes(b)) return -1;
-          return a.localeCompare(b, 'zh-CN');
-        });
-
-      const periods = allPeriodStats.map(period => {
-        const groupKeys = sortGroups(Array.from(period.byGroup.keys()));
-        return {
-          label: period.label,
-          range: period.range,
-          totalCount: period.segs.length,
-          totalFee: period.segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
-          groups: groupKeys.map(key => {
-            const segs = period.byGroup.get(key)!;
-            // 计费地区：数量 + 费用
-            const regionMap = new Map<string, { count: number; fee: number }>();
-            segs.forEach((seg: any) => {
+  // 把 periodStats 形状的对象转成后端卡片需要的 periods 载荷。
+  // 单段视图与 A/B 对比视图共用，后端 buildPurchaseCardV2 本来就按数组渲染多段。
+  const buildPeriodsPayload = useCallback((stats: { label: string; range: [string, string]; segs: any[]; byGroup: Map<string, any[]> }[]) => {
+    return stats.map(period => {
+      const groupKeys = sortGroupKeys([...period.byGroup.keys()]);
+      return {
+        label: period.label,
+        range: period.range,
+        totalCount: period.segs.length,
+        totalFee: period.segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
+        groups: groupKeys.map(key => {
+          const segs = period.byGroup.get(key)!;
+          // 计费地区：数量 + 费用
+          const regionMap = new Map<string, { count: number; fee: number }>();
+          segs.forEach((seg: any) => {
+            const locs = [...new Set(
+              (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean),
+            )] as string[];
+            const uniqueRegions = locs.length > 0 ? locs : ['未知'];
+            uniqueRegions.forEach((r: string) => {
+              const ex = regionMap.get(r) || { count: 0, fee: 0 };
+              regionMap.set(r, { count: ex.count + 1, fee: ex.fee + (seg.monthlyPrice || 0) });
+            });
+          });
+          const regions = [...regionMap.entries()]
+            .sort((a, b) => b[1].count - a[1].count)
+            .map(([region, { count, fee }]) => ({ region, count, fee }));
+          // 被墙：按国家统计数量+费用
+          // 未检测：blockedCountries 和 detectedCountries 均为空时（与平台 UI 判断一致）
+          const countryMap = new Map<string, { count: number; fee: number }>();
+          const uncheckedRegionMap = new Map<string, { count: number; fee: number }>();
+          segs.forEach((seg: any) => {
+            const segFee: number = seg.monthlyPrice || 0;
+            const blocked: string[] = Array.isArray(seg.blockedCountries) ? seg.blockedCountries : [];
+            const detected: string[] = Array.isArray(seg.detectedCountries) ? seg.detectedCountries : [];
+            if (blocked.length === 0 && detected.length === 0) {
               const locs = [...new Set(
                 (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean),
               )] as string[];
               const uniqueRegions = locs.length > 0 ? locs : ['未知'];
               uniqueRegions.forEach((r: string) => {
-                const ex = regionMap.get(r) || { count: 0, fee: 0 };
-                regionMap.set(r, { count: ex.count + 1, fee: ex.fee + (seg.monthlyPrice || 0) });
+                const ex = uncheckedRegionMap.get(r) || { count: 0, fee: 0 };
+                uncheckedRegionMap.set(r, { count: ex.count + 1, fee: ex.fee + segFee });
               });
-            });
-            const regions = [...regionMap.entries()]
-              .sort((a, b) => b[1].count - a[1].count)
-              .map(([region, { count, fee }]) => ({ region, count, fee }));
-            // 被墙：按国家统计数量+费用
-            // 未检测：blockedCountries 和 detectedCountries 均为空时（与平台 UI 判断一致）
-            const countryMap = new Map<string, { count: number; fee: number }>();
-            const uncheckedRegionMap = new Map<string, { count: number; fee: number }>();
-            segs.forEach((seg: any) => {
-              const segFee: number = seg.monthlyPrice || 0;
-              const blocked: string[] = Array.isArray(seg.blockedCountries) ? seg.blockedCountries : [];
-              const detected: string[] = Array.isArray(seg.detectedCountries) ? seg.detectedCountries : [];
-              if (blocked.length === 0 && detected.length === 0) {
-                const locs = [...new Set(
-                  (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean),
-                )] as string[];
-                const uniqueRegions = locs.length > 0 ? locs : ['未知'];
-                uniqueRegions.forEach((r: string) => {
-                  const ex = uncheckedRegionMap.get(r) || { count: 0, fee: 0 };
-                  uncheckedRegionMap.set(r, { count: ex.count + 1, fee: ex.fee + segFee });
-                });
-              } else {
-                blocked.forEach((c: string) => {
-                  const ex = countryMap.get(c) || { count: 0, fee: 0 };
-                  countryMap.set(c, { count: ex.count + 1, fee: ex.fee + segFee });
-                });
-              }
-            });
-            const blockedCountries = [...countryMap.entries()]
-              .sort((a, b) => b[1].count - a[1].count)
-              .map(([country, { count, fee }]) => ({ country, count, fee }));
-            const uncheckedRegions = [...uncheckedRegionMap.entries()]
-              .sort((a, b) => b[1].count - a[1].count)
-              .map(([region, { count, fee }]) => ({ region, count, fee }));
-            return {
-              key,
-              count: segs.length,
-              fee: segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
-              regions,
-              blockedCountries,
-              uncheckedRegions,
-            };
-          }),
-        };
-      });
-
-      const res = await fetch('/api/notify/gchat-purchase-stats', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          groupByLabel: PURCHASE_GROUP_BY_LABELS[purchaseGroupBy] ?? purchaseGroupBy,
-          periods,
+            } else {
+              blocked.forEach((c: string) => {
+                const ex = countryMap.get(c) || { count: 0, fee: 0 };
+                countryMap.set(c, { count: ex.count + 1, fee: ex.fee + segFee });
+              });
+            }
+          });
+          const blockedCountries = [...countryMap.entries()]
+            .sort((a, b) => b[1].count - a[1].count)
+            .map(([country, { count, fee }]) => ({ country, count, fee }));
+          const uncheckedRegions = [...uncheckedRegionMap.entries()]
+            .sort((a, b) => b[1].count - a[1].count)
+            .map(([region, { count, fee }]) => ({ region, count, fee }));
+          return {
+            key,
+            count: segs.length,
+            fee: segs.reduce((s: number, seg: any) => s + (seg.monthlyPrice || 0), 0),
+            regions,
+            blockedCountries,
+            uncheckedRegions,
+          };
         }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        message.success(data.message || '已发送到 Google Chat');
-      } else {
-        message.error(data.message || '发送失败');
-      }
+      };
+    });
+  }, []);
+
+  const postPurchaseStats = useCallback(async (periods: any[]): Promise<boolean> => {
+    const res = await fetch('/api/notify/gchat-purchase-stats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        groupByLabel: PURCHASE_GROUP_BY_LABELS[purchaseGroupBy] ?? purchaseGroupBy,
+        periods,
+      }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      message.success(data.message || '已发送到 Google Chat');
+      return true;
+    }
+    message.error(data.message || '发送失败');
+    return false;
+  }, [purchaseGroupBy]);
+
+  const sendPurchaseStatsToGchat = useCallback(async () => {
+    setGchatSending(true);
+    try {
+      await postPurchaseStats(buildPeriodsPayload(allPeriodStats));
     } catch (e: any) {
       message.error('发送失败：' + e.message);
     } finally {
       setGchatSending(false);
     }
-  }, [allPeriodStats, purchaseGroupBy]);
+  }, [allPeriodStats, buildPeriodsPayload, postPurchaseStats]);
+
+  // 对比发送：只发 A/B 两段，B 在后以便卡片按「基准 → 对比」顺序阅读
+  const sendCompareToGchat = useCallback(async () => {
+    if (!comparePeriods) {
+      message.warning('请先选择基准时间段');
+      return;
+    }
+    setCompareSending(true);
+    try {
+      await postPurchaseStats(buildPeriodsPayload([comparePeriods.b, comparePeriods.a]));
+    } catch (e: any) {
+      message.error('发送失败：' + e.message);
+    } finally {
+      setCompareSending(false);
+    }
+  }, [comparePeriods, buildPeriodsPayload, postPurchaseStats]);
 
   // ── 购买统计弹窗表格列（含被墙信息）──────────────────────────────────────────
   const purchaseModalColumns = [
@@ -1511,14 +1675,63 @@ const IPSegmentStats: React.FC = () => {
           style={{ marginTop: 16 }}
           extra={
             <Space size={8} wrap>
-              <RangePicker
-                size="small"
-                value={purchaseCustomRange}
-                onChange={v => setPurchaseCustomRange(v as [Dayjs, Dayjs] | null)}
-                allowClear
-                placeholder={['自定义开始', '自定义结束']}
-                style={{ width: 220 }}
-              />
+              <Space size={4}>
+                <span style={{ fontSize: 12, color: '#595959' }}>对比模式</span>
+                <Switch
+                  size="small"
+                  checked={purchaseCompareEnabled}
+                  onChange={on => {
+                    setPurchaseCompareEnabled(on);
+                    // 开启时若两段都还空着，直接套「上周 vs 上上周」，进来就有数据
+                    if (on && !purchaseCompareA && !purchaseCompareB) applyComparePreset('week');
+                  }}
+                />
+              </Space>
+              {purchaseCompareEnabled ? (<>
+                <Radio.Group size="small">
+                  <Radio.Button
+                    value="week"
+                    checked={isWeekPreset}
+                    onClick={() => applyComparePreset('week')}
+                  >
+                    上周 vs 上上周
+                  </Radio.Button>
+                  <Radio.Button
+                    value="month"
+                    checked={isMonthPreset}
+                    onClick={() => applyComparePreset('month')}
+                  >
+                    上月 vs 上上月
+                  </Radio.Button>
+                </Radio.Group>
+                <RangePicker
+                  size="small"
+                  value={purchaseCompareA}
+                  onChange={v => setPurchaseCompareA(v as [Dayjs, Dayjs] | null)}
+                  allowClear
+                  placeholder={['基准段 A 开始', '基准段 A 结束']}
+                  style={{ width: 200 }}
+                />
+                <Tooltip title={purchaseCompareB ? '' : '留空时自动回推与 A 等长的上一段'}>
+                  <RangePicker
+                    size="small"
+                    value={purchaseCompareB}
+                    onChange={v => setPurchaseCompareB(v as [Dayjs, Dayjs] | null)}
+                    allowClear
+                    placeholder={['对比段 B 开始', '对比段 B 结束']}
+                    style={{ width: 200 }}
+                  />
+                </Tooltip>
+              </>) : (
+                <RangePicker
+                  size="small"
+                  value={purchaseCustomRange}
+                  onChange={v => setPurchaseCustomRange(v as [Dayjs, Dayjs] | null)}
+                  allowClear
+                  placeholder={['自定义开始', '自定义结束']}
+                  style={{ width: 220 }}
+                />
+              )}
               <Select
                 mode="multiple"
                 allowClear
@@ -1531,27 +1744,45 @@ const IPSegmentStats: React.FC = () => {
                 maxTagCount="responsive"
                 getPopupContainer={() => document.body}
               />
-              <Button
-                size="small"
-                icon={<SendOutlined />}
-                loading={gchatSending}
-                onClick={sendPurchaseStatsToGchat}
-                title="发送当前视图到 Google Chat"
-              >
-                发送到 Chat
-              </Button>
+              {purchaseCompareEnabled ? (
+                <Button
+                  size="small"
+                  type="primary"
+                  ghost
+                  icon={<SwapOutlined />}
+                  loading={compareSending}
+                  disabled={!comparePeriods}
+                  onClick={sendCompareToGchat}
+                  title="把 A/B 两段时间的对比发送到 Google Chat"
+                >
+                  发送对比到 Chat
+                </Button>
+              ) : (
+                <Button
+                  size="small"
+                  icon={<SendOutlined />}
+                  loading={gchatSending}
+                  onClick={sendPurchaseStatsToGchat}
+                  title="发送当前视图到 Google Chat"
+                >
+                  发送到 Chat
+                </Button>
+              )}
             </Space>
           }
         >
+          {purchaseCompareEnabled && comparePeriods ? (
+            <CompareView
+              data={comparePeriods}
+              groupByLabel={PURCHASE_GROUP_BY_LABELS[purchaseGroupBy] ?? purchaseGroupBy}
+              onOpenModal={openPurchaseModal}
+            />
+          ) : purchaseCompareEnabled ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>请选择基准时间段 A</Text>
+          ) : (
           <Row gutter={16}>
             {allPeriodStats.map(period => {
-              const allGroupKeys = Array.from(period.byGroup.keys()).sort((a, b) => {
-                // "整体"/"未分配项目组"/"未知供应商"/"未知地区" 置后
-                const isSpecial = (k: string) => ['整体', '未分配项目组', '未知供应商', '未知地区'].includes(k);
-                if (isSpecial(a) && !isSpecial(b)) return 1;
-                if (!isSpecial(a) && isSpecial(b)) return -1;
-                return a.localeCompare(b, 'zh-CN');
-              });
+              const allGroupKeys = sortGroupKeys(Array.from(period.byGroup.keys()));
               return (
                 <Col xs={24} lg={customPeriodStat ? 12 : 8} xl={customPeriodStat ? 6 : 8} key={period.label} style={{ marginBottom: 8 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -1588,57 +1819,7 @@ const IPSegmentStats: React.FC = () => {
                         const fee = pSegs.reduce((s, seg) => s + (seg.monthlyPrice || 0), 0);
                         const pct = (n: number) => total > 0 ? `${((n / total) * 100).toFixed(1)}%` : '0%';
 
-                        const regionStats:   Record<string, { count: number; fee: number; segs: any[] }> = {};
-                        const blockedStats:  Record<string, { count: number; fee: number; segs: any[] }> = {};
-                        const untestedStats: Record<string, { count: number; fee: number; segs: any[] }> = {};
-
-                        const addTo = (
-                          map: Record<string, { count: number; fee: number; segs: any[] }>,
-                          key: string, seg: any, price: number,
-                        ) => {
-                          if (!map[key]) map[key] = { count: 0, fee: 0, segs: [] };
-                          map[key].count++;
-                          map[key].fee += price;
-                          map[key].segs.push(seg);
-                        };
-
-                        pSegs.forEach(seg => {
-                          const blocked: string[] = seg.blockedCountries || [];
-                          const detected: string[] = seg.detectedCountries || [];
-                          const price = seg.monthlyPrice || 0;
-                          const uniqueRegions = [
-                            ...new Set(
-                              (seg.serverLocations || []).map((l: any) => l.region).filter(Boolean)
-                            ),
-                          ] as string[];
-
-                          if (uniqueRegions.length === 0) {
-                            addTo(regionStats, '未知地区', seg, price);
-                            if (blocked.length > 0) addTo(blockedStats, '未知地区', seg, price);
-                            if (blocked.length === 0 && detected.length === 0) addTo(untestedStats, '未知地区', seg, price);
-                            return;
-                          }
-
-                          uniqueRegions.forEach(region => {
-                            addTo(regionStats, region, seg, price);
-                            const ck = REGION_KEY_MAP[region];
-                            if (ck) {
-                              if (blocked.includes(ck)) addTo(blockedStats, region, seg, price);
-                              if (!blocked.includes(ck) && !detected.includes(ck)) addTo(untestedStats, region, seg, price);
-                            }
-                          });
-                        });
-
-                        const sortEntries = (entries: [string, { count: number; fee: number; segs: any[] }][]) =>
-                          entries.sort((a, b) => {
-                            if (a[0] === '未知地区') return 1;
-                            if (b[0] === '未知地区') return -1;
-                            return b[1].count - a[1].count;
-                          });
-
-                        const regionEntries  = sortEntries(Object.entries(regionStats));
-                        const blockedEntries = sortEntries(Object.entries(blockedStats));
-                        const untestedEntries = sortEntries(Object.entries(untestedStats));
+                        const { regionEntries, blockedEntries, untestedEntries } = collectGroupStats(pSegs);
 
                         const renderStatRow = (
                           label: string,
@@ -1711,6 +1892,7 @@ const IPSegmentStats: React.FC = () => {
               );
             })}
           </Row>
+          )}
         </Card>
         </>)}
       </Spin>
@@ -1972,3 +2154,257 @@ const IPSegmentStats: React.FC = () => {
 };
 
 export default IPSegmentStats;
+
+// ─── 购买统计：时间段对比视图 ─────────────────────────────────────────────────
+
+interface PeriodLike {
+  label: string;
+  range: [string, string];
+  segs: any[];
+  byGroup: Map<string, any[]>;
+}
+
+interface CompareViewProps {
+  data: { a: PeriodLike; b: PeriodLike; bIsDerived: boolean };
+  groupByLabel: string;
+  onOpenModal: (title: string, segs: any[]) => void;
+}
+
+// 增减徽标：0 视为持平（灰色），正为红、负为绿——国内财务口径，涨红跌绿。
+const DeltaTag: React.FC<{ delta: number; suffix?: string; money?: boolean }> = ({ delta, suffix = '', money = false }) => {
+  if (delta === 0) return <Tag color="default" style={{ fontSize: 11, margin: 0 }}>持平</Tag>;
+  const up = delta > 0;
+  const text = money
+    ? `${up ? '+' : '-'}$${Math.abs(delta).toFixed(2)}`
+    : `${up ? '+' : ''}${delta}`;
+  return (
+    <Tag color={up ? 'red' : 'green'} style={{ fontSize: 11, margin: 0, fontWeight: 600 }}>
+      {up ? '▲' : '▼'} {text}{suffix}
+    </Tag>
+  );
+};
+
+const CompareView: React.FC<CompareViewProps> = ({ data, groupByLabel, onOpenModal }) => {
+  const { a, b, bIsDerived } = data;
+
+  // 并集：只在 B 出现过的分组也要单列出来，否则「消失的项目组」会凭空消失
+  const groupKeys = sortGroupKeys(
+    [...new Set([...a.byGroup.keys(), ...b.byGroup.keys()])],
+  );
+
+  const aFee = a.segs.reduce((s, seg) => s + (seg.monthlyPrice || 0), 0);
+  const bFee = b.segs.reduce((s, seg) => s + (seg.monthlyPrice || 0), 0);
+  const countDelta = a.segs.length - b.segs.length;
+  const feeDelta = aFee - bFee;
+  const countPct = b.segs.length > 0 ? (countDelta / b.segs.length) * 100 : null;
+
+  const rangeText = (p: PeriodLike) =>
+    p.range[0] === p.range[1] ? p.range[0] : `${p.range[0]} ~ ${p.range[1]}`;
+
+  const renderEntries = (
+    label: string,
+    title: string,
+    entries: [string, StatBucket][],
+    color: string,
+    groupKey: string,
+    periodLabel: string,
+    pctBase: number,
+  ) => {
+    const LABEL_W = 72;
+    if (entries.length === 0) return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5 }}>
+        <span style={{ width: LABEL_W, flexShrink: 0, fontSize: 12, color: '#888', textAlign: 'right' }}>{label}</span>
+        <span style={{ fontSize: 12, color: '#bbb' }}>无</span>
+      </div>
+    );
+    return (
+      <div style={{ marginTop: 5 }}>
+        {entries.map(([k, { count, fee, segs }], idx) => (
+          <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+            <span style={{ width: LABEL_W, flexShrink: 0, fontSize: 12, color: '#888', textAlign: 'right' }}>
+              {idx === 0 ? label : ''}
+            </span>
+            <Tag
+              color={color}
+              style={{ fontSize: 12, margin: 0, cursor: 'pointer', minWidth: 90 }}
+              onClick={() => onOpenModal(`${groupKey} · ${periodLabel} · ${title}（${count} 个）`, segs)}
+            >
+              {k} ×{count}
+            </Tag>
+            <span style={{ fontSize: 12, color: '#1677ff', fontWeight: 600, whiteSpace: 'nowrap' }}>${fee.toFixed(2)}</span>
+            <span style={{ fontSize: 12, color: '#595959', whiteSpace: 'nowrap' }}>
+              {pctBase > 0 ? `${((count / pctBase) * 100).toFixed(1)}%` : '0%'}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {/* ── 总计对比 ── */}
+      <div style={{
+        background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 6,
+        padding: '10px 14px', marginBottom: 14, display: 'flex', gap: 28, flexWrap: 'wrap', alignItems: 'center',
+      }}>
+        <Text strong style={{ fontSize: 14 }}>总计对比</Text>
+        <Text style={{ fontSize: 13 }}>
+          数量：<Text strong>{b.segs.length}</Text>
+          <span style={{ color: '#8c8c8c', margin: '0 6px' }}>→</span>
+          <Text strong style={{ color: '#1677ff' }}>{a.segs.length}</Text>
+          <span style={{ marginLeft: 8 }}><DeltaTag delta={countDelta} /></span>
+          {countPct !== null && (
+            <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+              ({countPct > 0 ? '+' : ''}{countPct.toFixed(1)}%)
+            </Text>
+          )}
+        </Text>
+        <Text style={{ fontSize: 13 }}>
+          月费：<Text strong>${bFee.toFixed(2)}</Text>
+          <span style={{ color: '#8c8c8c', margin: '0 6px' }}>→</span>
+          <Text strong style={{ color: '#1677ff' }}>${aFee.toFixed(2)}</Text>
+          <span style={{ marginLeft: 8 }}><DeltaTag delta={feeDelta} money /></span>
+        </Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          维度：{groupByLabel} · 增减为「{a.label} 相对 {b.label}」
+        </Text>
+      </div>
+
+      {/* ── A / B 并排 ── */}
+      <Row gutter={16}>
+        {([a, b] as PeriodLike[]).map((period, idx) => {
+          const isA = idx === 0;
+          const title = isA ? `A 段（基准）${period.label}` : `B 段（对比${bIsDerived ? '·自动回推' : ''}）${period.label}`;
+          return (
+            <Col xs={24} lg={12} key={title} style={{ marginBottom: 8 }}>
+              <div style={{
+                borderLeft: `3px solid ${isA ? '#1677ff' : '#d9d9d9'}`, paddingLeft: 10, marginBottom: 10,
+              }}>
+                <Text strong style={{ fontSize: 14, color: isA ? '#1677ff' : '#595959' }}>{title}</Text>
+                <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>{rangeText(period)}</Text>
+                <Tag style={{ marginLeft: 8 }}>{period.segs.length} 个</Tag>
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  ${period.segs.reduce((s, seg) => s + (seg.monthlyPrice || 0), 0).toFixed(2)}/月
+                </Text>
+                {period.segs.length > 0 && (
+                  <Text
+                    style={{ fontSize: 12, color: '#1677ff', cursor: 'pointer', marginLeft: 8, whiteSpace: 'nowrap' }}
+                    onClick={() => onOpenModal(`${period.label} · 全部新购（${period.segs.length} 个）`, period.segs)}
+                  >
+                    查看全部 →
+                  </Text>
+                )}
+              </div>
+
+              {period.segs.length === 0 ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>该时间段内无新购IP段</Text>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {sortGroupKeys(Array.from(period.byGroup.keys())).map(groupKey => {
+                    const gSegs = period.byGroup.get(groupKey)!;
+                    const gs = collectGroupStats(gSegs);
+                    return (
+                      <div key={groupKey} style={{
+                        background: '#fafafa', borderRadius: 6,
+                        padding: '10px 14px', border: '1px solid #e8e8e8',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
+                          <Text
+                            strong
+                            style={{ fontSize: 14, cursor: 'pointer', color: '#1677ff' }}
+                            onClick={() => onOpenModal(`${groupKey} · ${period.label}（${gs.total} 个）`, gSegs)}
+                          >
+                            {groupKey}
+                          </Text>
+                          <Space size={8}>
+                            <Tag color="blue" style={{ fontSize: 12 }}>{gs.total} 个</Tag>
+                            <Text style={{ fontSize: 13, color: '#1677ff', fontWeight: 600 }}>${gs.fee.toFixed(2)}/月</Text>
+                          </Space>
+                        </div>
+                        {renderEntries('计费地区：', '计费地区', gs.regionEntries,   'green',  groupKey, period.label, gs.total)}
+                        {renderEntries('被墙情况：', '被墙',     gs.blockedEntries,  'red',    groupKey, period.label, gs.total)}
+                        {renderEntries('未检测：',   '未检测',   gs.untestedEntries, 'orange', groupKey, period.label, gs.total)}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Col>
+          );
+        })}
+      </Row>
+
+      {/* ── 分组维度增减 ── */}
+      {groupKeys.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <Text strong style={{ fontSize: 14 }}>按{groupByLabel}的增减</Text>
+          <Table
+            style={{ marginTop: 8 }}
+            size="small"
+            rowKey="key"
+            pagination={false}
+            dataSource={groupKeys.map(key => {
+              const aSegs = a.byGroup.get(key) ?? [];
+              const bSegs = b.byGroup.get(key) ?? [];
+              const aStat = collectGroupStats(aSegs);
+              const bStat = collectGroupStats(bSegs);
+              const aRegions = new Set(aStat.regionEntries.map(([k]) => k));
+              const bRegions = new Set(bStat.regionEntries.map(([k]) => k));
+              return {
+                key,
+                aCount: aStat.total,
+                bCount: bStat.total,
+                countDelta: aStat.total - bStat.total,
+                aFee: aStat.fee,
+                bFee: bStat.fee,
+                feeDelta: aStat.fee - bStat.fee,
+                newRegions: [...aRegions].filter(r => !bRegions.has(r)),
+                goneRegions: [...bRegions].filter(r => !aRegions.has(r)),
+              };
+            })}
+            columns={[
+              { title: groupByLabel, dataIndex: 'key', key: 'key', width: 160 },
+              {
+                title: '数量 (B → A)', key: 'count', width: 160,
+                render: (_: any, r: any) => (
+                  <span style={{ fontSize: 12 }}>
+                    {r.bCount} <span style={{ color: '#8c8c8c' }}>→</span>{' '}
+                    <Text strong style={{ color: '#1677ff' }}>{r.aCount}</Text>
+                    <span style={{ marginLeft: 6 }}><DeltaTag delta={r.countDelta} /></span>
+                  </span>
+                ),
+              },
+              {
+                title: '月费 (B → A)', key: 'fee', width: 190,
+                render: (_: any, r: any) => (
+                  <span style={{ fontSize: 12 }}>
+                    ${r.bFee.toFixed(2)} <span style={{ color: '#8c8c8c' }}>→</span>{' '}
+                    <Text strong style={{ color: '#1677ff' }}>${r.aFee.toFixed(2)}</Text>
+                    <span style={{ marginLeft: 6 }}><DeltaTag delta={r.feeDelta} money /></span>
+                  </span>
+                ),
+              },
+              {
+                title: '地区变化', key: 'regions',
+                render: (_: any, r: any) => (
+                  <Space size={4} wrap>
+                    {r.newRegions.length === 0 && r.goneRegions.length === 0 && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>无</Text>
+                    )}
+                    {r.newRegions.map((x: string) => (
+                      <Tag key={`n-${x}`} color="red" style={{ fontSize: 11, margin: 0 }}>新增 {x}</Tag>
+                    ))}
+                    {r.goneRegions.map((x: string) => (
+                      <Tag key={`g-${x}`} color="green" style={{ fontSize: 11, margin: 0 }}>消失 {x}</Tag>
+                    ))}
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        </div>
+      )}
+    </div>
+  );
+};
