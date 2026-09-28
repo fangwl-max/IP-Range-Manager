@@ -462,6 +462,18 @@ function saveSyncServers(servers: SshServerConfig[]): void {
   fs.writeFileSync(syncServersPath, JSON.stringify(servers, null, 2), 'utf-8');
 }
 
+// 列表接口把非空密码掩成 '******' 返回，前端编辑后原样回传。
+// 更新已有条目时换回真实密码；新增条目没有旧值可换，只能拒绝，
+// 否则这个字面量会被当成真密码存进 JSON，SSH 从此连不上。
+// 空密码照旧放行：密钥认证的服务器就是这么存的。
+const PASSWORD_MASK = '******';
+function isUnresolvableMask(input: string, existing?: SshServerConfig): boolean {
+  return input === PASSWORD_MASK && !existing;
+}
+function resolvePassword(input: string, existing?: SshServerConfig): string {
+  return input === PASSWORD_MASK && existing ? existing.password : input;
+}
+
 /** 近期续费页独立状态：每个 IP 段的本地续费标记和备注 */
 interface UpcomingItemStatus {
   renewalStatus?: string; // 'not_renewed' | 'renewed' | 'cancelled' | 'refunded'
@@ -4575,14 +4587,20 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               return;
             }
             const idx = servers.findIndex(s => s.id === item.id);
+            const existing = idx >= 0 ? servers[idx] : undefined;
+            if (isUnresolvableMask(item.password, existing)) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '新增服务器必须填写完整密码' }));
+              return;
+            }
+            item.password = resolvePassword(item.password, existing);
             if (idx >= 0) {
-              if (item.password === '******') item.password = servers[idx].password;
               servers[idx] = item;
             } else {
               servers.push(item);
             }
             saveSshServers(servers);
-            res.end(JSON.stringify({ success: true, server: { ...item, password: '******' } }));
+            res.end(JSON.stringify({ success: true, server: { ...item, password: PASSWORD_MASK } }));
           } catch (e: any) {
             res.statusCode = 400;
             res.end(JSON.stringify({ success: false, message: e?.message || '请求解析失败' }));
@@ -4683,14 +4701,20 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
               return;
             }
             const idx = servers.findIndex(s => s.id === item.id);
+            const existing = idx >= 0 ? servers[idx] : undefined;
+            if (isUnresolvableMask(item.password, existing)) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '新增服务器必须填写完整密码' }));
+              return;
+            }
+            item.password = resolvePassword(item.password, existing);
             if (idx >= 0) {
-              if (item.password === '******') item.password = servers[idx].password;
               servers[idx] = item;
             } else {
               servers.push(item);
             }
             saveSyncServers(servers);
-            res.end(JSON.stringify({ success: true, server: { ...item, password: '******' } }));
+            res.end(JSON.stringify({ success: true, server: { ...item, password: PASSWORD_MASK } }));
           } catch (e: any) {
             res.statusCode = 400;
             res.end(JSON.stringify({ success: false, message: e?.message || '请求解析失败' }));

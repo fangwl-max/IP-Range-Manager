@@ -27,6 +27,8 @@ services:
       - ./data/asn-standby-groups.json:/app/asn-standby-groups.json
       - ./data/larus-config.json:/app/larus-config.json
       - ./data/larus-data.json:/app/larus-data.json
+      - ./data/sync-servers.json:/app/sync-servers.json
+      - ./data/local-cart.json:/app/local-cart.json
 
       # ── 持久化目录（备份、导出、LOA 文件）──────────────────────────────
       - ./data/backups:/app/backups

@@ -44,6 +44,12 @@ copy_if_exists "$OLD_DIR/ip-data.json"              "$DATA_DIR/ip-data.json"
 copy_if_exists "$OLD_DIR/ipxo-cache.json"           "$DATA_DIR/ipxo-cache.json"
 copy_if_exists "$OLD_DIR/ipxo-upcoming-status.json" "$DATA_DIR/ipxo-upcoming-status.json"
 copy_if_exists "$OLD_DIR/asn-standby-groups.json"   "$DATA_DIR/asn-standby-groups.json"
+# Larus 的挂载点在 compose 里是单文件绑定，宿主机缺文件时 Docker 会把挂载点建成
+# 目录，容器内写 /app/larus-config.json 报 EISDIR，表现为「Cookie 存不下来」。
+copy_if_exists "$OLD_DIR/larus-config.json"         "$DATA_DIR/larus-config.json"
+copy_if_exists "$OLD_DIR/larus-data.json"           "$DATA_DIR/larus-data.json"
+copy_if_exists "$OLD_DIR/sync-servers.json"         "$DATA_DIR/sync-servers.json"
+copy_if_exists "$OLD_DIR/local-cart.json"           "$DATA_DIR/local-cart.json"
 
 # 复制备份和导出目录
 if [ -d "$OLD_DIR/backups" ]; then
