@@ -9561,7 +9561,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
       // 取表单页：拿 _token 与国家名称→代码映射（每次请求 token 会变）
       const pageUrl = `/ipv4/lease-in/create-route-object/${route_id}`;
-      const { body: pageBody } = await larusRequest(pageUrl, cfg.cookie);
+      const { body: pageBody, updatedCookie: pageCookie } = await larusRequest(pageUrl, cfg.cookie);
+      // 取表单页可能轮换会话 Cookie，必须落盘后再提交，否则随后的写操作
+      // 会拿着旧会话的 token 去请求新会话，Larus 直接回 419。
+      if (pageCookie) {
+        cfg.cookie = pageCookie;
+        saveLarusConfig({ ...cfg, cookie: pageCookie });
+      }
       const pageHtml: string = pageBody?._html || '';
       if (!pageHtml) throw new Error('无法获取 Larus 表单页（Cookie 可能已过期）');
       const tokenMatch = pageHtml.match(/name="_token"\s+value="([^"]+)"/);
@@ -9640,8 +9646,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         throw new Error(`无法确定该 IP 段的数据中心国家（分配记录与 LOA 联系信息均未提供有效地区，联系信息为「${contact.country_name || contact.country_code || '空'}」）`);
       }
 
-      // 城市必须来自 Larus 的城市列表
-      const cityList = await larusRequest('/ipv4/api/country/city', cfg.cookie, { method: 'POST', formEncoded: true, body: { country: countryCode } });
+      // 城市必须来自 Larus 的城市列表。虽只读取数据，但它挂在 web 中间件组下，
+      // 与其他写操作一样要校验 CSRF——漏传头就是 419。
+      const cityList = await larusRequest('/ipv4/api/country/city', cfg.cookie, {
+        method: 'POST',
+        formEncoded: true,
+        csrfToken: token,
+        body: { country: countryCode },
+      });
       const cities: string[] = (cityList.body?.citys || []).map((c: any) => c.city);
       if (!cities.length) throw new Error(`无法获取国家「${countryText}」的城市列表（${countryCode}）`);
       // 优先级：已有分配的城市（保持与既有记录一致）> LOA 联系信息配置的城市 > 国家名（如 HK 的国家名恰为「Hong Kong」）
@@ -9666,9 +9678,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         abuse_email: contact.email || '',
         abuse_address: contact.address || '',
       };
+      // 提交时同时带上表单 _token 与 X-CSRF-TOKEN 头。
+      // Laravel 在请求头存在时优先校验请求头，缺头就会 419 CSRF token mismatch，
+      // 这正是此前「取消能通、设置报 419」的原因——route/delete 带了头，这里没带。
       const { body: apiBody, updatedCookie } = await larusRequest(pageUrl, cfg.cookie, {
         method: 'POST',
         formEncoded: true,
+        csrfToken: token,
         body: formBody,
       });
       if (updatedCookie) saveLarusConfig({ ...cfg, cookie: updatedCookie });
