@@ -1470,6 +1470,96 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
   return { addedCount, cancelledCount, updatedCount };
 }
 
+async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCount: number }> {
+  const larusData = loadLarusData();
+  if (!larusData?.items?.length) return { addedCount: 0, updatedCount: 0 };
+
+  let localData: any = { ipSegments: [] };
+  if (fs.existsSync(dataFilePath)) {
+    localData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
+  }
+  const localSegments: any[] = localData.ipSegments || [];
+  const nowIso = new Date().toISOString();
+
+  const localBySegment = new Map<string, any>();
+  for (const s of localSegments) {
+    localBySegment.set(s.segment, s);
+  }
+
+  let addedCount = 0;
+  let updatedCount = 0;
+
+  for (const item of larusData.items) {
+    if (!item.ip_cidr) continue;
+    // route_status 2 = Fully Created，其他状态（创建中、失败等）不写入 ip-data
+    if (item.route_status !== 2) continue;
+
+    const allAsns: string[] = (item.allocations || []).map((a: any) => a.asn).filter(Boolean);
+    const primaryAsn: string = item.asn || allAsns[0] || '';
+    const existing = localBySegment.get(item.ip_cidr);
+
+    if (!existing) {
+      // Larus 侧有、本地无 → 新增
+      const newSeg: any = {
+        id: `ip-${Date.now()}-${Math.random()}-larus`,
+        segment: item.ip_cidr,
+        supplier: 'Larus',
+        asn: primaryAsn,
+        usageArea: '',
+        purchaseDate: item.purchase_date || '',
+        renewalDate: item.expiry_date || '',
+        cancellationDate: '',
+        monthlyPrice: 0,
+        renewalStatus: 'renewed',
+        projectGroups: [],
+        serverLocations: [],
+        blockedCountries: [],
+        rateLimitedCountries: [],
+        detectedCountries: [],
+        history: [],
+        syncSource: 'larus_api',
+        larusRouteId: item.id,
+        larusContractId: item.contract_id,
+        larusLastSyncAt: nowIso,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      if (allAsns.length > 0) newSeg.additionalAsns = allAsns;
+      localData.ipSegments.push(newSeg);
+      addedCount++;
+    } else if (existing.syncSource === 'larus_api') {
+      // 本地有（larus_api 来源）→ 更新日期、ASN、路由 ID
+      const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
+      if (idx === -1) continue;
+      const seg = localData.ipSegments[idx];
+      let changed = false;
+
+      if (primaryAsn && seg.asn !== primaryAsn) { seg.asn = primaryAsn; changed = true; }
+      if (allAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allAsns)) {
+        seg.additionalAsns = allAsns; changed = true;
+      }
+      if (item.purchase_date && seg.purchaseDate !== item.purchase_date) { seg.purchaseDate = item.purchase_date; changed = true; }
+      if (item.expiry_date && seg.renewalDate !== item.expiry_date) { seg.renewalDate = item.expiry_date; changed = true; }
+      if (item.id != null && seg.larusRouteId !== item.id) { seg.larusRouteId = item.id; changed = true; }
+      if (item.contract_id != null && seg.larusContractId !== item.contract_id) { seg.larusContractId = item.contract_id; changed = true; }
+
+      if (changed) {
+        seg.larusLastSyncAt = nowIso;
+        seg.updatedAt = nowIso;
+        updatedCount++;
+      }
+    }
+    // 本地有但非 larus_api 来源（手动录入的同一 CIDR）→ 不覆盖用户数据
+  }
+
+  if (addedCount > 0 || updatedCount > 0) {
+    localData.exportTime = nowIso;
+    fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
+  }
+
+  return { addedCount, updatedCount };
+}
+
 /**
  * 每周一 09:00 北京时间发送上周/上月购买和续费 IP 段汇总
  */
@@ -2787,6 +2877,18 @@ function startIpxoCacheRefreshScheduler(): void {
         }
       } catch (syncErr: any) {
         console.error('[IpxoCache] 自动同步失败:', syncErr.message);
+      }
+
+      // Larus 数据每 30 分钟由 startLarusKeepAlive 保持最新，直接从缓存同步
+      try {
+        const larusSyncResult = await autoSyncFromLarusCache();
+        if (larusSyncResult.addedCount > 0 || larusSyncResult.updatedCount > 0) {
+          console.log(`[LarusSync] 同步完成：新增 ${larusSyncResult.addedCount} 条，更新 ${larusSyncResult.updatedCount} 条`);
+        } else {
+          console.log('[LarusSync] 同步完成：无变化');
+        }
+      } catch (larusSyncErr: any) {
+        console.error('[LarusSync] 同步失败:', larusSyncErr.message);
       }
     } catch (e: any) {
       console.error('[IpxoCache] 每日缓存刷新失败:', e.message);
