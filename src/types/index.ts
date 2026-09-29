@@ -53,8 +53,8 @@ export interface IPSegment {
   previousPurchaseDates?: string[];
   /** 历史购买记录（日期 + 当时月费），优先于 previousPurchaseDates 使用 */
   previousPurchaseRecords?: PreviousPurchaseRecord[];
-  /** 数据来源标记：'ipxo_api' 表示由 IPXO API 同步写入，未设置表示手动录入 */
-  syncSource?: 'ipxo_api' | 'manual';
+  /** 数据来源标记：'ipxo_api' / 'larus_api' 表示由对应 API 同步写入，未设置表示手动录入 */
+  syncSource?: 'ipxo_api' | 'larus_api' | 'manual';
   /** IPXO API 同步时对应的 market_service UUID，用于后续增量同步比对 */
   ipxoServiceUuid?: string;
   /** 最近一次从 IPXO API 同步的时间（ISO 字符串） */
