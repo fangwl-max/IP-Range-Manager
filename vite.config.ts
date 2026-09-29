@@ -1527,29 +1527,43 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
       if (allAsns.length > 0) newSeg.additionalAsns = allAsns;
       localData.ipSegments.push(newSeg);
       addedCount++;
-    } else if (existing.syncSource === 'larus_api') {
-      // 本地有（larus_api 来源）→ 更新日期、ASN、路由 ID
-      const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
-      if (idx === -1) continue;
-      const seg = localData.ipSegments[idx];
-      let changed = false;
-
-      if (primaryAsn && seg.asn !== primaryAsn) { seg.asn = primaryAsn; changed = true; }
-      if (allAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allAsns)) {
-        seg.additionalAsns = allAsns; changed = true;
-      }
-      if (item.purchase_date && seg.purchaseDate !== item.purchase_date) { seg.purchaseDate = item.purchase_date; changed = true; }
-      if (item.expiry_date && seg.renewalDate !== item.expiry_date) { seg.renewalDate = item.expiry_date; changed = true; }
-      if (item.id != null && seg.larusRouteId !== item.id) { seg.larusRouteId = item.id; changed = true; }
-      if (item.contract_id != null && seg.larusContractId !== item.contract_id) { seg.larusContractId = item.contract_id; changed = true; }
-
-      if (changed) {
-        seg.larusLastSyncAt = nowIso;
-        seg.updatedAt = nowIso;
-        updatedCount++;
-      }
+      continue;
     }
-    // 本地有但非 larus_api 来源（手动录入的同一 CIDR）→ 不覆盖用户数据
+
+    // 同一 CIDR 可能被退租后又重新租到。Larus 报的购买日晚于本地记录，说明本地那行
+    // 记的是上一期租约（通常已被置为 cancelled / not_renewed），这是新一期而非同一期。
+    // 此时所有权归 Larus，允许改写日期与状态；月费、使用地区、项目组、服务器位置等
+    // 人工字段一律保留。除此之外的非 larus_api 来源行是人工录入，不动。
+    const isRelet = !!(item.purchase_date && existing.purchaseDate && item.purchase_date > existing.purchaseDate);
+    if (existing.syncSource !== 'larus_api' && !isRelet) continue;
+
+    const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
+    if (idx === -1) continue;
+    const seg = localData.ipSegments[idx];
+    let changed = false;
+
+    if (isRelet) {
+      // 注意 existing 与 seg 是同一对象，购买日会在下方被改写，日志须在此之前打
+      console.log(`[LarusSync] ${item.ip_cidr} 检测到重新租用（本地购买日 ${existing.purchaseDate} → Larus ${item.purchase_date}），按新一期租约更新`);
+      if (seg.syncSource !== 'larus_api') { seg.syncSource = 'larus_api'; changed = true; }
+      if (seg.renewalStatus !== 'renewed') { seg.renewalStatus = 'renewed'; changed = true; }
+      if (seg.cancellationDate) { seg.cancellationDate = ''; changed = true; }
+    }
+
+    if (primaryAsn && seg.asn !== primaryAsn) { seg.asn = primaryAsn; changed = true; }
+    if (allAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allAsns)) {
+      seg.additionalAsns = allAsns; changed = true;
+    }
+    if (item.purchase_date && seg.purchaseDate !== item.purchase_date) { seg.purchaseDate = item.purchase_date; changed = true; }
+    if (item.expiry_date && seg.renewalDate !== item.expiry_date) { seg.renewalDate = item.expiry_date; changed = true; }
+    if (item.id != null && seg.larusRouteId !== item.id) { seg.larusRouteId = item.id; changed = true; }
+    if (item.contract_id != null && seg.larusContractId !== item.contract_id) { seg.larusContractId = item.contract_id; changed = true; }
+
+    if (changed) {
+      seg.larusLastSyncAt = nowIso;
+      seg.updatedAt = nowIso;
+      updatedCount++;
+    }
   }
 
   if (addedCount > 0 || updatedCount > 0) {
