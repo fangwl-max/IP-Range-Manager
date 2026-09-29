@@ -1503,7 +1503,7 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
       const newSeg: any = {
         id: `ip-${Date.now()}-${Math.random()}-larus`,
         segment: item.ip_cidr,
-        supplier: 'Larus',
+        supplier: 'LARUS',
         asn: primaryAsn,
         usageArea: '',
         purchaseDate: item.purchase_date || '',
@@ -2813,6 +2813,38 @@ async function enrichLarusItems(
 }
 
 /**
+ * 从 Larus 官网全量拉取 IP 列表并补全 allocation，结果落盘 larus-data.json。
+ * 手动刷新接口与每日定时同步共用，保证两条路径拿到的是同一份数据。
+ * 拉取失败时直接抛出，由调用方决定是否降级到旧缓存。
+ */
+async function refreshLarusCacheFromRemote(cfg: { cookie: string }): Promise<{ payload: { cachedAt: string; items: any[] }; cookieRenewed: boolean }> {
+  let cookie = cfg.cookie;
+  console.log(`[Larus] 开始刷新 IP 列表（cookie 前 20 字符: ${cookie.slice(0, 20)}...）`);
+  // 旧缓存按 id 建索引，供 enrich 单条失败时回填 ASN/LOA
+  const prevCache = loadLarusData();
+  const fallback = new Map<string, any>(
+    (prevCache?.items || []).map((it: any) => [String(it.id), it]),
+  );
+  const result = await fetchLarusIps(cookie);
+  let cookieRenewed = false;
+  if (result.updatedCookie) {
+    cookie = result.updatedCookie;
+    saveLarusConfig({ ...cfg, cookie });
+    cookieRenewed = true;
+  }
+  // 全量补全 allocation（每次刷新都请求所有 item 的 ASN/LOA，保证数据最新）
+  const { items: enrichedItems, updatedCookie: enrichCookie } = await enrichLarusItems(result.items, cookie, fallback);
+  console.log(`[Larus] enrich 完成: 共 ${result.items.length} 条`);
+  if (enrichCookie) {
+    saveLarusConfig({ ...cfg, cookie: enrichCookie });
+    cookieRenewed = true;
+  }
+  const payload = { cachedAt: new Date().toISOString(), items: enrichedItems };
+  saveLarusData(payload);
+  return { payload, cookieRenewed };
+}
+
+/**
  * 每 30 分钟向 Larus 发一次轻量请求，防止 larus_session 因长期不访问而过期。
  * 若响应携带 Set-Cookie，自动合并并持久化，保持 remember_web token 持续续期。
  */
@@ -2840,18 +2872,18 @@ function startLarusKeepAlive(): void {
 }
 
 /**
- * 每天 00:00 北京时间自动刷新 IPXO 缓存并同步新增 IP 段
+ * 每天 00:00 北京时间自动刷新上游缓存并同步 IP 段到 ip-data.json。
+ * IPXO 与 Larus 两条链路各自独立判断配置与「当日已执行」标记：
+ * 两者共用同一个 tick，但不共用守卫，任一侧未配置或失败都不影响另一侧。
  */
 function startIpxoCacheRefreshScheduler(): void {
   console.log('[IpxoCache] 每日自动刷新任务已启动，将在每天 00:00 北京时间执行...');
 
   let lastRefreshDate = '';
+  let lastLarusSyncDate = '';
 
   setInterval(async () => {
     try {
-      const config = loadIpxoConfig();
-      if (!config) return;
-
       const now = new Date();
       const bjOffset = 8 * 60 * 60 * 1000;
       const bjNow = new Date(now.getTime() + bjOffset);
@@ -2859,36 +2891,56 @@ function startIpxoCacheRefreshScheduler(): void {
       const bjHour = bjNow.getUTCHours();
       const bjMinute = bjNow.getUTCMinutes();
 
+      // 只在每天 00:00~00:04 之间的 tick 触发；两端各自记自己的日期，避免互相顶掉
       if (bjHour !== 0 || bjMinute > 4) return;
-      if (lastRefreshDate === bjDate) return;
 
-      console.log(`[IpxoCache] 开始每日自动刷新缓存（${bjDate} 00:00 北京时间）...`);
-      const { servicesCount, invoicesCount } = await refreshIpxoCache();
-      lastRefreshDate = bjDate;
-      console.log(`[IpxoCache] 缓存刷新完成：${servicesCount} 条服务，${invoicesCount} 条发票`);
+      // ── IPXO ──────────────────────────────────────────────────────
+      if (loadIpxoConfig() && lastRefreshDate !== bjDate) {
+        try {
+          console.log(`[IpxoCache] 开始每日自动刷新缓存（${bjDate} 00:00 北京时间）...`);
+          const { servicesCount, invoicesCount } = await refreshIpxoCache();
+          lastRefreshDate = bjDate;
+          console.log(`[IpxoCache] 缓存刷新完成：${servicesCount} 条服务，${invoicesCount} 条发票`);
 
-      // 自动同步新增 IP 段
-      try {
-        const syncResult = await autoSyncLeasedFromCache();
-        if (syncResult.addedCount > 0 || syncResult.cancelledCount > 0 || syncResult.updatedCount > 0) {
-          console.log(`[IpxoCache] 自动同步完成：新增 ${syncResult.addedCount} 条，取消 ${syncResult.cancelledCount} 条，更新 ${syncResult.updatedCount} 条`);
-        } else {
-          console.log('[IpxoCache] 自动同步完成：无变化');
+          const syncResult = await autoSyncLeasedFromCache();
+          if (syncResult.addedCount > 0 || syncResult.cancelledCount > 0 || syncResult.updatedCount > 0) {
+            console.log(`[IpxoCache] 自动同步完成：新增 ${syncResult.addedCount} 条，取消 ${syncResult.cancelledCount} 条，更新 ${syncResult.updatedCount} 条`);
+          } else {
+            console.log('[IpxoCache] 自动同步完成：无变化');
+          }
+        } catch (e: any) {
+          console.error('[IpxoCache] 每日缓存刷新失败:', e.message);
         }
-      } catch (syncErr: any) {
-        console.error('[IpxoCache] 自动同步失败:', syncErr.message);
       }
 
-      // Larus 数据每 30 分钟由 startLarusKeepAlive 保持最新，直接从缓存同步
-      try {
-        const larusSyncResult = await autoSyncFromLarusCache();
-        if (larusSyncResult.addedCount > 0 || larusSyncResult.updatedCount > 0) {
-          console.log(`[LarusSync] 同步完成：新增 ${larusSyncResult.addedCount} 条，更新 ${larusSyncResult.updatedCount} 条`);
-        } else {
-          console.log('[LarusSync] 同步完成：无变化');
+      // ── Larus ─────────────────────────────────────────────────────
+      if (lastLarusSyncDate !== bjDate) {
+        // 先置位再执行：全量刷新要打 300+ 次请求，失败重试不该在 5 分钟窗口里
+        // 反复重放。失败由日志暴露，当天不再重试。
+        lastLarusSyncDate = bjDate;
+        // 同步前先从官网拉最新数据，否则拿到的是最长 30 分钟前的缓存，
+        // 当天新增的段要等下一次保活才可能出现。
+        try {
+          const larusCfg = loadLarusConfig();
+          if (larusCfg) {
+            await refreshLarusCacheFromRemote(larusCfg);
+          } else {
+            console.warn('[LarusSync] Cookie 未配置，无法从官网刷新，改用已有缓存同步');
+          }
+        } catch (refreshErr: any) {
+          // 刷新失败（如 Cookie 过期）时降级用旧缓存，不让刷新故障连带丢掉同步
+          console.error('[LarusSync] 刷新失败，改用缓存同步:', refreshErr.message);
         }
-      } catch (larusSyncErr: any) {
-        console.error('[LarusSync] 同步失败:', larusSyncErr.message);
+        try {
+          const r = await autoSyncFromLarusCache();
+          if (r.addedCount > 0 || r.updatedCount > 0) {
+            console.log(`[LarusSync] 同步完成：新增 ${r.addedCount} 条，更新 ${r.updatedCount} 条`);
+          } else {
+            console.log('[LarusSync] 同步完成：无变化');
+          }
+        } catch (e: any) {
+          console.error('[LarusSync] 同步失败:', e.message);
+        }
       }
     } catch (e: any) {
       console.error('[IpxoCache] 每日缓存刷新失败:', e.message);
@@ -9162,30 +9214,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
     // 无缓存 或 强制刷新：从 Larus API 拉取 IP 列表 + 自动补全所有 allocation（ASN/LOA）
     try {
-      console.log(`[Larus] 开始刷新 IP 列表（cookie 前 20 字符: ${cfg.cookie.slice(0, 20)}...）`);
-      // 旧缓存按 id 建索引，供 enrich 单条失败时回填 ASN/LOA
-      const prevCache = loadLarusData();
-      const fallback = new Map<string, any>(
-        (prevCache?.items || []).map((it: any) => [String(it.id), it]),
-      );
-      const result = await fetchLarusIps(cfg.cookie);
-      if (result.updatedCookie) {
-        cfg = { ...cfg, cookie: result.updatedCookie };
-        saveLarusConfig(cfg);
-      }
-      // 全量补全 allocation（每次刷新都请求所有 item 的 ASN/LOA，保证数据最新）
-      const { items: enrichedItems, updatedCookie: enrichCookie } = await enrichLarusItems(result.items, cfg.cookie, fallback);
-      console.log(`[Larus] enrich 完成: 共 ${result.items.length} 条`);
-      if (enrichCookie) {
-        cfg = { ...cfg, cookie: enrichCookie };
-        saveLarusConfig(cfg);
-      }
-      const payload = { cachedAt: new Date().toISOString(), items: enrichedItems };
-      saveLarusData(payload);
+      const { payload, cookieRenewed } = await refreshLarusCacheFromRemote(cfg);
       // 后台同步所有 LOA 到首都在线（不阻塞响应）
       syncAllLarusLoaToCds().catch(() => {});
       res.statusCode = 200;
-      res.end(JSON.stringify({ success: true, fromCache: false, cookieAutoRenewed: !!(result.updatedCookie || enrichCookie), cachedAt: payload.cachedAt, items: enrichedItems }));
+      res.end(JSON.stringify({ success: true, fromCache: false, cookieAutoRenewed: cookieRenewed, cachedAt: payload.cachedAt, items: payload.items }));
     } catch (e: any) {
       console.error(`[Larus] 刷新 IP 列表失败:`, e.message);
       // 拉取失败时降级到旧缓存（包含 ASN/LOA 等已获取的信息）
