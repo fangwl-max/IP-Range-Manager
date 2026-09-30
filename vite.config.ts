@@ -1530,11 +1530,21 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
       continue;
     }
 
-    // 同一 CIDR 可能被退租后又重新租到。Larus 报的购买日晚于本地记录，说明本地那行
-    // 记的是上一期租约（通常已被置为 cancelled / not_renewed），这是新一期而非同一期。
-    // 此时所有权归 Larus，允许改写日期与状态；月费、使用地区、项目组、服务器位置等
-    // 人工字段一律保留。除此之外的非 larus_api 来源行是人工录入，不动。
-    const isRelet = !!(item.purchase_date && existing.purchaseDate && item.purchase_date > existing.purchaseDate);
+    // 同一 CIDR 可能被退租后又重新租到。Larus 报的购买日显著晚于本地记录，说明本地
+    // 那行记的是上一期租约（通常已被置为 cancelled / not_renewed），这是新一期而非
+    // 同一期。此时所有权归 Larus，允许改写日期与状态；月费、使用地区、项目组、服务器
+    // 位置等人工字段一律保留。除此之外的非 larus_api 来源行是人工录入，不动。
+    //
+    // 门槛取 30 天而非「严格更晚」：Larus 的租期是一个月，同一期租约在本地与 Larus
+    // 之间常有一两天的记录误差（如 09-09 与 09-10）。若是同一期，把旧日期归档成
+    // previousPurchaseRecords 会凭空造出一条不存在的历史购买记录。
+    const RE_LET_MIN_GAP_DAYS = 30;
+    const isRelet = !!(
+      item.purchase_date &&
+      existing.purchaseDate &&
+      (new Date(item.purchase_date).getTime() - new Date(existing.purchaseDate).getTime()) >
+        RE_LET_MIN_GAP_DAYS * 24 * 60 * 60 * 1000
+    );
     if (existing.syncSource !== 'larus_api' && !isRelet) continue;
 
     const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
@@ -1545,9 +1555,26 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
     if (isRelet) {
       // 注意 existing 与 seg 是同一对象，购买日会在下方被改写，日志须在此之前打
       console.log(`[LarusSync] ${item.ip_cidr} 检测到重新租用（本地购买日 ${existing.purchaseDate} → Larus ${item.purchase_date}），按新一期租约更新`);
+      // 旧购买日和旧月费存入 previousPurchaseRecords，保留上一期租约的痕迹。
+      // 与前端「编辑时发现购买日晚于原值」的归档口径保持一致，两处都写。
+      if (seg.purchaseDate) {
+        const oldDate = seg.purchaseDate;
+        const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
+        if (!records.some((r: any) => r.date === oldDate)) {
+          records.push(seg.monthlyPrice ? { date: oldDate, fee: seg.monthlyPrice } : { date: oldDate });
+          records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+          seg.previousPurchaseRecords = records;
+        }
+        const dates: string[] = seg.previousPurchaseDates || [];
+        if (!dates.includes(oldDate)) {
+          seg.previousPurchaseDates = [...new Set([...dates, oldDate])].sort();
+        }
+      }
+      seg.multiPurchaseMarked = true;
       if (seg.syncSource !== 'larus_api') { seg.syncSource = 'larus_api'; changed = true; }
       if (seg.renewalStatus !== 'renewed') { seg.renewalStatus = 'renewed'; changed = true; }
       if (seg.cancellationDate) { seg.cancellationDate = ''; changed = true; }
+      changed = true;
     }
 
     if (primaryAsn && seg.asn !== primaryAsn) { seg.asn = primaryAsn; changed = true; }
