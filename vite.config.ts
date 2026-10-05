@@ -3191,7 +3191,7 @@ async function getIpxoAccessToken(): Promise<string> {
     grant_type: 'client_credentials',
     client_id: config.clientId,
     client_secret: config.clientSecret,
-    scope: 'billing ecommerce',
+    scope: 'billing',
   }).toString();
 
   const result: any = await new Promise((resolve, reject) => {
