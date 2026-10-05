@@ -1434,8 +1434,8 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     // 仍在 IPXO active 列表中即未取消。ecommerce_pending_order 仅表示「当前有结账订单」，
     // 无单时为 null 属正常（多数段平时都没有待处理订单），不可据此判定取消。
     // 真正的取消由下方「本地有、缓存已无 active」分支处理。
-    const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'renewed';
-    if (ipxoRenewalStatus === 'renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'renewed'; changed = true; }
+    // 不覆盖用户手动设置的 cancelled / refunded 状态——段仍在 active 列表只说明 IPXO 侧尚未生效，
+    // 人工标记的取消意图应保留。
     if (changed) {
       seg.ipxoLastSyncAt = nowIso;
       seg.updatedAt = nowIso;
@@ -3191,7 +3191,7 @@ async function getIpxoAccessToken(): Promise<string> {
     grant_type: 'client_credentials',
     client_id: config.clientId,
     client_secret: config.clientSecret,
-    scope: 'billing',
+    scope: 'billing ecommerce',
   }).toString();
 
   const result: any = await new Promise((resolve, reject) => {
@@ -3220,100 +3220,132 @@ async function getIpxoAccessToken(): Promise<string> {
   return result.access_token;
 }
 
-/** 代理调用 IPXO API */
+/** 代理调用 IPXO API；401 时自动刷新 token 重试一次 */
 async function callIpxoApi(urlPath: string): Promise<any> {
-  const token = await getIpxoAccessToken();
-  const config = loadIpxoConfig()!;
-  const fullUrl = `https://apigw.ipxo.com${urlPath.replace('{tenant_uuid}', config.companyUuid)}`;
+  async function doGet(): Promise<any> {
+    const token = await getIpxoAccessToken();
+    const config = loadIpxoConfig()!;
+    const fullUrl = `https://apigw.ipxo.com${urlPath.replace('{tenant_uuid}', config.companyUuid)}`;
 
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(fullUrl);
-    const req = https.request({
-      hostname: urlObj.hostname,
-      path: urlObj.pathname + urlObj.search,
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json',
-      },
-      timeout: 30000,
-    }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', (c) => { data += c.toString(); });
-      apiRes.on('end', () => {
-        try { resolve({ status: apiRes.statusCode, body: JSON.parse(data) }); }
-        catch { resolve({ status: apiRes.statusCode, body: data }); }
+    return new Promise((resolve, reject) => {
+      const urlObj = new URL(fullUrl);
+      const req = https.request({
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+        },
+        timeout: 30000,
+      }, (apiRes) => {
+        let data = '';
+        apiRes.on('data', (c) => { data += c.toString(); });
+        apiRes.on('end', () => {
+          try { resolve({ status: apiRes.statusCode, body: JSON.parse(data) }); }
+          catch { resolve({ status: apiRes.statusCode, body: data }); }
+        });
       });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('IPXO API timeout')); });
+      req.end();
     });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('IPXO API timeout')); });
-    req.end();
-  });
+  }
+
+  const result = await doGet();
+  if (result.status === 401) {
+    console.log('[IPXO] GET 收到 401，清除 token 缓存并重试');
+    ipxoTokenCache = null;
+    return doGet();
+  }
+  return result;
 }
 
-/** DELETE 请求版本，用于移除 LOA 等操作 */
+/** DELETE 请求版本，用于移除 LOA 等操作；401 时自动刷新 token 重试一次 */
 async function callIpxoApiDelete(urlPath: string): Promise<any> {
-  const token = await getIpxoAccessToken();
-  const config = loadIpxoConfig()!;
-  const fullUrl = `https://apigw.ipxo.com${urlPath.replace('{tenant_uuid}', config.companyUuid)}`;
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(fullUrl);
-    const req = https.request({
-      hostname: urlObj.hostname,
-      path: urlObj.pathname + urlObj.search,
-      method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json',
-      },
-      timeout: 30000,
-    }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', (c) => { data += c.toString(); });
-      apiRes.on('end', () => {
-        try { resolve({ status: apiRes.statusCode, body: data ? JSON.parse(data) : {} }); }
-        catch { resolve({ status: apiRes.statusCode, body: data }); }
+  async function doDelete(): Promise<any> {
+    const token = await getIpxoAccessToken();
+    const config = loadIpxoConfig()!;
+    const fullUrl = `https://apigw.ipxo.com${urlPath.replace('{tenant_uuid}', config.companyUuid)}`;
+    return new Promise((resolve, reject) => {
+      const urlObj = new URL(fullUrl);
+      const req = https.request({
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+        },
+        timeout: 30000,
+      }, (apiRes) => {
+        let data = '';
+        apiRes.on('data', (c) => { data += c.toString(); });
+        apiRes.on('end', () => {
+          try { resolve({ status: apiRes.statusCode, body: data ? JSON.parse(data) : {} }); }
+          catch { resolve({ status: apiRes.statusCode, body: data }); }
+        });
       });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('IPXO API timeout')); });
+      req.end();
     });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('IPXO API timeout')); });
-    req.end();
-  });
+  }
+
+  const result = await doDelete();
+  if (result.status === 401) {
+    console.log('[IPXO] DELETE 收到 401，清除 token 缓存并重试');
+    ipxoTokenCache = null;
+    return doDelete();
+  }
+  return result;
 }
 
-/** POST 请求版本，用于购物车添加等写操作 */
+/** POST 请求版本，用于购物车添加等写操作；401 时自动刷新 token 重试一次 */
 async function callIpxoApiPost(urlPath: string, bodyJson: string): Promise<any> {
-  const token = await getIpxoAccessToken();
-  const config = loadIpxoConfig()!;
-  const fullUrl = `https://apigw.ipxo.com${urlPath.replace('{tenant_uuid}', config.companyUuid)}`;
+  async function doPost(): Promise<any> {
+    const token = await getIpxoAccessToken();
+    const config = loadIpxoConfig()!;
+    const fullUrl = `https://apigw.ipxo.com${urlPath.replace('{tenant_uuid}', config.companyUuid)}`;
+    console.log(`[IPXO] POST ${fullUrl.replace(/\/public\/[^/]+\//, '/public/***/')} body=${bodyJson.slice(0, 120)}`);
 
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(fullUrl);
-    const bodyBuf = Buffer.from(bodyJson, 'utf-8');
-    const req = https.request({
-      hostname: urlObj.hostname,
-      path: urlObj.pathname + urlObj.search,
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Content-Length': bodyBuf.length,
-      },
-      timeout: 30000,
-    }, (apiRes) => {
-      let data = '';
-      apiRes.on('data', (c) => { data += c.toString(); });
-      apiRes.on('end', () => {
-        try { resolve({ status: apiRes.statusCode, body: JSON.parse(data) }); }
-        catch { resolve({ status: apiRes.statusCode, body: data }); }
+    return new Promise((resolve, reject) => {
+      const urlObj = new URL(fullUrl);
+      const bodyBuf = Buffer.from(bodyJson, 'utf-8');
+      const req = https.request({
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Content-Length': bodyBuf.length,
+        },
+        timeout: 30000,
+      }, (apiRes) => {
+        let data = '';
+        apiRes.on('data', (c) => { data += c.toString(); });
+        apiRes.on('end', () => {
+          console.log(`[IPXO] POST 响应: HTTP ${apiRes.statusCode} headers=${JSON.stringify(apiRes.headers).slice(0, 300)} body=${data.slice(0, 200) || '(空)'}`);
+          try { resolve({ status: apiRes.statusCode, body: JSON.parse(data) }); }
+          catch { resolve({ status: apiRes.statusCode, body: data }); }
+        });
       });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('IPXO API timeout')); });
+      req.write(bodyBuf);
+      req.end();
     });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('IPXO API timeout')); });
-    req.write(bodyBuf);
-    req.end();
-  });
+  }
+
+  const result = await doPost();
+  if (result.status === 401) {
+    console.log('[IPXO] POST 收到 401，清除 token 缓存并重试');
+    ipxoTokenCache = null;
+    return doPost();
+  }
+  return result;
 }
 
 // 开发服务器与 vite preview 共用（否则 preview / 仅静态托管时 /api 会回退为 index.html，登录报 Unexpected token '<'）
@@ -6963,7 +6995,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     });
     server.middlewares.use('/api/ipxo/services', async (req, res, _next) => {
       // 子路径交给后续中间件处理
-      if (req.url && (req.url.startsWith('/upcoming') || req.url.startsWith('/renewed') || req.url.startsWith('/sync-leased') || req.url === '-list' || req.url.startsWith('-list') || req.url.startsWith('/cancel'))) { _next(); return; }
+      if (req.url && (req.url.startsWith('/upcoming') || req.url.startsWith('/renewed') || req.url.startsWith('/sync-leased') || req.url === '-list' || req.url.startsWith('-list') || req.url.startsWith('/cancel') || req.url.startsWith('/refresh-selected'))) { _next(); return; }
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -7092,56 +7124,49 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             const apiErrMsg = (r: any) => {
               const bodyMsg = r.body?.message || r.body?.error
                 || (typeof r.body === 'string' ? (r.body || '空响应') : JSON.stringify(r.body).slice(0, 200));
+              if (r.status === 401) return `认证失败 (HTTP 401，已自动重试): ${bodyMsg}`;
               return `失败 (HTTP ${r.status}): ${bodyMsg}`;
             };
+            const isAlreadyTerminating = (r: any) =>
+              r.status === 400 && typeof r.body?.error === 'string' &&
+              r.body.error.toLowerCase().includes('termination');
             const isTerminateOk = (r: any) =>
               (r.status >= 200 && r.status < 300) ||
+              isAlreadyTerminating(r) ||
               r.status === 409 ||   // 已有终止请求
               r.status === 422;     // 已在取消状态
 
             const results: any[] = [];
             for (const svc of serviceList) {
-              const { billingUuid, marketUuid, subnet } = svc;
+              const { billingUuid, marketUuid, ecommerceSubscriptionUuid, subnet } = svc;
               let ok = false;
               let msg = '';
 
-              // 先尝试 billingUuid
-              if (billingUuid) {
+              const tryTerminate = async (uuid: string, label: string) => {
                 const r = await callIpxoApiPost(
-                  `/ecommerce/public/{tenant_uuid}/subscriptions/${billingUuid}/terminate`,
+                  `/ecommerce/public/{tenant_uuid}/subscriptions/${uuid}/terminate`,
                   terminateBody
                 );
                 if (isTerminateOk(r)) {
-                  ok = true;
-                  msg = r.status >= 200 && r.status < 300 ? '取消成功' : `取消已处理 (HTTP ${r.status})`;
-                } else if (r.status === 404 && marketUuid) {
-                  // fallback to marketUuid
-                  const r2 = await callIpxoApiPost(
-                    `/ecommerce/public/{tenant_uuid}/subscriptions/${marketUuid}/terminate`,
-                    terminateBody
-                  );
-                  if (isTerminateOk(r2)) {
-                    ok = true;
-                    msg = r2.status >= 200 && r2.status < 300 ? '取消成功 (via market UUID)' : `取消已处理 (HTTP ${r2.status})`;
-                  } else {
-                    msg = apiErrMsg(r2);
-                  }
-                } else {
-                  msg = apiErrMsg(r);
+                  return { ok: true, msg: r.status >= 200 && r.status < 300 ? `取消成功${label}` : `取消已处理 (HTTP ${r.status})${label}` };
                 }
-              } else if (marketUuid) {
-                const r = await callIpxoApiPost(
-                  `/ecommerce/public/{tenant_uuid}/subscriptions/${marketUuid}/terminate`,
-                  terminateBody
-                );
-                if (isTerminateOk(r)) {
-                  ok = true;
-                  msg = r.status >= 200 && r.status < 300 ? '取消成功' : `取消已处理 (HTTP ${r.status})`;
-                } else {
-                  msg = apiErrMsg(r);
-                }
-              } else {
+                return { ok: false, status: r.status, msg: apiErrMsg(r) };
+              };
+
+              const uuidsToTry = [
+                ecommerceSubscriptionUuid && { uuid: ecommerceSubscriptionUuid, label: '' },
+                billingUuid && { uuid: billingUuid, label: ' (via billing UUID)' },
+                marketUuid && { uuid: marketUuid, label: ' (via market UUID)' },
+              ].filter(Boolean) as { uuid: string; label: string }[];
+
+              if (!uuidsToTry.length) {
                 msg = '缺少 UUID';
+              } else {
+                for (let i = 0; i < uuidsToTry.length; i++) {
+                  const result = await tryTerminate(uuidsToTry[i].uuid, uuidsToTry[i].label);
+                  if (result.ok) { ok = true; msg = result.msg; break; }
+                  if (result.status !== 404 || i === uuidsToTry.length - 1) { msg = result.msg; break; }
+                }
               }
 
               results.push({ subnet, billingUuid, marketUuid, ok, message: msg });
@@ -7170,7 +7195,86 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
     });
 
-    // IPXO 近期续费 IP 段（优先读缓存，按 days 过滤）
+    // ─── POST /api/ipxo/services/refresh-selected ─── 按 UUID 刷新选中 IP 段
+    server.middlewares.use('/api/ipxo/services/refresh-selected', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method Not Allowed' })); return; }
+      try {
+        const config = loadIpxoConfig();
+        if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
+
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: any) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+        req.on('end', async () => {
+          try {
+            const { uuids } = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+            if (!Array.isArray(uuids) || !uuids.length) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '缺少 uuids 参数' }));
+              return;
+            }
+
+            const CONCURRENCY = 10;
+            const freshServices: any[] = [];
+            const uuidSet = new Set(uuids as string[]);
+
+            for (let i = 0; i < uuids.length; i += CONCURRENCY) {
+              await Promise.all(
+                uuids.slice(i, i + CONCURRENCY).map(async (uuid: string) => {
+                  try {
+                    const detail = await callIpxoApi(
+                      `/billing/v1/{tenant_uuid}/market/ipv4/services/${uuid}`
+                    );
+                    if (detail.status === 200 && detail.body) {
+                      freshServices.push(detail.body);
+                    }
+                  } catch (e: any) {
+                    console.warn(`[IPXO RefreshSelected] ${uuid} 失败: ${e.message}`);
+                  }
+                })
+              );
+            }
+
+            // 更新缓存
+            const cache = loadIpxoCache();
+            if (cache?.services?.data) {
+              for (const fresh of freshServices) {
+                const freshUuid = fresh.billing_service?.uuid;
+                if (!freshUuid) continue;
+                const idx = cache.services.data.findIndex(
+                  (s: any) => s.billing_service?.uuid === freshUuid
+                );
+                if (idx >= 0) {
+                  cache.services.data[idx] = fresh;
+                } else {
+                  cache.services.data.push(fresh);
+                }
+              }
+              cache.cachedAt = new Date().toISOString();
+              saveIpxoCache(cache);
+            }
+
+            console.log(`[IPXO RefreshSelected] 刷新 ${freshServices.length}/${uuids.length} 条`);
+            res.statusCode = 200;
+            res.end(JSON.stringify({
+              success: true,
+              updated: freshServices.length,
+              services: freshServices,
+            }));
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: e.message }));
+          }
+        });
+      } catch (e: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+    });
 
     // IPXO 近期续费 IP 段（优先读缓存，按 days 过滤，附加近期续费独立状态）
     server.middlewares.use('/api/ipxo/services/upcoming', async (req, res, _next) => {
@@ -7725,9 +7829,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
           const ipxoMonthlyPrice = bs.recurring_amount ?? null;
           if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
-          // 同上：在 active 列表中即视为未取消，仅在有结账订单时降级为待续费。
-          const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'renewed';
-          if (ipxoRenewalStatus === 'renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'renewed'; changed = true; }
+          // 不覆盖用户手动设置的 cancelled / refunded 状态（同 autoSyncFromIpxoCache）。
           if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
         }
 
@@ -7928,9 +8030,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
           const ipxoMonthlyPrice = bs.recurring_amount ?? null;
           if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
-          // 同上：在 active 列表中即视为未取消，仅在有结账订单时降级为待续费。
-          const ipxoRenewalStatus = svc.ecommerce_pending_order ? 'not_renewed' : 'renewed';
-          if (ipxoRenewalStatus === 'renewed' && seg.renewalStatus === 'cancelled') { seg.renewalStatus = 'renewed'; changed = true; }
+          // 不覆盖用户手动设置的 cancelled / refunded 状态（同 autoSyncFromIpxoCache）。
           if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
         }
 

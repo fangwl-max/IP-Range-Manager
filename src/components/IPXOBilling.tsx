@@ -114,6 +114,8 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   const [servicesSelectedKeys, setServicesSelectedKeys] = useState<string[]>([]);
   const [servicesTableFilters, setServicesTableFilters] = useState<Record<string, string[]>>({});
   const [servicesTableKey, setServicesTableKey] = useState(0);
+  const [refreshingUuids, setRefreshingUuids] = useState<Set<string>>(new Set());
+  const [refreshSelectedLoading, setRefreshSelectedLoading] = useState(false);
   // 设置 ASN 弹窗
   const [setAsnVisible, setSetAsnVisible] = useState(false);
   const [setAsnLoading, setSetAsnLoading] = useState(false);
@@ -658,6 +660,30 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
     }
   };
 
+  // 刷新选中 IP 段（从 IPXO API 拉取最新数据并更新缓存）
+  const refreshSelectedServices = useCallback(async (uuids: string[], opts?: { silent?: boolean }) => {
+    if (!uuids.length) return;
+    setRefreshingUuids(prev => { const next = new Set(prev); uuids.forEach(u => next.add(u)); return next; });
+    try {
+      const res = await fetch('/api/ipxo/services/refresh-selected', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uuids }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        await loadServices(true);
+        if (!opts?.silent) message.success(`已刷新 ${json.updated} 个 IP 段`);
+      } else if (!opts?.silent) {
+        message.error('刷新失败: ' + (json.message || '未知错误'));
+      }
+    } catch (e: any) {
+      if (!opts?.silent) message.error('刷新请求失败: ' + e.message);
+    } finally {
+      setRefreshingUuids(prev => { const next = new Set(prev); uuids.forEach(u => next.delete(u)); return next; });
+    }
+  }, [loadServices]);
+
   // 取消续费提交
   const handleCancelSubmit = async () => {
     const selected = services.filter(r => {
@@ -667,6 +693,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
     const serviceList = selected.map(r => ({
       billingUuid: r.billing_service?.uuid || '',
       marketUuid: r.market_service?.uuid || '',
+      ecommerceSubscriptionUuid: r.ecommerce_subscription_uuid || r.billing_service?.ecommerce_subscription_uuid || '',
       subnet: `${r.billing_service?.address || ''}/${r.billing_service?.cidr ?? ''}`,
     }));
     if (!serviceList.length) { message.warning('无有效服务'); return; }
@@ -691,7 +718,12 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         }
         setCancelVisible(false);
         setServicesSelectedKeys([]);
-        loadServices();
+        const okUuids = (json.results || []).filter((r: any) => r.ok).map((r: any) => r.billingUuid).filter(Boolean);
+        if (okUuids.length) {
+          refreshSelectedServices(okUuids, { silent: true });
+        } else {
+          loadServices();
+        }
       } else {
         message.error(json.message || '取消续费失败');
       }
@@ -902,6 +934,26 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
       render: (_: any, r: any) => {
         const uuid = r.billing_service?.uuid || r.market_service?.uuid;
         return uuid ? <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{uuid}</span> : '-';
+      },
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 60,
+      fixed: 'right' as const,
+      render: (_: any, r: any) => {
+        const uuid = r.billing_service?.uuid;
+        if (!uuid) return null;
+        return (
+          <Button
+            type="link"
+            size="small"
+            icon={<ReloadOutlined spin={refreshingUuids.has(uuid)} />}
+            disabled={refreshingUuids.has(uuid)}
+            onClick={() => refreshSelectedServices([uuid])}
+            title="从 IPXO 刷新此 IP 段"
+          />
+        );
       },
     },
   ];
@@ -1620,6 +1672,23 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                         }}
                       >
                         复制IP段 ({servicesSelectedKeys.length})
+                      </Button>
+                      <Button
+                        icon={<ReloadOutlined />}
+                        loading={refreshSelectedLoading}
+                        disabled={servicesSelectedKeys.length === 0}
+                        onClick={async () => {
+                          const uuids = services
+                            .filter(r => servicesSelectedKeys.includes(r.billing_service?.uuid || r.market_service?.uuid))
+                            .map(r => r.billing_service?.uuid)
+                            .filter(Boolean);
+                          if (!uuids.length) { message.warning('无有效服务'); return; }
+                          setRefreshSelectedLoading(true);
+                          await refreshSelectedServices(uuids);
+                          setRefreshSelectedLoading(false);
+                        }}
+                      >
+                        刷新选中 ({servicesSelectedKeys.length})
                       </Button>
                       <Button
                         disabled={servicesSelectedKeys.length === 0}
