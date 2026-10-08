@@ -38,6 +38,7 @@ larus-config.json
 larus-data.json
 larus-cache.json
 .cds-token
+.auth-sessions.json
 
 # 数据文件（线上为准，不用 git 管理）
 ip-data.json

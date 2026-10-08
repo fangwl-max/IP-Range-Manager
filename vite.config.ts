@@ -36,8 +36,25 @@ const cdsConfigFilePath = path.resolve(__dirname, 'cds-config.json');
 const auditLogPath = path.resolve(__dirname, 'audit.log');
 // 平台设置文件路径
 const platformSettingsPath = path.resolve(__dirname, 'platform-settings.json');
-// 内存中的 token 存储 (token -> { userId, username })
-const tokenStore = new Map<string, { userId: string; username: string; role: string }>();
+// token 存储 — 持久化到文件，服务重启后保留登录状态
+const authSessionsPath = path.resolve(__dirname, '.auth-sessions.json');
+const TOKEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 天过期
+interface TokenEntry { userId: string; username: string; role: string; createdAt: number }
+const tokenStore = new Map<string, TokenEntry>();
+(() => {
+  try {
+    if (fs.existsSync(authSessionsPath)) {
+      const entries: [string, TokenEntry][] = JSON.parse(fs.readFileSync(authSessionsPath, 'utf-8'));
+      const now = Date.now();
+      for (const [k, v] of entries) {
+        if (now - (v.createdAt || 0) < TOKEN_MAX_AGE_MS) tokenStore.set(k, v);
+      }
+    }
+  } catch { /* ignore */ }
+})();
+function persistTokenStore() {
+  try { fs.writeFileSync(authSessionsPath, JSON.stringify([...tokenStore.entries()]), 'utf-8'); } catch { /* ignore */ }
+}
 
 // 角色默认权限（与 src/lib/permissions.ts 保持一致）
 const BACKEND_ROLE_DEFAULTS: Record<string, string[]> = {
@@ -182,7 +199,15 @@ function logAudit(req: any, userId: string, username: string, role: string, acti
 function getTokenSession(req: any): { userId: string; username: string; role: string } | null {
   const authHeader = (req.headers?.authorization || '') as string;
   const token = authHeader.replace(/^Bearer\s+/i, '');
-  return token ? (tokenStore.get(token) ?? null) : null;
+  if (!token) return null;
+  const entry = tokenStore.get(token);
+  if (!entry) return null;
+  if (Date.now() - (entry.createdAt || 0) >= TOKEN_MAX_AGE_MS) {
+    tokenStore.delete(token);
+    persistTokenStore();
+    return null;
+  }
+  return entry;
 }
 
 function readRequestBody(req: any): Promise<string> {
@@ -3797,7 +3822,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             return;
           }
           const token = crypto.randomBytes(32).toString('hex');
-          tokenStore.set(token, { userId: user.id, username: user.username, role: user.role });
+          tokenStore.set(token, { userId: user.id, username: user.username, role: user.role, createdAt: Date.now() });
+          persistTokenStore();
           logAudit(req, user.id, user.username, user.role, 'auth.login', 'password');
           const userInfo = { id: user.id, username: user.username, displayName: user.displayName, role: user.role, googleEmail: user.googleEmail, loginType: user.loginType ?? 'password', permissions: user.permissions, createdAt: user.createdAt, updatedAt: user.updatedAt };
           res.setHeader('Content-Type', 'application/json');
@@ -3839,6 +3865,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const user = users.find((u: any) => u.id === session.userId);
       if (!user || user.disabled) {
         tokenStore.delete(token);
+        persistTokenStore();
         res.setHeader('Content-Type', 'application/json');
         res.statusCode = 200;
         res.end(JSON.stringify({ success: false, user: null }));
@@ -3867,6 +3894,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           const session = tokenStore.get(token);
           if (session) logAudit(req, session.userId, session.username, session.role, 'auth.logout', '-');
           tokenStore.delete(token);
+          persistTokenStore();
         }
       }
       res.setHeader('Content-Type', 'application/json');
@@ -3999,6 +4027,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
                 for (const [t, s] of tokenStore.entries()) {
                   if ((s as any).userId === id) tokenStore.delete(t);
                 }
+                persistTokenStore();
               }
               logAudit(req, session.userId, session.username, session.role, users[idx].disabled ? 'user.disable' : 'user.enable', users[idx].username);
               res.setHeader('Content-Type', 'application/json');
@@ -4098,7 +4127,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           return;
         }
         const token = crypto.randomBytes(32).toString('hex');
-        tokenStore.set(token, { userId: user.id, username: user.username, role: user.role });
+        tokenStore.set(token, { userId: user.id, username: user.username, role: user.role, createdAt: Date.now() });
+        persistTokenStore();
         logAudit(req, user.id, user.username, user.role, 'auth.login', 'google', { email });
         const { googleId: _gid, passwordHash: _ph, ...safeUser } = user as any;
         safeUser.loginType = 'google';
