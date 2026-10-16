@@ -153,6 +153,7 @@ const PrePurchaseCheck: React.FC = () => {
   const [abuseKeyInput, setAbuseKeyInput] = useState('');
   const [abuseKeyModalVisible, setAbuseKeyModalVisible] = useState(false);
   const [savingAbuseKey, setSavingAbuseKey] = useState(false);
+  const [abuseQuotaExhausted, setAbuseQuotaExhausted] = useState(false);
 
   // 已有 IP 段的 A/B 段统计
   const [existingAbMap, setExistingAbMap] = useState<Map<string, number>>(new Map());
@@ -419,16 +420,22 @@ const PrePurchaseCheck: React.FC = () => {
       const res = await fetch(`/api/abuse-check?segment=${encodeURIComponent(item.segment)}`);
       const json = await res.json();
       if (json.success && json.data != null) {
+        if (abuseQuotaExhausted) setAbuseQuotaExhausted(false);
         setItems(prev => prev.map(i =>
           i.segment === item.segment
             ? { ...i, abuseScore: json.data.abuseConfidenceScore ?? 0, _abuseData: json.data }
             : i
         ));
       } else {
-        message.error('检测失败: ' + (json.message || '未知错误'));
-        if (json.message?.includes('API Key')) {
-          setAbuseKeySet(false);
-          setAbuseKeyModalVisible(true);
+        if (json.quotaExhausted) {
+          setAbuseQuotaExhausted(true);
+          message.warning('AbuseIPDB API 调用次数已用尽，滥用检测限制已暂时取消');
+        } else {
+          message.error('检测失败: ' + (json.message || '未知错误'));
+          if (json.message?.includes('API Key')) {
+            setAbuseKeySet(false);
+            setAbuseKeyModalVisible(true);
+          }
         }
       }
     } catch (e: any) {
@@ -567,6 +574,13 @@ const PrePurchaseCheck: React.FC = () => {
       return;
     }
     const selected = items.filter(i => selectedKeys.includes(i.segment));
+    if (!abuseQuotaExhausted) {
+      const unchecked = selected.filter(i => i.abuseScore == null);
+      if (unchecked.length > 0) {
+        message.warning(`${unchecked.length} 个 IP 段尚未进行滥用检测，请先检测后再加入购物车`);
+        return;
+      }
+    }
     setAddingToCart(true);
     try {
       const res = await fetch('/api/ipxo/cart', {
@@ -608,7 +622,7 @@ const PrePurchaseCheck: React.FC = () => {
     } finally {
       setAddingToCart(false);
     }
-  }, [selectedKeys, items]);
+  }, [selectedKeys, items, abuseQuotaExhausted]);
 
   // ── 查看购物车 ──────────────────────────────────────────────────────────
   const handleViewCart = useCallback(async () => {

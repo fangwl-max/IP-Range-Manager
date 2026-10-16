@@ -6726,7 +6726,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
         if (abuseResult.status !== 200) {
           res.statusCode = 200;
-          res.end(JSON.stringify({ success: false, message: `AbuseIPDB API 返回 ${abuseResult.status}${abuseResult.body?.errors?.[0]?.detail ? ': ' + abuseResult.body.errors[0].detail : ''}` }));
+          const isQuotaExhausted = abuseResult.status === 429;
+          res.end(JSON.stringify({ success: false, quotaExhausted: isQuotaExhausted, message: `AbuseIPDB API 返回 ${abuseResult.status}${abuseResult.body?.errors?.[0]?.detail ? ': ' + abuseResult.body.errors[0].detail : ''}` }));
           return;
         }
 
