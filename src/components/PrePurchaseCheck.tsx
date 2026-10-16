@@ -899,14 +899,16 @@ const PrePurchaseCheck: React.FC = () => {
                 配置 API Key
               </Button>
             ) : (
-              <Button
-                size="small"
-                icon={<BugOutlined />}
-                loading={isChecking}
-                onClick={() => handleCheckAbuse(r)}
-              >
-                {r.abuseScore != null ? '重新检测' : '检测滥用'}
-              </Button>
+              <Tooltip title="整网段查询近30天 + 抽样9个IP查询近1年滥用记录，每次消耗10次API调用">
+                <Button
+                  size="small"
+                  icon={<BugOutlined />}
+                  loading={isChecking}
+                  onClick={() => handleCheckAbuse(r)}
+                >
+                  {r.abuseScore != null ? '重新检测' : '检测滥用'}
+                </Button>
+              </Tooltip>
             )}
             {r.abuseScore != null && (
               <Space direction="vertical" size={1}>
@@ -1051,7 +1053,9 @@ const PrePurchaseCheck: React.FC = () => {
                           <Text type="secondary">已选 {selectedKeys.length} 个，月费：<strong>${totalSelectedFee.toFixed(2)}</strong></Text>
                           <Button onClick={() => setSelectedKeys([])}>取消全选</Button>
                           <Button icon={<CopyOutlined />} onClick={() => copyText(selectedKeys.join('\n'), `${selectedKeys.length} 个IP段`)}>复制IP段</Button>
-                          <Button icon={<BugOutlined />} onClick={handleCheckAbuseSelected}>批量检测滥用</Button>
+                          <Tooltip title="每个网段：整网段查询近30天 + 抽样9个IP查询近1年，每段消耗10次API调用">
+                            <Button icon={<BugOutlined />} onClick={handleCheckAbuseSelected}>批量检测滥用</Button>
+                          </Tooltip>
                           <Button type="primary" icon={<ShoppingCartOutlined />} loading={addingToCart} onClick={handleAddToCart}>加入购物车 ({selectedKeys.length})</Button>
                         </>}
                         <Button icon={<ShoppingCartOutlined />} onClick={handleViewCart}>查看购物车</Button>

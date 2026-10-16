@@ -6695,19 +6695,16 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const segment = reqUrl.searchParams.get('segment') || '';
         if (!segment) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 segment 参数' })); return; }
 
-        // 使用 /api/v2/check-block 查询整个网段
+        // 使用 /api/v2/check-block 查询整个网段（免费套餐最多 30 天）
         const network = segment.includes('/') ? segment : `${segment}/24`;
 
-        const abuseResult = await new Promise<any>((resolve, reject) => {
-          const path = `/api/v2/check-block?network=${encodeURIComponent(network)}&maxAgeInDays=90`;
+        /** 通用 AbuseIPDB GET 请求 */
+        const abuseGet = (urlPath: string): Promise<any> => new Promise((resolve, reject) => {
           const apiReq = https.request({
             hostname: 'api.abuseipdb.com',
-            path,
+            path: urlPath,
             method: 'GET',
-            headers: {
-              'Key': apiKey,
-              'Accept': 'application/json',
-            },
+            headers: { 'Key': apiKey, 'Accept': 'application/json' },
             timeout: 15000,
           }, (apiRes) => {
             let d = '';
@@ -6722,29 +6719,64 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           apiReq.end();
         });
 
-        if (abuseResult.status === 200) {
-          const data = abuseResult.body?.data || {};
-          const reported: any[] = data.reportedAddress || [];
-          const totalReports = reported.reduce((sum: number, r: any) => sum + (r.numReports || 0), 0);
-          const maxScore = reported.reduce((max: number, r: any) => Math.max(max, r.abuseConfidenceScore || 0), 0);
-          const reportedCount = reported.length;
-          res.statusCode = 200;
-          res.end(JSON.stringify({
-            success: true,
-            data: {
-              networkAddress: data.networkAddress || network,
-              abuseConfidenceScore: maxScore,
-              numPossibleHosts: data.numPossibleHosts ?? 0,
-              reportedIpCount: reportedCount,
-              totalReports,
-              addressSpaceDesc: data.addressSpaceDesc || '',
-              reportedAddress: reported.slice(0, 10),
-            },
-          }));
-        } else {
+        // 1) check-block：最近 30 天全网段
+        const abuseResult = await abuseGet(
+          `/api/v2/check-block?network=${encodeURIComponent(network)}&maxAgeInDays=30`
+        );
+
+        if (abuseResult.status !== 200) {
           res.statusCode = 200;
           res.end(JSON.stringify({ success: false, message: `AbuseIPDB API 返回 ${abuseResult.status}${abuseResult.body?.errors?.[0]?.detail ? ': ' + abuseResult.body.errors[0].detail : ''}` }));
+          return;
         }
+
+        const data = abuseResult.body?.data || {};
+        const reported: any[] = data.reportedAddress || [];
+
+        // 2) check（单 IP）：抽样 8 个 IP 查询 365 天，捕捉历史举报
+        //    免费 check 接口支持 maxAgeInDays=365；抽样量小，不影响配额
+        const baseParts = network.split('/')[0].split('.');
+        const basePrefix = baseParts.slice(0, 3).join('.');
+        const sampleSuffixes = [1, 28, 56, 84, 114, 142, 170, 198, 226];
+        const alreadyReported = new Set(reported.map((r: any) => r.ipAddress));
+
+        const sampleResults = await Promise.allSettled(
+          sampleSuffixes.map(s => abuseGet(
+            `/api/v2/check?ipAddress=${encodeURIComponent(basePrefix + '.' + s)}&maxAgeInDays=365&verbose`
+          ))
+        );
+
+        for (const sr of sampleResults) {
+          if (sr.status !== 'fulfilled' || sr.value.status !== 200) continue;
+          const d = sr.value.body?.data;
+          if (!d || d.totalReports <= 0 || alreadyReported.has(d.ipAddress)) continue;
+          reported.push({
+            ipAddress: d.ipAddress,
+            numReports: d.totalReports,
+            mostRecentReport: d.lastReportedAt,
+            abuseConfidenceScore: d.abuseConfidenceScore,
+            countryCode: d.countryCode,
+            _source: 'sample365',
+          });
+          alreadyReported.add(d.ipAddress);
+        }
+
+        const totalReports = reported.reduce((sum: number, r: any) => sum + (r.numReports || 0), 0);
+        const maxScore = reported.reduce((max: number, r: any) => Math.max(max, r.abuseConfidenceScore || 0), 0);
+        const reportedCount = reported.length;
+        res.statusCode = 200;
+        res.end(JSON.stringify({
+          success: true,
+          data: {
+            networkAddress: data.networkAddress || network,
+            abuseConfidenceScore: maxScore,
+            numPossibleHosts: data.numPossibleHosts ?? 0,
+            reportedIpCount: reportedCount,
+            totalReports,
+            addressSpaceDesc: data.addressSpaceDesc || '',
+            reportedAddress: reported.slice(0, 20),
+          },
+        }));
       } catch (e: any) {
         res.statusCode = 200;
         res.end(JSON.stringify({ success: false, message: e.message }));
