@@ -410,20 +410,21 @@ const PrePurchaseCheck: React.FC = () => {
   }, [prefixLength, registry, countryCode, priceMin, priceMax, sortBy, limit, loadExistingSegments]);
 
   // ── AbuseIPDB 检测：调用后端代理获取滥用数据 ───────────────────────────
-  const handleCheckAbuse = useCallback(async (item: MarketItem) => {
+  const handleCheckAbuse = useCallback(async (item: MarketItem, forceRefresh?: boolean) => {
     if (!abuseKeySet) {
       setAbuseKeyModalVisible(true);
       return;
     }
     setCheckingAbuse(prev => new Set(prev).add(item.segment));
     try {
-      const res = await fetch(`/api/abuse-check?segment=${encodeURIComponent(item.segment)}`);
+      const refresh = forceRefresh || item.abuseScore != null ? '&refresh=1' : '';
+      const res = await fetch(`/api/abuse-check?segment=${encodeURIComponent(item.segment)}${refresh}`);
       const json = await res.json();
       if (json.success && json.data != null) {
         if (abuseQuotaExhausted) setAbuseQuotaExhausted(false);
         setItems(prev => prev.map(i =>
           i.segment === item.segment
-            ? { ...i, abuseScore: json.data.abuseConfidenceScore ?? 0, _abuseData: json.data }
+            ? { ...i, abuseScore: json.data.abuseConfidenceScore ?? 0, _abuseData: { ...json.data, cached: json.cached, cachedAt: json.cachedAt } }
             : i
         ));
       } else {
@@ -939,6 +940,11 @@ const PrePurchaseCheck: React.FC = () => {
                         ? `${abuseData.reportedIpCount} 个IP被举报 / 共 ${abuseData.totalReports} 次`
                         : `举报 ${abuseData.totalReports} 次`}
                     </Text>
+                    {abuseData.cached && abuseData.cachedAt && (
+                      <Text style={{ fontSize: 10, color: '#aaa' }}>
+                        缓存于 {abuseData.cachedAt.slice(0, 10)}
+                      </Text>
+                    )}
                   </Space>
                 )}
               </Space>

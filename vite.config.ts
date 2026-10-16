@@ -6676,6 +6676,24 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       });
     });
 
+    // ─── AbuseIPDB 检测缓存（30 天有效期） ──────────────────────────────────
+    const abuseCheckCachePath = path.resolve(__dirname, 'abuse-check-cache.json');
+    const ABUSE_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+    function loadAbuseCache(): Record<string, { checkedAt: number; data: any }> {
+      try {
+        if (fs.existsSync(abuseCheckCachePath)) return JSON.parse(fs.readFileSync(abuseCheckCachePath, 'utf-8'));
+      } catch { /* ignore */ }
+      return {};
+    }
+    function saveAbuseCache(cache: Record<string, { checkedAt: number; data: any }>) {
+      const now = Date.now();
+      const cleaned: typeof cache = {};
+      for (const [k, v] of Object.entries(cache)) {
+        if (now - v.checkedAt < ABUSE_CACHE_MAX_AGE_MS) cleaned[k] = v;
+      }
+      try { fs.writeFileSync(abuseCheckCachePath, JSON.stringify(cleaned, null, 2), 'utf-8'); } catch { /* ignore */ }
+    }
+
     // ─── AbuseIPDB 检测代理（需在 ipxo-config.json 中配置 abuseipdbApiKey） ──
     server.middlewares.use('/api/abuse-check', async (req: any, res: any, _next: any) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -6693,10 +6711,21 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         }
         const reqUrl = new URL(req.url || '/', 'http://localhost');
         const segment = reqUrl.searchParams.get('segment') || '';
+        const forceRefresh = reqUrl.searchParams.get('refresh') === '1';
         if (!segment) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 segment 参数' })); return; }
 
-        // 使用 /api/v2/check-block 查询整个网段（免费套餐最多 30 天）
         const network = segment.includes('/') ? segment : `${segment}/24`;
+
+        // 查缓存（非强制刷新时）
+        if (!forceRefresh) {
+          const cache = loadAbuseCache();
+          const cached = cache[network];
+          if (cached && Date.now() - cached.checkedAt < ABUSE_CACHE_MAX_AGE_MS) {
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, data: cached.data, cached: true, cachedAt: new Date(cached.checkedAt).toISOString() }));
+            return;
+          }
+        }
 
         /** 通用 AbuseIPDB GET 请求 */
         const abuseGet = (urlPath: string): Promise<any> => new Promise((resolve, reject) => {
@@ -6734,8 +6763,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const data = abuseResult.body?.data || {};
         const reported: any[] = data.reportedAddress || [];
 
-        // 2) check（单 IP）：抽样 8 个 IP 查询 365 天，捕捉历史举报
-        //    免费 check 接口支持 maxAgeInDays=365；抽样量小，不影响配额
+        // 2) check（单 IP）：抽样 9 个 IP 查询 365 天，捕捉历史举报
         const baseParts = network.split('/')[0].split('.');
         const basePrefix = baseParts.slice(0, 3).join('.');
         const sampleSuffixes = [1, 28, 56, 84, 114, 142, 170, 198, 226];
@@ -6765,19 +6793,23 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const totalReports = reported.reduce((sum: number, r: any) => sum + (r.numReports || 0), 0);
         const maxScore = reported.reduce((max: number, r: any) => Math.max(max, r.abuseConfidenceScore || 0), 0);
         const reportedCount = reported.length;
+        const resultData = {
+          networkAddress: data.networkAddress || network,
+          abuseConfidenceScore: maxScore,
+          numPossibleHosts: data.numPossibleHosts ?? 0,
+          reportedIpCount: reportedCount,
+          totalReports,
+          addressSpaceDesc: data.addressSpaceDesc || '',
+          reportedAddress: reported.slice(0, 20),
+        };
+
+        // 写入缓存
+        const cache = loadAbuseCache();
+        cache[network] = { checkedAt: Date.now(), data: resultData };
+        saveAbuseCache(cache);
+
         res.statusCode = 200;
-        res.end(JSON.stringify({
-          success: true,
-          data: {
-            networkAddress: data.networkAddress || network,
-            abuseConfidenceScore: maxScore,
-            numPossibleHosts: data.numPossibleHosts ?? 0,
-            reportedIpCount: reportedCount,
-            totalReports,
-            addressSpaceDesc: data.addressSpaceDesc || '',
-            reportedAddress: reported.slice(0, 20),
-          },
-        }));
+        res.end(JSON.stringify({ success: true, data: resultData }));
       } catch (e: any) {
         res.statusCode = 200;
         res.end(JSON.stringify({ success: false, message: e.message }));
