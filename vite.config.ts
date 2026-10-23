@@ -9975,6 +9975,27 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     }
   });
 
+  // ─── 批量同步 IPXO 全部 LOA 到首都在线 ──────────────────────────────────
+  server.middlewares.use('/api/ipxo/sync-loa', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: '仅支持 POST' })); return; }
+    if (!loadIpxoConfig()) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ success: false, message: 'IPXO 未配置' }));
+      return;
+    }
+    try {
+      const result = await syncAllIpxoLoaToCds();
+      res.statusCode = 200;
+      res.end(JSON.stringify({ success: true, ...result }));
+    } catch (e: any) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
   // ─── Larus IP段统计 ─────────────────────────────────────────────
   server.middlewares.use('/api/larus/stats', (_req: any, res: any, _next: any) => {
     res.setHeader('Content-Type', 'application/json');

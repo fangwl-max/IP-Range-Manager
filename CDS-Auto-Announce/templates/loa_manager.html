@@ -51,9 +51,11 @@
 <div class="card">
   <div class="card-title">已保存的 LOA 文件</div>
   <div class="search-bar">
-    <input id="searchInput" type="text" placeholder="搜索 IP段 / ASN…" style="width:220px">
+    <input id="searchInput" type="text" placeholder="搜索 IP段 / ASN（支持多个，空格或逗号分隔）" style="width:360px">
     <button class="btn btn-danger" id="batchDeleteBtn" disabled>批量删除</button>
     <span id="selectedCount" style="font-size:13px;color:var(--muted);"></span>
+    <button class="btn btn-ghost" id="syncIpxoLoaBtn">同步 IPXO LOA</button>
+    <button class="btn btn-ghost" id="syncLarusLoaBtn">同步 Larus LOA</button>
     <span style="flex:1"></span>
     <button class="btn btn-ghost" id="refreshBtn">刷新</button>
   </div>
@@ -174,10 +176,16 @@
     });
   }
 
+  function filterItems(list) {
+    const raw = document.getElementById('searchInput').value.trim().toLowerCase();
+    if (!raw) return list;
+    const tokens = raw.split(/[\s,;]+/).filter(t => t.length > 0);
+    if (!tokens.length) return list;
+    return list.filter(it => tokens.some(q => it.cidr.includes(q) || it.asn.includes(q)));
+  }
+
   document.getElementById('searchInput').addEventListener('input', function () {
-    const q = this.value.trim().toLowerCase();
-    if (!q) { renderTable(allItems); return; }
-    renderTable(allItems.filter(it => it.cidr.includes(q) || it.asn.includes(q)));
+    renderTable(filterItems(allItems));
   });
 
   /* ── 全选 / 批量删除 ──────────────────────── */
@@ -199,8 +207,7 @@
     if (!confirm(`确定删除选中的 ${checked.length} 个 LOA 文件？此操作不可恢复。`)) return;
     const targets = checked.map(cb => {
       const idx = parseInt(cb.dataset.idx);
-      const q = document.getElementById('searchInput').value.trim().toLowerCase();
-      const list = q ? allItems.filter(it => it.cidr.includes(q) || it.asn.includes(q)) : allItems;
+      const list = filterItems(allItems);
       return list[idx];
     }).filter(Boolean);
 
@@ -248,6 +255,32 @@
 
   /* ── 刷新 ─────────────────────────────────── */
   document.getElementById('refreshBtn').addEventListener('click', loadList);
+
+  /* ── 同步 IPXO / Larus LOA 到首都在线 ────── */
+  async function doSyncLoa(provider, btn) {
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '同步中…';
+    try {
+      const res = await fetch(`/api/${provider}/sync-loa`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) { showToast('同步失败：' + (data.message || '未知错误'), 4000); return; }
+      showToast(`${provider.toUpperCase()} LOA 同步完成：共 ${data.total} 条，同步 ${data.synced}，跳过 ${data.skipped}，失败 ${data.failed}`, 4000);
+      loadList();
+    } catch (e) {
+      showToast('同步请求失败：' + e.message, 4000);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+
+  document.getElementById('syncIpxoLoaBtn').addEventListener('click', function () {
+    doSyncLoa('ipxo', this);
+  });
+  document.getElementById('syncLarusLoaBtn').addEventListener('click', function () {
+    doSyncLoa('larus', this);
+  });
 
   /* ── 批量上传 ─────────────────────────────── */
   const uploadZone = document.getElementById('uploadZone');
@@ -414,13 +447,13 @@
   });
 
   /* ── Toast 提示 ───────────────────────────── */
-  function showToast(msg) {
+  function showToast(msg, duration = 2500) {
     const el = Object.assign(document.createElement('div'), {
       textContent: msg,
       style: 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:10px 20px;border-radius:8px;font-size:14px;z-index:9999;opacity:1;transition:opacity .4s',
     });
     document.body.appendChild(el);
-    setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 400); }, 2500);
+    setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 400); }, duration);
   }
 
   /* ── 初始化 ───────────────────────────────── */
