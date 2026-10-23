@@ -2630,6 +2630,74 @@ async function syncAllLarusLoaToCds(): Promise<{ total: number; synced: number; 
   };
 }
 
+/** 将 IPXO 所有 active 服务的 LOA 同步到首都在线宣告系统（CDS） */
+async function syncAllIpxoLoaToCds(): Promise<{ total: number; synced: number; skipped: number; failed: number }> {
+  const cache = loadIpxoCache();
+  if (!cache?.services?.data?.length) return { total: 0, synced: 0, skipped: 0, failed: 0 };
+  const cdsCfg = loadCdsConfig();
+  if (!cdsCfg) return { total: 0, synced: 0, skipped: 0, failed: 0 };
+  const cdsPort = cdsCfg.port || 9010;
+
+  // 收集所有 active 服务的 CIDR + ASN 组合
+  const tasks: Array<{ cidr: string; asn: string }> = [];
+  for (const svc of cache.services.data) {
+    const bs = svc.billing_service;
+    if (!bs?.address || bs.cidr == null) continue;
+    if ((bs.status || '').toLowerCase() !== 'active') continue;
+    const cidr = `${bs.address}/${bs.cidr}`;
+    const activeLoas: any[] = ((svc.loa as any[]) || [])
+      .filter((l: any) => l.asn && (l.status || '').toLowerCase() === 'active');
+    if (activeLoas.length > 0) {
+      for (const l of activeLoas) {
+        tasks.push({ cidr, asn: String(l.asn) });
+      }
+    } else {
+      // 没有 active LOA 则跳过（没有 LOA 可同步）
+      continue;
+    }
+  }
+
+  if (tasks.length === 0) return { total: 0, synced: 0, skipped: 0, failed: 0 };
+
+  let synced = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  // 并发执行，并发度限制 5
+  const concurrency = 5;
+  for (let i = 0; i < tasks.length; i += concurrency) {
+    const batch = tasks.slice(i, i + concurrency);
+    const results = await Promise.allSettled(batch.map(async (task) => {
+      try {
+        const exists = await checkLoaExistsInCds(task.cidr, task.asn);
+        if (exists) { skipped++; return; }
+
+        // 调用 CDS Flask 的 fetch-ipxo 端点拉取 LOA
+        const r = await fetch(`http://127.0.0.1:${cdsPort}/api/loa/fetch-ipxo`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Internal-Token': CDS_INTERNAL_TOKEN,
+          },
+          body: JSON.stringify({ cidr: task.cidr, asn: task.asn, permanent: true }),
+        });
+        const j = await r.json() as any;
+        if (j.ok) {
+          synced++;
+        } else {
+          console.warn(`[IpxoLoa] ${task.cidr} ASN${task.asn} 拉取失败: ${j.error || '未知错误'}`);
+          failed++;
+        }
+      } catch (e: any) {
+        console.warn(`[IpxoLoa] ${task.cidr} ASN${task.asn} 异常: ${e.message}`);
+        failed++;
+      }
+    }));
+  }
+
+  return { total: tasks.length, synced, skipped, failed };
+}
+
 function mergeLarusCookies(existing: string, setCookieHeaders: string[]): { cookie: string; changed: boolean } {
   const cookieMap = new Map<string, string>();
   const order: string[] = [];
@@ -2974,6 +3042,13 @@ function startIpxoCacheRefreshScheduler(): void {
           } else {
             console.log('[IpxoCache] 自动同步完成：无变化');
           }
+
+          // IPXO LOA 同步到首都在线（后台执行，不阻塞）
+          syncAllIpxoLoaToCds().then(r => {
+            if (r.synced > 0 || r.failed > 0) {
+              console.log(`[IpxoLoa] LOA 同步到 CDS：共 ${r.total} 条，同步 ${r.synced}，跳过 ${r.skipped}，失败 ${r.failed}`);
+            }
+          }).catch(e => console.error('[IpxoLoa] LOA 同步失败:', e.message));
         } catch (e: any) {
           console.error('[IpxoCache] 每日缓存刷新失败:', e.message);
         }
@@ -8141,6 +8216,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           updatedCount,
           message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条，更新 ${updatedCount} 条`,
         }));
+
+        // 后台同步 IPXO LOA 到 CDS（不阻塞响应）
+        syncAllIpxoLoaToCds().then(r => {
+          if (r.synced > 0 || r.failed > 0) {
+            console.log(`[IpxoLoa] 手动同步后 LOA 同步到 CDS：共 ${r.total} 条，同步 ${r.synced}，跳过 ${r.skipped}，失败 ${r.failed}`);
+          }
+        }).catch(e => console.error('[IpxoLoa] 手动同步后 LOA 同步失败:', e.message));
       } catch (e: any) {
         res.statusCode = 500;
         res.end(JSON.stringify({ success: false, message: e.message }));
