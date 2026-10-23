@@ -4,6 +4,7 @@
 {% block page_title %}LOA 文件管理{% endblock %}
 
 {% block extra_head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   .loa-table { width: 100%; border-collapse: collapse; font-size: 14px; }
   .loa-table th { color: var(--muted); font-size: 12px; font-weight: 700; padding: 8px 10px; border-bottom: 2px solid var(--border); text-align: left; white-space: nowrap; }
@@ -53,6 +54,7 @@
   <div class="search-bar">
     <input id="searchInput" type="text" placeholder="搜索 IP段 / ASN（支持多个，空格或逗号分隔）" style="width:360px">
     <button class="btn btn-danger" id="batchDeleteBtn" disabled>批量删除</button>
+    <button class="btn btn-ghost" id="batchExportBtn" disabled>批量导出</button>
     <span id="selectedCount" style="font-size:13px;color:var(--muted);"></span>
     <button class="btn btn-ghost" id="syncIpxoLoaBtn">同步 IPXO LOA</button>
     <button class="btn btn-ghost" id="syncLarusLoaBtn">同步 Larus LOA</button>
@@ -196,8 +198,9 @@
 
   function updateBatchBtn() {
     const checked = document.querySelectorAll('.row-check:checked');
-    const btn = document.getElementById('batchDeleteBtn');
-    btn.disabled = checked.length === 0;
+    const noSel = checked.length === 0;
+    document.getElementById('batchDeleteBtn').disabled = noSel;
+    document.getElementById('batchExportBtn').disabled = noSel;
     document.getElementById('selectedCount').textContent = checked.length ? `已选 ${checked.length} 项` : '';
   }
 
@@ -245,12 +248,25 @@
   }
 
   /* ── 下载 ─────────────────────────────────── */
-  function downloadLoa(cidr, asn) {
-    const url = `/api/loa/download?cidr=${encodeURIComponent(cidr)}&asn=${encodeURIComponent(asn)}`;
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = '';
-    a.click();
+  async function downloadLoa(cidr, asn) {
+    try {
+      const res = await fetch(`/api/loa/download?cidr=${encodeURIComponent(cidr)}&asn=${encodeURIComponent(asn)}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast('下载失败：' + (data.error || res.statusText), 3000);
+        return;
+      }
+      const blob = await res.blob();
+      const filename = `${cidr.replace(/\//g, '_')}${asn ? '_AS' + asn : ''}.pdf`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showToast('下载失败：' + e.message, 3000);
+    }
   }
 
   /* ── 刷新 ─────────────────────────────────── */
@@ -280,6 +296,47 @@
   });
   document.getElementById('syncLarusLoaBtn').addEventListener('click', function () {
     doSyncLoa('larus', this);
+  });
+
+  /* ── 批量导出 ZIP ────────────────────────── */
+  document.getElementById('batchExportBtn').addEventListener('click', async () => {
+    const checked = [...document.querySelectorAll('.row-check:checked')];
+    if (!checked.length) return;
+    const list = filterItems(allItems);
+    const targets = checked.map(cb => list[parseInt(cb.dataset.idx)]).filter(Boolean);
+    if (!targets.length) return;
+
+    const btn = document.getElementById('batchExportBtn');
+    btn.disabled = true;
+    btn.textContent = '导出中…';
+
+    try {
+      const zip = new JSZip();
+      let failed = 0;
+      for (const item of targets) {
+        try {
+          const res = await fetch(`/api/loa/download?cidr=${encodeURIComponent(item.cidr)}&asn=${encodeURIComponent(item.asn)}`);
+          if (!res.ok) { failed++; continue; }
+          const blob = await res.blob();
+          const filename = `${item.cidr.replace(/\//g, '_')}${item.asn ? '_AS' + item.asn : ''}.pdf`;
+          zip.file(filename, blob);
+        } catch { failed++; }
+      }
+      const content = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `LOA_export_${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      if (failed) showToast(`导出完成，${failed} 个文件下载失败`, 3000);
+      else showToast(`已导出 ${targets.length} 个 LOA 文件`);
+    } catch (e) {
+      showToast('批量导出失败：' + e.message, 3000);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '批量导出';
+    }
   });
 
   /* ── 批量上传 ─────────────────────────────── */
