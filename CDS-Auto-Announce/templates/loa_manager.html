@@ -68,6 +68,7 @@
           <th class="col-check"><input type="checkbox" id="checkAll"></th>
           <th class="col-cidr">IP段</th>
           <th class="col-asn">ASN</th>
+          <th style="width:80px">供应商</th>
           <th class="col-loc">目录</th>
           <th class="col-size">大小</th>
           <th class="col-time">更新时间</th>
@@ -75,7 +76,7 @@
         </tr>
       </thead>
       <tbody id="loaTableBody">
-        <tr class="empty-row"><td colspan="7">加载中…</td></tr>
+        <tr class="empty-row"><td colspan="8">加载中…</td></tr>
       </tbody>
     </table>
   </div>
@@ -136,17 +137,39 @@
 
   /* ── 加载列表 ─────────────────────────────── */
   let allItems = [];
+  let supplierMap = {};  // cidr → supplier
+  let asnMap = {};       // cidr → [asn, ...]（用于补全文件名中没有 ASN 的记录）
+  async function loadSupplierMap() {
+    try {
+      const res = await fetch(`${location.origin}/api/get-data`);
+      const data = await res.json();
+      if (data && data.ipSegments) {
+        supplierMap = {};
+        asnMap = {};
+        for (const seg of data.ipSegments) {
+          if (!seg.segment) continue;
+          supplierMap[seg.segment] = seg.supplier || '';
+          const asns = [];
+          if (seg.asn) asns.push(String(seg.asn));
+          if (Array.isArray(seg.additionalAsns)) {
+            for (const a of seg.additionalAsns) { if (a && !asns.includes(String(a))) asns.push(String(a)); }
+          }
+          if (asns.length) asnMap[seg.segment] = asns;
+        }
+      }
+    } catch {}
+  }
   async function loadList() {
     const tbody = document.getElementById('loaTableBody');
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="7">加载中…</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="8">加载中…</td></tr>';
     try {
-      const res = await fetch('/api/loa/list');
-      const data = await res.json();
+      const [loaRes] = await Promise.all([fetch('/api/loa/list'), loadSupplierMap()]);
+      const data = await loaRes.json();
       if (!data.ok) throw new Error(data.error);
       allItems = data.items || [];
       renderTable(allItems);
     } catch (e) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="7" style="color:var(--danger)">加载失败：${e.message}</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="8" style="color:var(--danger)">加载失败：${e.message}</td></tr>`;
     }
   }
 
@@ -155,14 +178,25 @@
     document.getElementById('checkAll').checked = false;
     updateBatchBtn();
     if (!items.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">暂无 LOA 文件</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="8">暂无 LOA 文件</td></tr>';
       return;
     }
-    tbody.innerHTML = items.map((item, i) => `
+    tbody.innerHTML = items.map((item, i) => {
+      const supplier = supplierMap[item.cidr] || '';
+      const supplierLabel = supplier
+        ? `<span style="font-size:12px;font-weight:600;color:${supplier === 'IPXO' ? '#2563eb' : '#059669'}">${supplier}</span>`
+        : '<span style="color:var(--muted)">—</span>';
+      // ASN：优先用文件名中的，没有则从 ip-data 补全
+      let displayAsn = item.asn;
+      if (!displayAsn && asnMap[item.cidr]) {
+        displayAsn = asnMap[item.cidr].join(', ');
+      }
+      return `
       <tr data-idx="${i}">
         <td class="col-check"><input type="checkbox" class="row-check" data-idx="${i}"></td>
         <td class="col-cidr">${item.cidr}</td>
-        <td class="col-asn">${item.asn ? 'AS' + item.asn : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="col-asn">${displayAsn ? 'AS' + displayAsn : '<span style="color:var(--muted)">—</span>'}</td>
+        <td>${supplierLabel}</td>
         <td class="col-loc"><span class="loc-badge ${item.location}">${item.location === 'permanent' ? '正式' : '临时'}</span></td>
         <td class="col-size">${fmt_size(item.size)}</td>
         <td class="col-time">${fmt_time(item.updated_at)}</td>
@@ -170,7 +204,8 @@
           <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px" onclick="downloadLoa('${item.cidr}','${item.asn}')">下载</button>
           <button class="btn btn-danger" style="padding:5px 10px;font-size:12px;margin-left:4px" onclick="deleteSingle('${item.cidr}','${item.asn}','${item.location}')">删除</button>
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
 
     // 行复选框监听
     tbody.querySelectorAll('.row-check').forEach(cb => {
@@ -278,7 +313,8 @@
     btn.disabled = true;
     btn.textContent = '同步中…';
     try {
-      const res = await fetch(`/api/${provider}/sync-loa`, { method: 'POST' });
+      // 用完整 URL 绕过 iframe 注入的 /cds-proxy 拦截器，同步端点在 Vite 而非 Flask
+      const res = await fetch(`${location.origin}/api/${provider}/sync-loa`, { method: 'POST' });
       const data = await res.json();
       if (!data.success) { showToast('同步失败：' + (data.message || '未知错误'), 4000); return; }
       showToast(`${provider.toUpperCase()} LOA 同步完成：共 ${data.total} 条，同步 ${data.synced}，跳过 ${data.skipped}，失败 ${data.failed}`, 4000);
