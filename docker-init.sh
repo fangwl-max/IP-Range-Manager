@@ -34,6 +34,7 @@ copy_if_exists() {
 echo "[1/2] 复制配置文件..."
 copy_if_exists "$OLD_DIR/zen-config.json"           "$DATA_DIR/zen-config.json"
 copy_if_exists "$OLD_DIR/users.json"                "$DATA_DIR/users.json"
+copy_if_exists "$OLD_DIR/.auth-sessions.json"       "$DATA_DIR/.auth-sessions.json"
 copy_if_exists "$OLD_DIR/ipxo-config.json"          "$DATA_DIR/ipxo-config.json"
 copy_if_exists "$OLD_DIR/notify-config.json"        "$DATA_DIR/notify-config.json"
 copy_if_exists "$OLD_DIR/cds-config.json"           "$DATA_DIR/cds-config.json"
