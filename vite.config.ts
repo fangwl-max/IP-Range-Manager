@@ -7181,12 +7181,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         const search = (reqUrl.searchParams.get('search') || '').trim();
         const forceRefresh = reqUrl.searchParams.get('refresh') === '1';
 
-        // 仅 active 且第一页时走缓存（缓存存全量 active 数据）
+        // 仅 active 时走缓存（缓存存全量 active 数据）
         const useCache = status === 'active' && !forceRefresh;
         const cache = useCache ? loadIpxoCache() : null;
         const cacheValid = cache && (Date.now() - new Date(cache.cachedAt).getTime()) < 6 * 3600 * 1000;
 
-        if (cacheValid && cache.services?.data?.length) {
+        // 缓存过期但仍存在 → 先返回旧缓存数据，后台刷新；避免直接调 IPXO API 无分页导致数据不全
+        if (!cacheValid && cache?.services?.data?.length && useCache) {
+          console.log('[IPXO Services] 缓存过期，后台触发刷新，先返回旧缓存数据');
+          refreshIpxoCache().catch(e => console.error('[IPXO Services] 后台刷新缓存失败:', e.message));
+        }
+
+        if (cache?.services?.data?.length && useCache) {
           // _renewalStatus: 有 ecommerce_pending_order 代表已续费（未取消），否则到期取消
           let allData: any[] = cache.services.data.map((item: any) => ({
             ...item,
@@ -7247,8 +7253,49 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           return;
         }
 
-        // 无缓存或强制刷新：从 API 拉取
-        let apiPath = `/billing/v1/{tenant_uuid}/market/ipv4/services?page=${page}&per_page=${perPage}`;
+        // 无缓存或强制刷新：先触发完整缓存刷新，再从缓存返回
+        if (status === 'active') {
+          console.log('[IPXO Services] 无缓存或强制刷新，执行完整缓存刷新');
+          try {
+            await refreshIpxoCache();
+            const freshCache = loadIpxoCache();
+            if (freshCache?.services?.data?.length) {
+              let allData: any[] = freshCache.services.data.map((item: any) => ({
+                ...item,
+                _renewalStatus: item.ecommerce_pending_order ? 'active' : 'cancelled',
+              }));
+              if (search) {
+                const keywords = search.split(/[\s,，;；]+/).filter(Boolean).map(k => k.toLowerCase());
+                allData = allData.filter((item: any) => {
+                  const bs = item.billing_service || {};
+                  const subnet = `${bs.address || ''}/${bs.cidr ?? ''}`.toLowerCase();
+                  return keywords.some(k => subnet.includes(k));
+                });
+              }
+              const start = (page - 1) * perPage;
+              const end = start + perPage;
+              const pageData = search ? allData : allData.slice(start, end);
+              const total = allData.length;
+              const lastPage = search ? 1 : Math.max(1, Math.ceil(total / perPage));
+              res.statusCode = 200;
+              res.end(JSON.stringify({
+                success: true,
+                fromCache: true,
+                cachedAt: freshCache.cachedAt,
+                data: {
+                  data: pageData,
+                  meta: { current_page: search ? 1 : page, last_page: lastPage, per_page: search ? total : perPage, total, from: search ? 1 : start + 1, to: search ? total : Math.min(end, total) },
+                },
+              }));
+              return;
+            }
+          } catch (e: any) {
+            console.error('[IPXO Services] 缓存刷新失败，回退到直接 API:', e.message);
+          }
+        }
+
+        // 回退：直接调 IPXO API（非 active 状态、或缓存刷新失败）
+        let apiPath = `/billing/v1/{tenant_uuid}/market/ipv4/services?page=${page}&per_page=${Math.min(perPage, 500)}`;
         if (status) apiPath += `&status=${encodeURIComponent(status)}`;
         const result = await callIpxoApi(apiPath);
         res.statusCode = result.status === 200 ? 200 : result.status ?? 500;
