@@ -1495,9 +1495,9 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
   return { addedCount, cancelledCount, updatedCount };
 }
 
-async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCount: number }> {
+async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCount: number; cancelledCount: number }> {
   const larusData = loadLarusData();
-  if (!larusData?.items?.length) return { addedCount: 0, updatedCount: 0 };
+  if (!larusData?.items?.length) return { addedCount: 0, updatedCount: 0, cancelledCount: 0 };
 
   let localData: any = { ipSegments: [] };
   if (fs.existsSync(dataFilePath)) {
@@ -1618,12 +1618,42 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
     }
   }
 
-  if (addedCount > 0 || updatedCount > 0) {
+  // ── Larus 退租检测：本地有（larus_api 来源）、缓存无 → 标记取消 ──
+  let cancelledCount = 0;
+  if (larusData.items.length >= 5) {
+    // 安全阈值：缓存至少有 5 条记录才执行退租检测，防止 API 故障空数据误判
+    const larusCacheActiveSet = new Set<string>();
+    for (const item of larusData.items) {
+      if (item.ip_cidr && item.route_status === 2) {
+        larusCacheActiveSet.add(item.ip_cidr);
+      }
+    }
+    for (const seg of localSegments) {
+      if (!seg.segment) continue;
+      if (seg.syncSource !== 'larus_api') continue;
+      if (['cancelled', 'refunded'].includes(seg.renewalStatus)) continue;
+      if (larusCacheActiveSet.has(seg.segment)) continue;
+      const idx = localData.ipSegments.findIndex((s: any) => s.id === seg.id);
+      if (idx === -1) continue;
+      localData.ipSegments[idx].renewalStatus = 'cancelled';
+      if (seg.renewalDate) {
+        const d = new Date(seg.renewalDate);
+        d.setDate(d.getDate() - 1);
+        localData.ipSegments[idx].cancellationDate = d.toISOString().slice(0, 10);
+      }
+      localData.ipSegments[idx].larusLastSyncAt = nowIso;
+      localData.ipSegments[idx].updatedAt = nowIso;
+      cancelledCount++;
+      console.log(`[LarusSync] ${seg.segment} 标记为已取消（不再出现在 Larus 活跃列表中）`);
+    }
+  }
+
+  if (addedCount > 0 || updatedCount > 0 || cancelledCount > 0) {
     localData.exportTime = nowIso;
     fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
   }
 
-  return { addedCount, updatedCount };
+  return { addedCount, updatedCount, cancelledCount };
 }
 
 /**
@@ -2698,6 +2728,114 @@ async function syncAllIpxoLoaToCds(): Promise<{ total: number; synced: number; s
   return { total: tasks.length, synced, skipped, failed };
 }
 
+/**
+ * 删除已退租 IP 段（IPXO/Larus）对应的 LOA 文件。
+ * 扫描 ip-data.json 中 renewalStatus 为 cancelled/refunded 且来自 API 同步的段，
+ * 检查 CDS 中是否存在对应 LOA，存在则删除（permanent + temp 均尝试）。
+ */
+async function cleanupRetiredLoaFiles(): Promise<{
+  checked: number;
+  deleted: number;
+  failed: number;
+  skippedAnnounced: number;
+  details: Array<{ cidr: string; asn: string; ok: boolean; message?: string }>;
+}> {
+  const cdsCfg = loadCdsConfig();
+  if (!cdsCfg) return { checked: 0, deleted: 0, failed: 0, skippedAnnounced: 0, details: [] };
+  const cdsPort = cdsCfg.port || 9010;
+
+  let localData: any = { ipSegments: [] };
+  if (fs.existsSync(dataFilePath)) {
+    try { localData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8')); } catch { /* ignore */ }
+  }
+  const segments: any[] = localData.ipSegments || [];
+
+  // 仍在首云 BYOIP 宣告列表中的 IP 段不能删 LOA —— LOA 就是宣告的授权凭证。
+  // 退租标记可能在重新租用后未被重置（如购买日晚于取消日），此时删 LOA 会中断线上宣告。
+  const announcedCidrs = new Set<string>();
+  try {
+    const r = await fetch(`http://127.0.0.1:${cdsPort}/api/byoip/list`, {
+      headers: { 'X-Internal-Token': CDS_INTERNAL_TOKEN },
+    });
+    const j = await r.json() as any;
+    for (const item of (j?.items || [])) {
+      if (item?.cidr) announcedCidrs.add(String(item.cidr).trim());
+    }
+  } catch {
+    // 拿不到宣告列表时保守跳过整轮清理，避免误删
+    console.warn('[LoaCleanup] 无法获取 BYOIP 宣告列表，本轮跳过清理');
+    return { checked: 0, deleted: 0, failed: 0, skippedAnnounced: 0, details: [] };
+  }
+
+  // 收集退租段的 CIDR + ASN 组合
+  const retiredPairs: Array<{ cidr: string; asn: string }> = [];
+  let skippedAnnounced = 0;
+  for (const seg of segments) {
+    if (!seg.segment) continue;
+    if (!['cancelled', 'refunded'].includes(seg.renewalStatus)) continue;
+    if (!['ipxo_api', 'larus_api'].includes(seg.syncSource)) continue;
+    if (announcedCidrs.has(seg.segment)) { skippedAnnounced++; continue; }
+
+    const allAsns: string[] = [];
+    if (seg.asn) allAsns.push(String(seg.asn));
+    if (Array.isArray(seg.additionalAsns)) {
+      for (const a of seg.additionalAsns) {
+        if (a && !allAsns.includes(String(a))) allAsns.push(String(a));
+      }
+    }
+    if (allAsns.length > 0) {
+      for (const asn of allAsns) retiredPairs.push({ cidr: seg.segment, asn });
+    } else {
+      retiredPairs.push({ cidr: seg.segment, asn: '' });
+    }
+  }
+
+  if (retiredPairs.length === 0) return { checked: 0, deleted: 0, failed: 0, skippedAnnounced, details: [] };
+  if (skippedAnnounced > 0) {
+    console.log(`[LoaCleanup] 跳过 ${skippedAnnounced} 个仍在首云宣告中的退租段（保留 LOA）`);
+  }
+
+  let deleted = 0;
+  let failed = 0;
+  const details: Array<{ cidr: string; asn: string; ok: boolean; message?: string }> = [];
+
+  const concurrency = 5;
+  for (let i = 0; i < retiredPairs.length; i += concurrency) {
+    const batch = retiredPairs.slice(i, i + concurrency);
+    await Promise.allSettled(batch.map(async (pair) => {
+      try {
+        const exists = await checkLoaExistsInCds(pair.cidr, pair.asn);
+        if (!exists) return;
+
+        for (const location of ['permanent', 'temp'] as const) {
+          try {
+            const r = await fetch(`http://127.0.0.1:${cdsPort}/api/loa/delete`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Internal-Token': CDS_INTERNAL_TOKEN,
+              },
+              body: JSON.stringify({ cidr: pair.cidr, asn: pair.asn, location }),
+            });
+            const j = await r.json() as any;
+            if (j.ok) {
+              deleted++;
+              details.push({ ...pair, ok: true, message: `已删除 (${location})` });
+              console.log(`[LoaCleanup] 已删除 ${pair.cidr} ASN${pair.asn || '(无)'} LOA (${location})`);
+            }
+          } catch { /* 某个目录不存在该文件，忽略 */ }
+        }
+      } catch (e: any) {
+        failed++;
+        details.push({ ...pair, ok: false, message: e.message });
+        console.warn(`[LoaCleanup] ${pair.cidr} ASN${pair.asn || '(无)'} 删除失败: ${e.message}`);
+      }
+    }));
+  }
+
+  return { checked: retiredPairs.length, deleted, failed, skippedAnnounced, details };
+}
+
 function mergeLarusCookies(existing: string, setCookieHeaders: string[]): { cookie: string; changed: boolean } {
   const cookieMap = new Map<string, string>();
   const order: string[] = [];
@@ -3015,6 +3153,7 @@ function startIpxoCacheRefreshScheduler(): void {
 
   let lastRefreshDate = '';
   let lastLarusSyncDate = '';
+  let lastLoaCleanupDate = '';
 
   setInterval(async () => {
     try {
@@ -3074,13 +3213,30 @@ function startIpxoCacheRefreshScheduler(): void {
         }
         try {
           const r = await autoSyncFromLarusCache();
-          if (r.addedCount > 0 || r.updatedCount > 0) {
-            console.log(`[LarusSync] 同步完成：新增 ${r.addedCount} 条，更新 ${r.updatedCount} 条`);
+          if (r.addedCount > 0 || r.updatedCount > 0 || r.cancelledCount > 0) {
+            console.log(`[LarusSync] 同步完成：新增 ${r.addedCount} 条，更新 ${r.updatedCount} 条，取消 ${r.cancelledCount} 条`);
           } else {
             console.log('[LarusSync] 同步完成：无变化');
           }
         } catch (e: any) {
           console.error('[LarusSync] 同步失败:', e.message);
+        }
+      }
+
+      // ── 已退租 IP 段 LOA 清理 ─────────────────────────────────────
+      // 在 IPXO/Larus 两侧同步之后执行，此时 ip-data.json 的退租状态已是最新
+      if (lastLoaCleanupDate !== bjDate) {
+        lastLoaCleanupDate = bjDate;
+        try {
+          const cr = await cleanupRetiredLoaFiles();
+          const skipMsg = cr.skippedAnnounced > 0 ? `，跳过宣告中 ${cr.skippedAnnounced} 个` : '';
+          if (cr.deleted > 0 || cr.failed > 0) {
+            console.log(`[LoaCleanup] 退租 LOA 清理完成：检查 ${cr.checked} 个，删除 ${cr.deleted} 个，失败 ${cr.failed} 个${skipMsg}`);
+          } else {
+            console.log(`[LoaCleanup] 退租 LOA 清理完成：检查 ${cr.checked} 个，无需清理${skipMsg}`);
+          }
+        } catch (e: any) {
+          console.error('[LoaCleanup] 退租 LOA 清理失败:', e.message);
         }
       }
     } catch (e: any) {
