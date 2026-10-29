@@ -4015,6 +4015,107 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
     });
 
+    // ── ISP 管理专用 API ──
+    const ispCachePath = path.resolve(__dirname, 'isp-data-cache.json');
+
+    function buildIspCache() {
+      const raw = fs.existsSync(dataFilePath) ? JSON.parse(fs.readFileSync(dataFilePath, 'utf-8')) : null;
+      const ispSegments = (raw?.ipSegments || []).filter((s: any) => s.gttManaged === true);
+      const cache = { ipSegments: ispSegments, cachedAt: new Date().toISOString() };
+      fs.writeFileSync(ispCachePath, JSON.stringify(cache, null, 2), 'utf-8');
+      return cache;
+    }
+
+    // 读取 ISP 数据（优先缓存文件，不存在则从 ip-data.json 构建）
+    server.middlewares.use('/api/isp/data', (req, res, next) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method === 'GET') {
+        try {
+          let cache: any;
+          if (fs.existsSync(ispCachePath)) {
+            cache = JSON.parse(fs.readFileSync(ispCachePath, 'utf-8'));
+          } else {
+            cache = buildIspCache();
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 200;
+          res.end(JSON.stringify(cache));
+        } catch (err) {
+          console.error('[isp/data] Error:', err);
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: 'Failed to read ISP data' }));
+        }
+      } else { res.statusCode = 405; res.end('Method Not Allowed'); }
+    });
+
+    // 刷新 ISP 缓存（从 ip-data.json 重新构建）
+    server.middlewares.use('/api/isp/refresh', (req, res, next) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method === 'POST') {
+        try {
+          const cache = buildIspCache();
+          res.setHeader('Content-Type', 'application/json');
+          res.statusCode = 200;
+          res.end(JSON.stringify(cache));
+        } catch (err) {
+          console.error('[isp/refresh] Error:', err);
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: 'Failed to refresh ISP data' }));
+        }
+      } else { res.statusCode = 405; res.end('Method Not Allowed'); }
+    });
+
+    // 批量更新 ISP 段字段（同时更新 ip-data.json 和 ISP 缓存）
+    server.middlewares.use('/api/isp/update', (req, res, next) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        req.on('end', () => {
+          try {
+            const { updates } = JSON.parse(body) as { updates: { id: string; data: Record<string, any> }[] };
+            if (!Array.isArray(updates) || updates.length === 0) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ error: 'updates array required' }));
+              return;
+            }
+            const raw = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
+            const segments: any[] = raw.ipSegments || [];
+            const idMap = new Map(segments.map((s, i) => [s.id, i]));
+            let changed = 0;
+            for (const { id, data } of updates) {
+              const idx = idMap.get(id);
+              if (idx !== undefined) {
+                Object.assign(segments[idx], data, { updatedAt: new Date().toISOString() });
+                changed++;
+              }
+            }
+            if (changed > 0) {
+              raw.exportTime = new Date().toISOString();
+              fs.writeFileSync(dataFilePath, JSON.stringify(raw, null, 2), 'utf-8');
+              buildIspCache();
+            }
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, changed }));
+          } catch (err) {
+            console.error('[isp/update] Error:', err);
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: 'Failed to update' }));
+          }
+        });
+      } else { res.statusCode = 405; res.end('Method Not Allowed'); }
+    });
+
     // 初始化默认用户（首次启动）
     initDefaultUserIfNeeded();
 

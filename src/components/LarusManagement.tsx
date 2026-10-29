@@ -488,12 +488,20 @@ const LarusManagement: React.FC = () => {
     window.open(`/api/larus/loa?path=${encodeURIComponent(loaPath)}`, '_blank');
   };
 
-  const filtered = search
-    ? items.filter(it => {
-        const allAsns = it.allocations?.map(a => a.asn).join(' ') || it.asn || '';
-        return it.ip_cidr.includes(search) || String(it.contract_id).includes(search) || allAsns.includes(search);
-      })
-    : items;
+  const parseKeywords = (text: string): string[] => {
+    if (!text.trim()) return [];
+    return text.split(/[\s,，\n]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  };
+
+  const filtered = (() => {
+    const keywords = parseKeywords(search);
+    if (!keywords.length) return items;
+    return items.filter(it => {
+      const allAsns = (it.allocations?.map(a => a.asn).join(' ') || it.asn || '').toLowerCase();
+      const fields = [it.ip_cidr.toLowerCase(), String(it.contract_id).toLowerCase(), allAsns];
+      return keywords.some(kw => fields.some(f => f.includes(kw)));
+    });
+  })();
 
   const columns: ColumnsType<LarusItem> = [
     {
@@ -845,13 +853,13 @@ const LarusManagement: React.FC = () => {
         padding: '24px 0 10px',
         margin: '-24px 0 4px',
       }}>
-        <Input
-          prefix={<SearchOutlined />}
-          placeholder="搜索 IP段 / 合同 ID / ASN"
+        <Input.TextArea
+          placeholder="搜索 IP段 / 合同 ID / ASN（多个用空格、逗号或换行分隔）"
           value={search}
           onChange={e => setSearch(e.target.value)}
           allowClear
-          style={{ width: 240 }}
+          autoSize={{ minRows: 1, maxRows: 4 }}
+          style={{ width: 360 }}
         />
         <span style={{ flex: 1 }} />
         {autoRenewed && (

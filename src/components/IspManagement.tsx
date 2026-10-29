@@ -5,17 +5,13 @@ import {
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined,
-  CheckOutlined, CloseOutlined, StarOutlined, StarFilled, CopyOutlined,
+  CheckOutlined, CloseOutlined, StarOutlined, StarFilled, CopyOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useUrlTab } from '../hooks/useUrlTab';
 import { useAuth } from '../contexts/AuthContext';
 import { IPSegment } from '../types';
-import {
-  ipSegmentStorage, projectGroupStorage, supplierStorage,
-  usageAreaStorage, asnStorage, asnGroupStorage,
-} from '../utils/storage';
 
 const { Text } = Typography;
 
@@ -71,70 +67,51 @@ const IspManagement: React.FC = () => {
   const [batchEditVisible, setBatchEditVisible] = useState(false);
   const [batchEditForm] = Form.useForm();
 
-  const saveDataToFile = useCallback(async (silent = false) => {
+  const [ispLoading, setIspLoading] = useState(false);
+  const [cachedAt, setCachedAt] = useState('');
+
+  const updateSegmentsApi = useCallback(async (updates: { id: string; data: Record<string, any> }[]) => {
     try {
-      const allData = {
-        ipSegments: ipSegmentStorage.getAll(),
-        projectGroups: projectGroupStorage.getAll(),
-        suppliers: supplierStorage.getAll(),
-        usageAreas: usageAreaStorage.getAll(),
-        asns: asnStorage.getAll(),
-        asnGroups: asnGroupStorage.getAll(),
-        exportTime: new Date().toISOString(),
-        version: '1.0.0',
-      };
-      const resp = await fetch('/api/save-data', {
+      const resp = await fetch('/api/isp/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(allData),
+        body: JSON.stringify({ updates }),
       });
-      if (resp.ok) {
-        if (!silent) message.success('数据已保存');
-      } else {
-        throw new Error('Server error');
-      }
+      if (!resp.ok) throw new Error('Server error');
     } catch {
       message.error('数据保存失败');
     }
   }, []);
 
-  const loadData = useCallback(() => {
-    const all = ipSegmentStorage.getAll();
-    let changed = false;
-    const updated = all.map(seg => {
-      if (seg.supplier === 'GTT' && !seg.gttManaged) {
-        changed = true;
-        return { ...seg, gttManaged: true, updatedAt: new Date().toISOString() };
+  const loadIspData = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/isp/data');
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.ipSegments) setIpSegments(data.ipSegments);
+        if (data?.cachedAt) setCachedAt(data.cachedAt);
       }
-      return seg;
-    });
-    if (changed) {
-      ipSegmentStorage.save(updated);
-      saveDataToFile(true);
-    }
-    setIpSegments(updated);
-  }, [saveDataToFile]);
+    } catch { /* ignore */ }
+  }, []);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const resp = await fetch('/api/get-data');
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data?.ipSegments) {
-            ipSegmentStorage.save(data.ipSegments);
-            if (data.projectGroups) projectGroupStorage.save(data.projectGroups);
-            if (data.suppliers) supplierStorage.save(data.suppliers);
-            if (data.usageAreas) usageAreaStorage.save(data.usageAreas);
-            if (data.asns) asnStorage.save(data.asns);
-            if (data.asnGroups) asnGroupStorage.save(data.asnGroups);
-          }
-        }
-      } catch { /* use localStorage fallback */ }
-      loadData();
-    };
-    fetchData();
-  }, [loadData]);
+  const refreshFromSource = useCallback(async () => {
+    setIspLoading(true);
+    try {
+      const resp = await fetch('/api/isp/refresh', { method: 'POST' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.ipSegments) setIpSegments(data.ipSegments);
+        if (data?.cachedAt) setCachedAt(data.cachedAt);
+        message.success(`已刷新，共 ${data?.ipSegments?.length || 0} 条 ISP 数据`);
+      }
+    } catch {
+      message.error('刷新失败');
+    } finally {
+      setIspLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadIspData(); }, [loadIspData]);
 
   // Tab 切换清空选中
   const handleTabChange = useCallback((key: string) => {
@@ -251,13 +228,12 @@ const IspManagement: React.FC = () => {
     const seg = ipSegments.find(s => s.id === editingUsageId);
     const oldVal = seg?.usageMethod || '';
     if (editingUsageValue !== oldVal) {
-      ipSegmentStorage.update(editingUsageId, { usageMethod: editingUsageValue });
-      loadData();
-      saveDataToFile(true);
+      setIpSegments(prev => prev.map(s => s.id === editingUsageId ? { ...s, usageMethod: editingUsageValue } : s));
+      updateSegmentsApi([{ id: editingUsageId, data: { usageMethod: editingUsageValue } }]);
     }
     setEditingUsageId(null);
     setTimeout(() => { usageSavingRef.current = false; }, 0);
-  }, [editingUsageId, editingUsageValue, ipSegments, loadData, saveDataToFile]);
+  }, [editingUsageId, editingUsageValue, ipSegments, updateSegmentsApi]);
 
   // ── 备注内联编辑 ──
 
@@ -272,13 +248,12 @@ const IspManagement: React.FC = () => {
     const seg = ipSegments.find(s => s.id === editingRemarkId);
     const oldVal = seg?.remark || '';
     if (editingRemarkValue !== oldVal) {
-      ipSegmentStorage.update(editingRemarkId, { remark: editingRemarkValue });
-      loadData();
-      saveDataToFile(true);
+      setIpSegments(prev => prev.map(s => s.id === editingRemarkId ? { ...s, remark: editingRemarkValue } : s));
+      updateSegmentsApi([{ id: editingRemarkId, data: { remark: editingRemarkValue } }]);
     }
     setEditingRemarkId(null);
     setTimeout(() => { remarkSavingRef.current = false; }, 0);
-  }, [editingRemarkId, editingRemarkValue, ipSegments, loadData, saveDataToFile]);
+  }, [editingRemarkId, editingRemarkValue, ipSegments, updateSegmentsApi]);
 
   // ── 用户内联编辑 ──
 
@@ -293,68 +268,72 @@ const IspManagement: React.FC = () => {
     const seg = ipSegments.find(s => s.id === editingUserId);
     const oldVal = seg?.ispUser || '';
     if (editingUserValue !== oldVal) {
-      ipSegmentStorage.update(editingUserId, { ispUser: editingUserValue });
-      loadData();
-      saveDataToFile(true);
+      setIpSegments(prev => prev.map(s => s.id === editingUserId ? { ...s, ispUser: editingUserValue } : s));
+      updateSegmentsApi([{ id: editingUserId, data: { ispUser: editingUserValue } }]);
     }
     setEditingUserId(null);
     setTimeout(() => { userSavingRef.current = false; }, 0);
-  }, [editingUserId, editingUserValue, ipSegments, loadData, saveDataToFile]);
+  }, [editingUserId, editingUserValue, ipSegments, updateSegmentsApi]);
 
-  // 星标切换
   const handleStarToggle = (record: IPSegment) => {
-    ipSegmentStorage.update(record.id, { ispStarred: !record.ispStarred });
-    loadData();
-    saveDataToFile(true);
+    const newVal = !record.ispStarred;
+    setIpSegments(prev => prev.map(s => s.id === record.id ? { ...s, ispStarred: newVal } : s));
+    updateSegmentsApi([{ id: record.id, data: { ispStarred: newVal } }]);
   };
 
-  // 是否在用切换
   const handleInUseToggle = (record: IPSegment, checked: boolean) => {
-    ipSegmentStorage.update(record.id, { gttInUse: checked });
-    loadData();
-    saveDataToFile(true);
+    setIpSegments(prev => prev.map(s => s.id === record.id ? { ...s, gttInUse: checked } : s));
+    updateSegmentsApi([{ id: record.id, data: { gttInUse: checked } }]);
   };
 
-  // 移出 ISP 管理
   const handleRemove = (id: string) => {
-    ipSegmentStorage.update(id, { gttManaged: false });
-    loadData();
-    saveDataToFile(true);
+    setIpSegments(prev => prev.filter(s => s.id !== id));
+    updateSegmentsApi([{ id, data: { gttManaged: false } }]);
     message.success('已移出 ISP 管理');
   };
 
   // ── 手动添加 ──
 
+  const [allSegmentsForAdd, setAllSegmentsForAdd] = useState<IPSegment[]>([]);
+  const [addLoading, setAddLoading] = useState(false);
+
+  const openAddModal = useCallback(async () => {
+    setAddModalOpen(true);
+    setAddSelectedKeys([]);
+    setAddSearch('');
+    setAddLoading(true);
+    try {
+      const resp = await fetch('/api/get-data');
+      if (resp.ok) {
+        const data = await resp.json();
+        setAllSegmentsForAdd((data?.ipSegments || []).filter((s: IPSegment) => !s.gttManaged));
+      }
+    } catch { /* ignore */ }
+    setAddLoading(false);
+  }, []);
+
   const nonGttSegments = useMemo(() => {
     if (!addModalOpen) return [];
-    return ipSegments
-      .filter(seg => !seg.gttManaged)
-      .filter(seg => {
-        const keywords = parseKeywords(addSearch);
-        if (!keywords.length) return true;
-        const fields = [
-          seg.segment,
-          String(seg.supplier || ''),
-          String(seg.asn || ''),
-        ].map(f => f.toLowerCase());
-        return keywords.some(kw => fields.some(f => f.includes(kw)));
-      });
-  }, [ipSegments, addModalOpen, addSearch]);
+    return allSegmentsForAdd.filter(seg => {
+      const keywords = parseKeywords(addSearch);
+      if (!keywords.length) return true;
+      const fields = [
+        seg.segment,
+        String(seg.supplier || ''),
+        String(seg.asn || ''),
+      ].map(f => f.toLowerCase());
+      return keywords.some(kw => fields.some(f => f.includes(kw)));
+    });
+  }, [allSegmentsForAdd, addModalOpen, addSearch, parseKeywords]);
 
-  const handleAddConfirm = () => {
+  const handleAddConfirm = async () => {
     if (!addSelectedKeys.length) { message.warning('请选择要添加的 IP 段'); return; }
-    const all = ipSegmentStorage.getAll();
-    const keySet = new Set(addSelectedKeys);
-    const updated = all.map(seg =>
-      keySet.has(seg.id) ? { ...seg, gttManaged: true, gttInUse: true, updatedAt: new Date().toISOString() } : seg,
-    );
-    ipSegmentStorage.save(updated);
-    setIpSegments(updated);
-    saveDataToFile(true);
+    await updateSegmentsApi(addSelectedKeys.map(id => ({ id, data: { gttManaged: true, gttInUse: true } })));
     setAddModalOpen(false);
     setAddSelectedKeys([]);
     setAddSearch('');
     message.success(`已添加 ${addSelectedKeys.length} 个 IP 段到 ISP 管理`);
+    await refreshFromSource();
   };
 
   // ── 批量编辑 ──
@@ -390,31 +369,27 @@ const IspManagement: React.FC = () => {
         return;
       }
 
-      let successCount = 0;
-      const allSnap = ipSegmentStorage.getAll();
+      const updates: { id: string; data: Record<string, any> }[] = [];
       selectedRowKeys.forEach(key => {
-        try {
-          if (remarkVal && !remarkOverwrite) {
-            const existing = allSnap.find(s => s.id === key);
-            const existingRemark = (existing?.remark || '').trim();
-            const newRemark = existingRemark ? `${existingRemark} ${remarkVal}` : remarkVal;
-            ipSegmentStorage.update(key, { ...updateData, remark: newRemark });
-          } else {
-            ipSegmentStorage.update(key, updateData);
-          }
-          successCount++;
-        } catch (e) {
-          console.error('批量更新失败:', key, e);
+        const segData = { ...updateData } as Record<string, any>;
+        if (remarkVal && !remarkOverwrite) {
+          const existing = ipSegments.find(s => s.id === key);
+          const existingRemark = (existing?.remark || '').trim();
+          segData.remark = existingRemark ? `${existingRemark} ${remarkVal}` : remarkVal;
         }
+        updates.push({ id: key, data: segData });
       });
 
-      if (successCount > 0) {
-        message.success(`成功更新 ${successCount} 条记录`);
+      if (updates.length > 0) {
+        setIpSegments(prev => prev.map(s => {
+          const u = updates.find(x => x.id === s.id);
+          return u ? { ...s, ...u.data } : s;
+        }));
+        await updateSegmentsApi(updates);
+        message.success(`成功更新 ${updates.length} 条记录`);
         setBatchEditVisible(false);
         batchEditForm.resetFields();
         setSelectedRowKeys([]);
-        loadData();
-        saveDataToFile(true);
       }
     } catch (e) {
       console.error('批量编辑失败:', e);
@@ -422,35 +397,19 @@ const IspManagement: React.FC = () => {
   };
 
   const handleBatchToggleInUse = (inUse: boolean) => {
-    let count = 0;
-    selectedRowKeys.forEach(key => {
-      try {
-        ipSegmentStorage.update(key, { gttInUse: inUse });
-        count++;
-      } catch { /* skip */ }
-    });
-    if (count > 0) {
-      message.success(`已将 ${count} 个 IP 段设为${inUse ? '在用' : '未使用'}`);
-      setSelectedRowKeys([]);
-      loadData();
-      saveDataToFile(true);
-    }
+    const updates = selectedRowKeys.map(id => ({ id, data: { gttInUse: inUse } }));
+    setIpSegments(prev => prev.map(s => selectedRowKeys.includes(s.id) ? { ...s, gttInUse: inUse } : s));
+    updateSegmentsApi(updates);
+    message.success(`已将 ${selectedRowKeys.length} 个 IP 段设为${inUse ? '在用' : '未使用'}`);
+    setSelectedRowKeys([]);
   };
 
   const handleBatchStar = (star: boolean) => {
-    let count = 0;
-    selectedRowKeys.forEach(key => {
-      try {
-        ipSegmentStorage.update(key, { ispStarred: star });
-        count++;
-      } catch { /* skip */ }
-    });
-    if (count > 0) {
-      message.success(`已${star ? '添加' : '取消'} ${count} 个 IP 段的星标`);
-      setSelectedRowKeys([]);
-      loadData();
-      saveDataToFile(true);
-    }
+    const updates = selectedRowKeys.map(id => ({ id, data: { ispStarred: star } }));
+    setIpSegments(prev => prev.map(s => selectedRowKeys.includes(s.id) ? { ...s, ispStarred: star } : s));
+    updateSegmentsApi(updates);
+    message.success(`已${star ? '添加' : '取消'} ${selectedRowKeys.length} 个 IP 段的星标`);
+    setSelectedRowKeys([]);
   };
 
   const handleBatchCopy = () => {
@@ -778,9 +737,17 @@ const IspManagement: React.FC = () => {
           style={{ width: 400 }}
         />
         {canEdit && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setAddModalOpen(true); setAddSelectedKeys([]); setAddSearch(''); }}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openAddModal}>
             手动添加 IP 段
           </Button>
+        )}
+        <Button icon={<ReloadOutlined />} loading={ispLoading} onClick={refreshFromSource}>
+          从IP段管理刷新
+        </Button>
+        {cachedAt && (
+          <Text type="secondary" style={{ fontSize: 12, alignSelf: 'center' }}>
+            缓存时间：{new Date(cachedAt).toLocaleString('zh-CN')}
+          </Text>
         )}
       </div>
 
@@ -848,6 +815,7 @@ const IspManagement: React.FC = () => {
           rowKey="id"
           size="small"
           scroll={{ y: 400 }}
+          loading={addLoading}
           pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
           rowSelection={{
             selectedRowKeys: addSelectedKeys,
