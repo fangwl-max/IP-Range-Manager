@@ -9492,10 +9492,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     try {
       const body = await readBody(req);
       const zenPipeSession = getTokenSession(req);
+      const zenTasks = Array.isArray(body?.tasks) ? body.tasks : [];
+      const zenCidrs = zenTasks.map((t: any) => t.cidrBlock || t.cidr || '').filter(Boolean);
       if (zenPipeSession) {
-        const tasks = Array.isArray(body?.tasks) ? body.tasks : [];
-        const zenCidrs = tasks.map((t: any) => t.cidrBlock || t.cidr || '').filter(Boolean);
-        logAudit(req, zenPipeSession.userId, zenPipeSession.username, zenPipeSession.role, 'announce.zen', zenCidrs.slice(0, 10).join(',') || 'pipeline', { taskCount: tasks.length, cidrs: zenCidrs.slice(0, 50) });
+        logAudit(req, zenPipeSession.userId, zenPipeSession.username, zenPipeSession.role, 'announce.zen', zenCidrs.slice(0, 10).join(',') || 'pipeline', { taskCount: zenTasks.length, cidrs: zenCidrs.slice(0, 50) });
       }
       const { ak, sk } = getZenCreds();
       const { runPipeline } = await import('./src/lib/zen/pipeline.js' as any);
