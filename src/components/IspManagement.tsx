@@ -5,7 +5,7 @@ import {
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined,
-  CheckOutlined, CloseOutlined, StarOutlined, StarFilled,
+  CheckOutlined, CloseOutlined, StarOutlined, StarFilled, CopyOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -219,6 +219,25 @@ const IspManagement: React.FC = () => {
   const displayCancelled = useMemo(() => starSort(filterBySearch(cancelledSegments)), [filterBySearch, cancelledSegments]);
   const displayAll = useMemo(() => starSort(filterBySearch(gttSegments)), [filterBySearch, gttSegments]);
 
+  const currentDisplayData = useMemo(() => {
+    switch (activeTab) {
+      case 'active': return displayActive;
+      case 'unused': return displayUnused;
+      case 'cancelled': return displayCancelled;
+      default: return displayAll;
+    }
+  }, [activeTab, displayAll, displayActive, displayUnused, displayCancelled]);
+
+  const filteredStats = useMemo(() => {
+    let inUse = 0, unused = 0, cancelled = 0;
+    currentDisplayData.forEach(s => {
+      if (isCancelled(s) && s.gttInUse !== true) cancelled++;
+      else if (s.gttInUse === false) unused++;
+      else inUse++;
+    });
+    return { total: currentDisplayData.length, inUse, unused, cancelled };
+  }, [currentDisplayData]);
+
   // ── 使用方式内联编辑 ──
 
   const startUsageEdit = (record: IPSegment) => {
@@ -412,6 +431,32 @@ const IspManagement: React.FC = () => {
       loadData();
       saveDataToFile(true);
     }
+  };
+
+  const handleBatchStar = (star: boolean) => {
+    let count = 0;
+    selectedRowKeys.forEach(key => {
+      try {
+        ipSegmentStorage.update(key, { ispStarred: star });
+        count++;
+      } catch { /* skip */ }
+    });
+    if (count > 0) {
+      message.success(`已${star ? '添加' : '取消'} ${count} 个 IP 段的星标`);
+      setSelectedRowKeys([]);
+      loadData();
+      saveDataToFile(true);
+    }
+  };
+
+  const handleBatchCopy = () => {
+    const segments = ipSegments.filter(s => selectedRowKeys.includes(s.id));
+    const text = segments.map(s => s.segment).join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+      message.success(`已复制 ${segments.length} 个 IP 段到剪贴板`);
+    }).catch(() => {
+      message.error('复制失败');
+    });
   };
 
   // ── 表格列 ──
@@ -735,6 +780,15 @@ const IspManagement: React.FC = () => {
         )}
       </div>
 
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <Text type="secondary" style={{ fontSize: 13 }}>
+          当前显示 <Text strong style={{ fontSize: 13 }}>{filteredStats.total}</Text> 条
+        </Text>
+        <Tag color="success" style={{ margin: 0 }}>在用 {filteredStats.inUse}</Tag>
+        <Tag color="default" style={{ margin: 0 }}>未使用 {filteredStats.unused}</Tag>
+        {filteredStats.cancelled > 0 && <Tag color="error" style={{ margin: 0 }}>已取消 {filteredStats.cancelled}</Tag>}
+      </div>
+
       {/* 批量操作工具栏 */}
       {canEdit && selectedRowKeys.length > 0 && (
         <div style={{ background: '#e6f7ff', border: '1px solid #91d5ff', borderRadius: 6, padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -742,6 +796,13 @@ const IspManagement: React.FC = () => {
           <Button type="primary" size="small" onClick={() => { setBatchEditVisible(true); batchEditForm.resetFields(); }}>
             批量编辑
           </Button>
+          <Button size="small" icon={<CopyOutlined />} onClick={handleBatchCopy}>批量复制</Button>
+          <Popconfirm title={`确定将选中的 ${selectedRowKeys.length} 个 IP 段添加星标？`} onConfirm={() => handleBatchStar(true)} okText="确定" cancelText="取消">
+            <Button size="small" icon={<StarOutlined />}>批量加星</Button>
+          </Popconfirm>
+          <Popconfirm title={`确定取消选中的 ${selectedRowKeys.length} 个 IP 段的星标？`} onConfirm={() => handleBatchStar(false)} okText="确定" cancelText="取消">
+            <Button size="small" icon={<StarOutlined />}>批量取消星标</Button>
+          </Popconfirm>
           <Popconfirm title={`确定将选中的 ${selectedRowKeys.length} 个 IP 段设为在用？`} onConfirm={() => handleBatchToggleInUse(true)} okText="确定" cancelText="取消">
             <Button size="small" icon={<CheckOutlined />}>批量设为在用</Button>
           </Popconfirm>
@@ -756,10 +817,10 @@ const IspManagement: React.FC = () => {
         activeKey={activeTab}
         onChange={handleTabChange}
         items={[
-          { key: 'all', label: `全部IP段 (${gttSegments.length})`, children: renderTable(displayAll) },
-          { key: 'active', label: `在用IP段 (${activeSegments.length})`, children: renderTable(displayActive) },
-          { key: 'unused', label: `未使用IP段 (${unusedSegments.length})`, children: renderTable(displayUnused) },
-          { key: 'cancelled', label: `已取消IP段 (${cancelledSegments.length})`, children: renderTable(displayCancelled) },
+          { key: 'all', label: `全部IP段 (${searchText ? `${displayAll.length}/` : ''}${gttSegments.length})`, children: renderTable(displayAll) },
+          { key: 'active', label: `在用IP段 (${searchText ? `${displayActive.length}/` : ''}${activeSegments.length})`, children: renderTable(displayActive) },
+          { key: 'unused', label: `未使用IP段 (${searchText ? `${displayUnused.length}/` : ''}${unusedSegments.length})`, children: renderTable(displayUnused) },
+          { key: 'cancelled', label: `已取消IP段 (${searchText ? `${displayCancelled.length}/` : ''}${cancelledSegments.length})`, children: renderTable(displayCancelled) },
         ]}
       />
 
