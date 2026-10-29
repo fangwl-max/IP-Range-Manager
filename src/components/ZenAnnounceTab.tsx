@@ -7,8 +7,9 @@ import {
 import {
   PlusOutlined, DeleteOutlined, PlayCircleOutlined,
   CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined,
-  CopyOutlined, SyncOutlined, ImportOutlined,
+  CopyOutlined, SyncOutlined, ImportOutlined, SettingOutlined,
 } from '@ant-design/icons';
+import { useAuth } from '../contexts/AuthContext';
 
 const { Text } = Typography;
 const { Option } = Select;
@@ -50,6 +51,7 @@ function newRow(): FormRow {
 
 // ── 主组件 ────────────────────────────────────────────────────────────────
 const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
+  const { user } = useAuth();
   const [rows, setRows] = useState<FormRow[]>([newRow()]);
   const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
   const [networksForRegion, setNetworksForRegion] = useState<Record<string, string[]>>({});
@@ -66,6 +68,12 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [configSource, setConfigSource] = useState<'config' | 'env' | 'none' | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
+
+  // ── 密钥配置弹窗 state ──
+  const [configVisible, setConfigVisible] = useState(false);
+  const [cfgKeyId, setCfgKeyId] = useState('');
+  const [cfgKeyPwd, setCfgKeyPwd] = useState('');
+  const [cfgSaving, setCfgSaving] = useState(false);
 
   // ── 批量导入弹窗 state ──
   const [batchVisible, setBatchVisible] = useState(false);
@@ -117,7 +125,33 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
   useEffect(() => { checkConfig(); }, [checkConfig]);
   useEffect(() => { if (configured) loadMeta(); }, [configured, loadMeta]);
 
-  // ── 保存配置（已移除配置弹窗，保留 API 检查逻辑）──
+  const openConfigModal = async () => {
+    try {
+      const r = await fetch('/api/zen/config');
+      const d = await r.json();
+      setCfgKeyId(d.config?.accessKeyId || '');
+      setCfgKeyPwd('');
+    } catch { /* ignore */ }
+    setConfigVisible(true);
+  };
+
+  const saveConfig = async () => {
+    if (!cfgKeyId.trim()) { message.warning('请填写 Access Key ID'); return; }
+    if (!cfgKeyPwd.trim() && !configured) { message.warning('请填写 Access Key Password'); return; }
+    setCfgSaving(true);
+    try {
+      const body: any = { accessKeyId: cfgKeyId.trim() };
+      if (cfgKeyPwd.trim()) body.accessKeyPassword = cfgKeyPwd.trim();
+      const r = await fetch('/api/zen/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || '保存失败');
+      message.success('ZEN API 密钥已更新');
+      setConfigVisible(false);
+      checkConfig();
+      if (configured) loadMeta();
+    } catch (e: any) { message.error(e.message || '保存失败'); }
+    finally { setCfgSaving(false); }
+  };
 
   // ── 行操作 ──
   const addRow = () => setRows(prev => [...prev, newRow()]);
@@ -254,6 +288,7 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
             <Tooltip title="已从 ZEN-Auto-Announce/.env 自动读取"><Tag color="cyan">自动读取 .env</Tag></Tooltip>
           )}
           {configured === true && configSource === 'config' && <Tag color="success">API 已配置</Tag>}
+          {user.role === 'admin' && <Button icon={<SettingOutlined />} onClick={openConfigModal}>密钥配置</Button>}
           {configured && (
             <Button icon={<SyncOutlined spin={metaLoading} />} onClick={loadMeta} loading={metaLoading}>刷新地域</Button>
           )}
@@ -507,6 +542,28 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
             </div>
           )}
         </Space>
+      </Modal>
+
+      {/* 密钥配置弹窗 */}
+      <Modal
+        title="ZEN API 密钥配置"
+        open={configVisible}
+        onCancel={() => setConfigVisible(false)}
+        onOk={saveConfig}
+        confirmLoading={cfgSaving}
+        okText="保存"
+        destroyOnClose
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>Access Key ID</div>
+            <Input value={cfgKeyId} onChange={e => setCfgKeyId(e.target.value)} placeholder="输入 Access Key ID" />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, fontWeight: 500 }}>Access Key Password</div>
+            <Input.Password value={cfgKeyPwd} onChange={e => setCfgKeyPwd(e.target.value)} placeholder={configured ? '留空表示不修改' : '输入 Access Key Password'} />
+          </div>
+        </div>
       </Modal>
     </div>
   );

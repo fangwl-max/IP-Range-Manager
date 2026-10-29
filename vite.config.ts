@@ -7450,11 +7450,25 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         }
 
         if (cache?.services?.data?.length && useCache) {
-          // _renewalStatus: 有 ecommerce_pending_order 代表已续费（未取消），否则到期取消
-          let allData: any[] = cache.services.data.map((item: any) => ({
-            ...item,
-            _renewalStatus: item.ecommerce_pending_order ? 'active' : 'cancelled',
-          }));
+          const localCancelledSet = new Set<string>();
+          try {
+            const ld = fs.existsSync(dataFilePath) ? JSON.parse(fs.readFileSync(dataFilePath, 'utf-8')) : { ipSegments: [] };
+            for (const s of (ld.ipSegments || [])) {
+              if (s.renewalStatus === 'cancelled' && s.segment) localCancelledSet.add(s.segment);
+            }
+            const upStore = loadUpcomingStatus();
+            for (const [seg, st] of Object.entries(upStore)) {
+              if ((st as any).renewalStatus === 'cancelled') localCancelledSet.add(seg);
+            }
+          } catch (_e) { /* ignore */ }
+          let allData: any[] = cache.services.data.map((item: any) => {
+            const bs = item.billing_service || {};
+            const segKey = bs.address && bs.cidr != null ? `${bs.address}/${bs.cidr}` : '';
+            return {
+              ...item,
+              _renewalStatus: localCancelledSet.has(segKey) ? 'cancelled' : 'active',
+            };
+          });
 
           // ASN 过滤（服务端）
           const asnFilter = reqUrl.searchParams.get('asn_filter') || '';
@@ -7517,10 +7531,25 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             await refreshIpxoCache();
             const freshCache = loadIpxoCache();
             if (freshCache?.services?.data?.length) {
-              let allData: any[] = freshCache.services.data.map((item: any) => ({
-                ...item,
-                _renewalStatus: item.ecommerce_pending_order ? 'active' : 'cancelled',
-              }));
+              const localCancelledSet2 = new Set<string>();
+              try {
+                const ld2 = fs.existsSync(dataFilePath) ? JSON.parse(fs.readFileSync(dataFilePath, 'utf-8')) : { ipSegments: [] };
+                for (const s of (ld2.ipSegments || [])) {
+                  if (s.renewalStatus === 'cancelled' && s.segment) localCancelledSet2.add(s.segment);
+                }
+                const upStore2 = loadUpcomingStatus();
+                for (const [seg, st] of Object.entries(upStore2)) {
+                  if ((st as any).renewalStatus === 'cancelled') localCancelledSet2.add(seg);
+                }
+              } catch (_e) { /* ignore */ }
+              let allData: any[] = freshCache.services.data.map((item: any) => {
+                const bs = item.billing_service || {};
+                const segKey = bs.address && bs.cidr != null ? `${bs.address}/${bs.cidr}` : '';
+                return {
+                  ...item,
+                  _renewalStatus: localCancelledSet2.has(segKey) ? 'cancelled' : 'active',
+                };
+              });
               if (search) {
                 const keywords = search.split(/[\s,，;；]+/).filter(Boolean).map(k => k.toLowerCase());
                 allData = allData.filter((item: any) => {
