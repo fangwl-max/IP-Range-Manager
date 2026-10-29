@@ -23,7 +23,6 @@ services:
 
       # ── 数据文件（线上动态更新）─────────────────────────────────────────
       - ./data/ip-data.json:/app/ip-data.json
-      - ./data/isp-data-cache.json:/app/isp-data-cache.json
       - ./data/ipxo-cache.json:/app/ipxo-cache.json
       - ./data/ipxo-upcoming-status.json:/app/ipxo-upcoming-status.json
       - ./data/asn-standby-groups.json:/app/asn-standby-groups.json

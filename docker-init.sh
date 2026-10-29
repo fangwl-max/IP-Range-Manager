@@ -51,7 +51,6 @@ copy_if_exists "$OLD_DIR/larus-config.json"         "$DATA_DIR/larus-config.json
 copy_if_exists "$OLD_DIR/larus-data.json"           "$DATA_DIR/larus-data.json"
 copy_if_exists "$OLD_DIR/sync-servers.json"         "$DATA_DIR/sync-servers.json"
 copy_if_exists "$OLD_DIR/local-cart.json"           "$DATA_DIR/local-cart.json"
-copy_if_exists "$OLD_DIR/isp-data-cache.json"       "$DATA_DIR/isp-data-cache.json"
 
 # 复制备份和导出目录
 if [ -d "$OLD_DIR/backups" ]; then
