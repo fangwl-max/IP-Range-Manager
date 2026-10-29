@@ -375,6 +375,10 @@ const IspManagement: React.FC = () => {
         updateData.gttInUse = values.gttInUse;
       }
 
+      if (values.ispStarred !== undefined && values.ispStarred !== null) {
+        updateData.ispStarred = values.ispStarred;
+      }
+
       const remarkVal = (values.remark || '').trim();
       const remarkOverwrite = !!values.remarkOverwrite;
       if (remarkVal && remarkOverwrite) {
@@ -797,12 +801,6 @@ const IspManagement: React.FC = () => {
             批量编辑
           </Button>
           <Button size="small" icon={<CopyOutlined />} onClick={handleBatchCopy}>批量复制</Button>
-          <Popconfirm title={`确定将选中的 ${selectedRowKeys.length} 个 IP 段添加星标？`} onConfirm={() => handleBatchStar(true)} okText="确定" cancelText="取消">
-            <Button size="small" icon={<StarOutlined />}>批量加星</Button>
-          </Popconfirm>
-          <Popconfirm title={`确定取消选中的 ${selectedRowKeys.length} 个 IP 段的星标？`} onConfirm={() => handleBatchStar(false)} okText="确定" cancelText="取消">
-            <Button size="small" icon={<StarOutlined />}>批量取消星标</Button>
-          </Popconfirm>
           <Popconfirm title={`确定将选中的 ${selectedRowKeys.length} 个 IP 段设为在用？`} onConfirm={() => handleBatchToggleInUse(true)} okText="确定" cancelText="取消">
             <Button size="small" icon={<CheckOutlined />}>批量设为在用</Button>
           </Popconfirm>
@@ -883,6 +881,12 @@ const IspManagement: React.FC = () => {
             <Select allowClear placeholder="留空则不修改">
               <Select.Option value={true}>在用</Select.Option>
               <Select.Option value={false}>未使用</Select.Option>
+            </Select>
+          </Form.Item>
+          <Form.Item name="ispStarred" label="星标">
+            <Select allowClear placeholder="留空则不修改">
+              <Select.Option value={true}>添加星标</Select.Option>
+              <Select.Option value={false}>取消星标</Select.Option>
             </Select>
           </Form.Item>
           <Form.Item label="备注">
