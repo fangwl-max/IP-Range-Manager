@@ -19,12 +19,13 @@ import {
   CloudDownloadOutlined,
   ApiOutlined,
   FileTextOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import './App.css';
 import { PAGE_PERMS } from './lib/permissions';
 import IPManagement from './components/IPManagement';
-import GttManagement from './components/GttManagement';
+import IspManagement from './components/IspManagement';
 import CostAnalysis from './components/CostAnalysis';
 import ProjectGroupConfigPage from './components/config/ProjectGroupConfigPage';
 import SupplierConfigPage from './components/config/SupplierConfigPage';
@@ -83,12 +84,9 @@ const IPXO_SUB_KEYS = [
   'ipxo-services',
   'ipxo-invoices',
 ] as const;
-const IP_MGMT_SUB_KEYS = [
+const VALID_MENU_KEYS = [
   'ip-management',
   'gtt-management',
-] as const;
-const VALID_MENU_KEYS = [
-  ...IP_MGMT_SUB_KEYS,
   'irr-detection',
   'cost-analysis-main',
   'cost-analysis-ipxo',
@@ -107,8 +105,6 @@ const isConfigSubKey = (k: string) => CONFIG_SUB_KEYS.includes(k as (typeof CONF
 const isAsnSubKey = (k: string) => ASN_SUB_KEYS.includes(k as (typeof ASN_SUB_KEYS)[number]);
 const isAnnounceSubKey = (k: string) => ANNOUNCE_SUB_KEYS.includes(k as (typeof ANNOUNCE_SUB_KEYS)[number]);
 const isIpxoSubKey = (k: string) => IPXO_SUB_KEYS.includes(k as (typeof IPXO_SUB_KEYS)[number]);
-const isIpMgmtSubKey = (k: string) => IP_MGMT_SUB_KEYS.includes(k as (typeof IP_MGMT_SUB_KEYS)[number]);
-
 const AppContent: React.FC = () => {
   const { user, logout, loading, hasPermission } = useAuth();
   const [selectedMenu, setSelectedMenu] = useState<string>(() => {
@@ -133,7 +129,6 @@ const AppContent: React.FC = () => {
     if (s === 'cost-analysis-main' || s === 'cost-analysis-ipxo') o.push('cost-analysis');
     if (s && isAsnSubKey(s)) o.push('asn');
     if (s && isAnnounceSubKey(s)) o.push('announce');
-    if (s && isIpMgmtSubKey(s)) o.push('ip-mgmt');
     return o;
   });
 
@@ -188,11 +183,6 @@ const AppContent: React.FC = () => {
       } else {
         n = n.filter((x) => x !== 'announce');
       }
-      if (isIpMgmtSubKey(selectedMenu)) {
-        if (!n.includes('ip-mgmt')) n.push('ip-mgmt');
-      } else {
-        n = n.filter((x) => x !== 'ip-mgmt');
-      }
       return n;
     });
   }, [selectedMenu]);
@@ -242,13 +232,9 @@ const AppContent: React.FC = () => {
     ...(hasPermission('asn-standby-b') ? [{ key: 'asn-standby-b', icon: <StarOutlined />, label: 'B 组备用 AS' }] : []),
   ];
 
-  const ipMgmtItems = [
-    { key: 'ip-management', label: 'IP 管理' },
-    ...(hasPermission('gtt-management') ? [{ key: 'gtt-management', label: 'GTT 管理' }] : []),
-  ];
-
   const menuItems: MenuProps['items'] = [
-    { key: 'ip-mgmt', icon: <DatabaseOutlined />, label: 'IP段管理', children: ipMgmtItems },
+    { key: 'ip-management', icon: <DatabaseOutlined />, label: 'IP段管理' },
+    ...(hasPermission('gtt-management') ? [{ key: 'gtt-management', icon: <ApartmentOutlined />, label: 'ISP管理' }] : []),
     ...(ipxoItems.length ? [{ key: 'ipxo', icon: <ApiOutlined />, label: 'IPXO管理', children: ipxoItems }] : []),
     ...(hasPermission('larus-management') ? [{ key: 'larus-management', icon: <CloudDownloadOutlined />, label: 'Larus 管理' }] : []),
     {
@@ -352,8 +338,8 @@ const AppContent: React.FC = () => {
             onOpenChange={setMenuOpenKeys}
             items={menuItems}
             onClick={({ key }) => {
-              if ((VALID_MENU_KEYS as readonly string[]).includes(key) || key === 'configuration' || key === 'ip-detection' || key === 'announce' || key === 'ipxo' || key === 'ip-mgmt') {
-                if (key !== 'configuration' && key !== 'ip-detection' && key !== 'announce' && key !== 'ipxo' && key !== 'ip-mgmt') setSelectedMenu(key);
+              if ((VALID_MENU_KEYS as readonly string[]).includes(key) || key === 'configuration' || key === 'ip-detection' || key === 'announce' || key === 'ipxo') {
+                if (key !== 'configuration' && key !== 'ip-detection' && key !== 'announce' && key !== 'ipxo') setSelectedMenu(key);
               }
             }}
           />
@@ -413,7 +399,7 @@ const AppContent: React.FC = () => {
           style={{ margin: 0, minHeight: 280, background: '#f4f6f9', padding: 24, minWidth: 0, width: '100%' }}
         >
           {selectedMenu === 'ip-management' && <IPManagement />}
-          {selectedMenu === 'gtt-management' && <GttManagement />}
+          {selectedMenu === 'gtt-management' && <IspManagement />}
           {selectedMenu === 'irr-detection' && <IRRDetection />}
           {selectedMenu === 'pre-purchase-check' && <PrePurchaseCheck />}
           {selectedMenu === 'cost-analysis-main' && <CostAnalysis />}

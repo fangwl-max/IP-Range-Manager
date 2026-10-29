@@ -71,7 +71,7 @@ export const PAGE_PERMS: Record<string, PermNode> = {
     },
   },
   'gtt-management': {
-    label: 'GTT 管理',
+    label: 'ISP 管理',
     features: {
       'edit': '编辑使用方式 / 关联IP段',
     },

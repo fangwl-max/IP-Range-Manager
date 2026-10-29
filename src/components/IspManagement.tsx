@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  Table, Tabs, Button, Space, Tag, Switch, Input, Modal, message, Form, Select,
+  Table, Tabs, Button, Space, Tag, Input, Modal, message, Form, Select,
   Typography, Card, Popconfirm, Tooltip, Statistic, Row, Col, Checkbox,
 } from 'antd';
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined,
-  CheckOutlined, CloseOutlined,
+  CheckOutlined, CloseOutlined, StarOutlined, StarFilled,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -19,11 +19,27 @@ import {
 
 const { Text } = Typography;
 
-const GttManagement: React.FC = () => {
+const SUPPLIER_COLOR_MAP: Record<string, string> = {
+  'GTT': 'purple',
+  'IPXO': 'cyan',
+  'Larus': 'green',
+  'HE': 'blue',
+  'Zenlayer': 'orange',
+};
+
+const AREA_COUNTRY_MAP: Record<string, string> = {
+  'liasail-洛杉矶': '美国',
+  'liasail-纽约': '美国',
+  '自建-圣何塞': '美国',
+  'liasail-法兰克福': '德国',
+};
+const areaToCountry = (area: string) => AREA_COUNTRY_MAP[area] || area || '未知';
+
+const IspManagement: React.FC = () => {
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('gtt-management.edit');
 
-  const [activeTab, setActiveTab] = useUrlTab(1, ['active', 'unused', 'cancelled', 'all'] as const, 'active');
+  const [activeTab, setActiveTab] = useUrlTab(1, ['all', 'active', 'unused', 'cancelled'] as const, 'all');
   const [ipSegments, setIpSegments] = useState<IPSegment[]>([]);
   const [searchText, setSearchText] = useState('');
 
@@ -37,10 +53,18 @@ const GttManagement: React.FC = () => {
   const [editingRemarkValue, setEditingRemarkValue] = useState('');
   const remarkSavingRef = useRef(false);
 
+  // 用户内联编辑
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editingUserValue, setEditingUserValue] = useState('');
+  const userSavingRef = useRef(false);
+
   // 手动添加 Modal
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addSearch, setAddSearch] = useState('');
   const [addSelectedKeys, setAddSelectedKeys] = useState<string[]>([]);
+
+  // 星标取消确认
+  const [unstarConfirmId, setUnstarConfirmId] = useState<string | null>(null);
 
   // 批量编辑
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
@@ -118,7 +142,7 @@ const GttManagement: React.FC = () => {
     setSelectedRowKeys([]);
   }, [setActiveTab]);
 
-  // GTT 管理的 IP 段
+  // ISP 管理的 IP 段
   const gttSegments = useMemo(() =>
     ipSegments.filter(seg => seg.gttManaged === true),
     [ipSegments],
@@ -163,15 +187,37 @@ const GttManagement: React.FC = () => {
         String(seg.asn || ''),
         String(seg.usageMethod || ''),
         String(seg.remark || ''),
+        String(seg.ispUser || ''),
       ].map(f => f.toLowerCase());
       return keywords.some(kw => fields.some(f => f.includes(kw)));
     });
   }, [searchText, parseKeywords]);
 
-  const displayActive = useMemo(() => filterBySearch(activeSegments), [filterBySearch, activeSegments]);
-  const displayUnused = useMemo(() => filterBySearch(unusedSegments), [filterBySearch, unusedSegments]);
-  const displayCancelled = useMemo(() => filterBySearch(cancelledSegments), [filterBySearch, cancelledSegments]);
-  const displayAll = useMemo(() => filterBySearch(gttSegments), [filterBySearch, gttSegments]);
+  const breakdownByCountry = (list: IPSegment[]) => {
+    const map: Record<string, number> = {};
+    list.forEach(s => { const c = areaToCountry(s.usageArea); map[c] = (map[c] || 0) + 1; });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  };
+  const breakdownBySupplier = (list: IPSegment[]) => {
+    const map: Record<string, number> = {};
+    list.forEach(s => { const sup = s.supplier || '未知'; map[sup] = (map[sup] || 0) + 1; });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  };
+
+  const totalByCountry = useMemo(() => breakdownByCountry(gttSegments), [gttSegments]);
+  const totalBySupplier = useMemo(() => breakdownBySupplier(gttSegments), [gttSegments]);
+  const activeByCountry = useMemo(() => breakdownByCountry(activeSegments), [activeSegments]);
+  const activeBySupplier = useMemo(() => breakdownBySupplier(activeSegments), [activeSegments]);
+  const unusedByCountry = useMemo(() => breakdownByCountry(unusedSegments), [unusedSegments]);
+  const unusedBySupplier = useMemo(() => breakdownBySupplier(unusedSegments), [unusedSegments]);
+
+  const starSort = (list: IPSegment[]) =>
+    [...list].sort((a, b) => (b.ispStarred ? 1 : 0) - (a.ispStarred ? 1 : 0));
+
+  const displayActive = useMemo(() => starSort(filterBySearch(activeSegments)), [filterBySearch, activeSegments]);
+  const displayUnused = useMemo(() => starSort(filterBySearch(unusedSegments)), [filterBySearch, unusedSegments]);
+  const displayCancelled = useMemo(() => starSort(filterBySearch(cancelledSegments)), [filterBySearch, cancelledSegments]);
+  const displayAll = useMemo(() => starSort(filterBySearch(gttSegments)), [filterBySearch, gttSegments]);
 
   // ── 使用方式内联编辑 ──
 
@@ -215,6 +261,34 @@ const GttManagement: React.FC = () => {
     setTimeout(() => { remarkSavingRef.current = false; }, 0);
   }, [editingRemarkId, editingRemarkValue, ipSegments, loadData, saveDataToFile]);
 
+  // ── 用户内联编辑 ──
+
+  const startUserEdit = (record: IPSegment) => {
+    setEditingUserId(record.id);
+    setEditingUserValue(record.ispUser || '');
+  };
+
+  const saveUserInline = useCallback(() => {
+    if (userSavingRef.current || !editingUserId) return;
+    userSavingRef.current = true;
+    const seg = ipSegments.find(s => s.id === editingUserId);
+    const oldVal = seg?.ispUser || '';
+    if (editingUserValue !== oldVal) {
+      ipSegmentStorage.update(editingUserId, { ispUser: editingUserValue });
+      loadData();
+      saveDataToFile(true);
+    }
+    setEditingUserId(null);
+    setTimeout(() => { userSavingRef.current = false; }, 0);
+  }, [editingUserId, editingUserValue, ipSegments, loadData, saveDataToFile]);
+
+  // 星标切换
+  const handleStarToggle = (record: IPSegment) => {
+    ipSegmentStorage.update(record.id, { ispStarred: !record.ispStarred });
+    loadData();
+    saveDataToFile(true);
+  };
+
   // 是否在用切换
   const handleInUseToggle = (record: IPSegment, checked: boolean) => {
     ipSegmentStorage.update(record.id, { gttInUse: checked });
@@ -222,12 +296,12 @@ const GttManagement: React.FC = () => {
     saveDataToFile(true);
   };
 
-  // 移出 GTT 管理
+  // 移出 ISP 管理
   const handleRemove = (id: string) => {
     ipSegmentStorage.update(id, { gttManaged: false });
     loadData();
     saveDataToFile(true);
-    message.success('已移出 GTT 管理');
+    message.success('已移出 ISP 管理');
   };
 
   // ── 手动添加 ──
@@ -261,7 +335,7 @@ const GttManagement: React.FC = () => {
     setAddModalOpen(false);
     setAddSelectedKeys([]);
     setAddSearch('');
-    message.success(`已添加 ${addSelectedKeys.length} 个 IP 段到 GTT 管理`);
+    message.success(`已添加 ${addSelectedKeys.length} 个 IP 段到 ISP 管理`);
   };
 
   // ── 批量编辑 ──
@@ -271,6 +345,9 @@ const GttManagement: React.FC = () => {
     try {
       const values = await batchEditForm.validateFields();
       const updateData: Partial<IPSegment> = {};
+
+      const userVal = (values.ispUser || '').trim();
+      if (userVal) updateData.ispUser = userVal;
 
       const usageVal = (values.usageMethod || '').trim();
       if (usageVal) updateData.usageMethod = usageVal;
@@ -341,6 +418,28 @@ const GttManagement: React.FC = () => {
 
   const columns: ColumnsType<IPSegment> = [
     {
+      title: '',
+      dataIndex: 'ispStarred',
+      key: 'star',
+      width: 40,
+      fixed: 'left',
+      render: (_: any, record: IPSegment) => (
+        <span
+          style={{ cursor: 'pointer', fontSize: 16 }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (record.ispStarred) {
+              setUnstarConfirmId(record.id);
+            } else {
+              handleStarToggle(record);
+            }
+          }}
+        >
+          {record.ispStarred ? <StarFilled style={{ color: '#faad14' }} /> : <StarOutlined style={{ color: '#d9d9d9' }} />}
+        </span>
+      ),
+    },
+    {
       title: 'IP段',
       dataIndex: 'segment',
       key: 'segment',
@@ -356,7 +455,7 @@ const GttManagement: React.FC = () => {
       width: 100,
       filters: [...new Set(gttSegments.map(s => s.supplier))].map(s => ({ text: s, value: s })),
       onFilter: (value, record) => record.supplier === value,
-      render: (text: string) => <Tag>{text}</Tag>,
+      render: (text: string) => <Tag color={SUPPLIER_COLOR_MAP[text] || 'default'}>{text}</Tag>,
     },
     {
       title: 'ASN',
@@ -374,12 +473,41 @@ const GttManagement: React.FC = () => {
       onFilter: (value, record) => record.usageArea === value,
     },
     {
-      title: '项目组',
-      dataIndex: 'projectGroups',
-      key: 'projectGroups',
+      title: '用户',
+      dataIndex: 'ispUser',
+      key: 'ispUser',
       width: 120,
-      render: (groups: string[]) =>
-        groups?.length ? groups.map(g => <Tag key={g} color="blue">{g}</Tag>) : <Text type="secondary">-</Text>,
+      filters: [...new Set(gttSegments.map(s => s.ispUser).filter(Boolean))].map(u => ({ text: u!, value: u! })),
+      onFilter: (value, record) => record.ispUser === value,
+      render: (text: string, record: IPSegment) => {
+        if (canEdit && editingUserId === record.id) {
+          return (
+            <Input
+              size="small"
+              autoFocus
+              value={editingUserValue}
+              onChange={e => setEditingUserValue(e.target.value)}
+              onPressEnter={saveUserInline}
+              onBlur={saveUserInline}
+              style={{ width: '100%' }}
+              placeholder="输入用户"
+            />
+          );
+        }
+        return (
+          <div
+            style={{ cursor: canEdit ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: 4, minHeight: 22 }}
+            onClick={() => canEdit && startUserEdit(record)}
+          >
+            {text ? (
+              <Tag color="blue" style={{ margin: 0 }}>{text}</Tag>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>{canEdit ? '点击输入' : '-'}</Text>
+            )}
+            {canEdit && <EditOutlined style={{ color: '#999', fontSize: 12 }} />}
+          </div>
+        );
+      },
     },
     {
       title: '购买时间',
@@ -451,14 +579,15 @@ const GttManagement: React.FC = () => {
       },
       render: (val: boolean | undefined, record: IPSegment) => {
         if (isCancelled(record)) return <Tag color="default">已取消</Tag>;
-        return canEdit ? (
-          <Switch
-            size="small"
-            checked={val !== false}
-            onChange={(checked) => handleInUseToggle(record, checked)}
-          />
-        ) : (
-          <Tag color={val !== false ? 'green' : 'default'}>{val !== false ? '在用' : '未使用'}</Tag>
+        const inUse = val !== false;
+        return (
+          <Tag
+            color={inUse ? 'success' : 'default'}
+            style={canEdit ? { cursor: 'pointer' } : undefined}
+            onClick={canEdit ? () => handleInUseToggle(record, !inUse) : undefined}
+          >
+            {inUse ? '在用' : '未使用'}
+          </Tag>
         );
       },
     },
@@ -506,7 +635,7 @@ const GttManagement: React.FC = () => {
       fixed: 'right' as const,
       render: (_: any, record: IPSegment) => (
         record.supplier !== 'GTT' ? (
-          <Popconfirm title="确定将此 IP 段移出 GTT 管理？" onConfirm={() => handleRemove(record.id)} okText="确定" cancelText="取消">
+          <Popconfirm title="确定将此 IP 段移出 ISP 管理？" onConfirm={() => handleRemove(record.id)} okText="确定" cancelText="取消">
             <Button type="link" size="small" danger icon={<DeleteOutlined />}>移出</Button>
           </Popconfirm>
         ) : null
@@ -516,10 +645,10 @@ const GttManagement: React.FC = () => {
 
   const addColumns: ColumnsType<IPSegment> = [
     { title: 'IP段', dataIndex: 'segment', key: 'segment', width: 160, render: (t: string) => <Text style={{ fontFamily: 'monospace' }}>{t}</Text> },
-    { title: '供应商', dataIndex: 'supplier', key: 'supplier', width: 100, render: (t: string) => <Tag>{t}</Tag> },
+    { title: '供应商', dataIndex: 'supplier', key: 'supplier', width: 100, render: (t: string) => <Tag color={SUPPLIER_COLOR_MAP[t] || 'default'}>{t}</Tag> },
     { title: 'ASN', dataIndex: 'asn', key: 'asn', width: 90 },
     { title: '宣告地区', dataIndex: 'usageArea', key: 'usageArea', width: 120 },
-    { title: '项目组', dataIndex: 'projectGroups', key: 'projectGroups', width: 120, render: (g: string[]) => g?.join(', ') || '-' },
+    { title: '用户', dataIndex: 'ispUser', key: 'ispUser', width: 100, render: (t: string) => t ? <Tag color="blue">{t}</Tag> : '-' },
   ];
 
   const renderTable = (data: IPSegment[]) => (
@@ -528,23 +657,66 @@ const GttManagement: React.FC = () => {
       dataSource={data}
       rowKey="id"
       size="small"
-      scroll={{ x: 1300, y: 'calc(100vh - 380px)' }}
+      scroll={{ x: 1350, y: 'calc(100vh - 380px)' }}
       pagination={false}
       rowSelection={canEdit ? {
         columnWidth: 46,
         selectedRowKeys,
         onChange: (keys) => setSelectedRowKeys(keys as string[]),
       } : undefined}
+      rowClassName={(record) => record.ispStarred ? 'isp-starred-row' : ''}
     />
   );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <Row gutter={16}>
-        <Col span={6}><Card size="small"><Statistic title="GTT 管理总数" value={gttSegments.length} /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="在用" value={activeSegments.length} valueStyle={{ color: '#52c41a' }} /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="未使用" value={unusedSegments.length} valueStyle={{ color: '#faad14' }} /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="已取消" value={cancelledSegments.length} valueStyle={{ color: '#ff4d4f' }} /></Card></Col>
+      <style>{`
+        .isp-starred-row td { background: #fffbe6 !important; }
+        .isp-starred-row:hover td { background: #fff1b8 !important; }
+      `}</style>
+      <Row gutter={[12, 12]}>
+        {([
+          { title: 'ISP 管理总数', value: gttSegments.length, color: undefined, byCountry: totalByCountry, bySupplier: totalBySupplier },
+          { title: '在用', value: activeSegments.length, color: '#52c41a', byCountry: activeByCountry, bySupplier: activeBySupplier },
+          { title: '未使用', value: unusedSegments.length, color: '#faad14', byCountry: unusedByCountry, bySupplier: unusedBySupplier },
+          { title: '已取消', value: cancelledSegments.length, color: '#ff4d4f', byCountry: [] as [string, number][], bySupplier: [] as [string, number][] },
+        ] as const).map(item => (
+          <Col span={6} key={item.title}>
+            <Card size="small" bodyStyle={{ padding: '12px 14px' }}>
+              <Statistic title={item.title} value={item.value} valueStyle={item.color ? { color: item.color } : undefined} />
+              {(item.byCountry.length > 0 || item.bySupplier.length > 0) && (
+                <div style={{ marginTop: 6, display: 'flex', gap: 6 }}>
+                  {item.byCountry.length > 0 && (
+                    <div style={{ flex: 1, background: '#fafafa', borderRadius: 4, padding: '3px 6px' }}>
+                      <Text type="secondary" style={{ fontSize: 10, fontWeight: 500 }}>按国家</Text>
+                      <div style={{ marginTop: 1 }}>
+                        {item.byCountry.map(([k, v]) => (
+                          <div key={k} style={{ display: 'flex', gap: 4, fontSize: 11, color: '#333', lineHeight: '16px' }}>
+                            <span>{k}</span>
+                            <span style={{ fontWeight: 500, color: item.color || '#1677ff' }}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {item.bySupplier.length > 0 && (
+                    <div style={{ flex: 1, background: '#fafafa', borderRadius: 4, padding: '3px 6px' }}>
+                      <Text type="secondary" style={{ fontSize: 10, fontWeight: 500 }}>按供应商</Text>
+                      <div style={{ marginTop: 1 }}>
+                        {item.bySupplier.map(([k, v]) => (
+                          <div key={k} style={{ display: 'flex', gap: 4, fontSize: 11, color: '#333', lineHeight: '16px' }}>
+                            <span>{k}</span>
+                            <span style={{ fontWeight: 500, color: item.color || '#1677ff' }}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+          </Col>
+        ))}
       </Row>
 
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
@@ -584,16 +756,16 @@ const GttManagement: React.FC = () => {
         activeKey={activeTab}
         onChange={handleTabChange}
         items={[
+          { key: 'all', label: `全部IP段 (${gttSegments.length})`, children: renderTable(displayAll) },
           { key: 'active', label: `在用IP段 (${activeSegments.length})`, children: renderTable(displayActive) },
           { key: 'unused', label: `未使用IP段 (${unusedSegments.length})`, children: renderTable(displayUnused) },
           { key: 'cancelled', label: `已取消IP段 (${cancelledSegments.length})`, children: renderTable(displayCancelled) },
-          { key: 'all', label: `全部IP段 (${gttSegments.length})`, children: renderTable(displayAll) },
         ]}
       />
 
       {/* 手动添加 Modal */}
       <Modal
-        title="手动添加 IP 段到 GTT 管理"
+        title="手动添加 IP 段到 ISP 管理"
         open={addModalOpen}
         onOk={handleAddConfirm}
         onCancel={() => setAddModalOpen(false)}
@@ -640,6 +812,9 @@ const GttManagement: React.FC = () => {
           只填写需要批量修改的字段，留空的字段将保持不变
         </Text>
         <Form form={batchEditForm} layout="vertical">
+          <Form.Item name="ispUser" label="用户">
+            <Input placeholder="留空则不修改" maxLength={100} />
+          </Form.Item>
           <Form.Item name="usageMethod" label="使用方式">
             <Input.TextArea placeholder="留空则不修改" rows={2} maxLength={500} showCount />
           </Form.Item>
@@ -661,8 +836,27 @@ const GttManagement: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* 取消星标确认 */}
+      <Modal
+        title="取消星标"
+        open={!!unstarConfirmId}
+        onOk={() => {
+          if (unstarConfirmId) {
+            const seg = ipSegments.find(s => s.id === unstarConfirmId);
+            if (seg) handleStarToggle(seg);
+          }
+          setUnstarConfirmId(null);
+        }}
+        onCancel={() => setUnstarConfirmId(null)}
+        okText="确定"
+        cancelText="取消"
+        width={300}
+      >
+        <p>确定取消该 IP 段的星标？</p>
+      </Modal>
     </div>
   );
 };
 
-export default GttManagement;
+export default IspManagement;
