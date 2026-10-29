@@ -97,7 +97,6 @@ export const ROLE_DEFAULTS: Record<string, string[]> = {
     'asn-standby-b', 'asn-standby-b.edit',
     'announce-zen', 'announce-zen.announce',
     'announce-capital-online', 'announce-capital-online.announce',
-    'gtt-management',
   ],
 };
 

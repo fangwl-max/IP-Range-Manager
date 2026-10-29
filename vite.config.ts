@@ -9225,7 +9225,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   function zenApiVersion(): string { return loadZenConfig()?.apiVersion || '2022-11-20'; }
 
   // 工具函数：从动态加载的 zen lib 模块执行 NDJSON 流并写入响应
-  async function streamNdjson(res: any, gen: AsyncGenerator<any>): Promise<void> {
+  async function streamNdjson(res: any, gen: AsyncGenerator<any>, onEvent?: (ev: any) => void): Promise<void> {
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -9233,12 +9233,65 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     const write = (obj: any) => { try { res.write(JSON.stringify(obj) + '\n'); } catch { /* ignore */ } };
     write({ type: 'log', level: 'info', message: '流已建立…' });
     try {
-      for await (const ev of gen) write(ev);
+      for await (const ev of gen) { write(ev); onEvent?.(ev); }
     } catch (e: any) {
-      write({ type: 'error', message: e?.message || String(e) });
+      const errEv = { type: 'error', message: e?.message || String(e) };
+      write(errEv);
+      onEvent?.(errEv);
     } finally {
       res.end();
     }
+  }
+
+  // ─── ZEN 任务日志 ──────────────────────────────────────────────────────
+  const zenTaskLogPath = path.resolve(__dirname, 'zen-task-log.json');
+
+  interface ZenTaskLogEntry {
+    id: string;
+    startedAt: string;
+    completedAt: string;
+    action: string;
+    username: string;
+    dryRun: boolean;
+    cidrs: string[];
+    status: 'success' | 'partial' | 'error';
+    errorMessage?: string;
+    summary: { total: number; success: number; failed: number; skipped: number };
+  }
+
+  function appendZenTaskLog(entry: ZenTaskLogEntry): void {
+    try { fs.appendFileSync(zenTaskLogPath, JSON.stringify(entry) + '\n'); }
+    catch (e: any) { console.error('[ZenTaskLog] Write error:', e.message); }
+  }
+
+  function loadZenTaskLog(limit = 200): ZenTaskLogEntry[] {
+    try {
+      if (!fs.existsSync(zenTaskLogPath)) return [];
+      const lines = fs.readFileSync(zenTaskLogPath, 'utf-8').trim().split('\n').filter(Boolean);
+      return lines.slice(-limit).reverse().map(l => JSON.parse(l));
+    } catch { return []; }
+  }
+
+  function trackZenEvent(ev: any, s: { success: number; failed: number; skipped: number; errorMsg: string }): void {
+    const t = ev.type;
+    if (t === 'job_done') s.success++;
+    else if (t === 'segment_done') { if (ev.deleted === false) s.failed++; else s.success++; }
+    else if (t === 'id_done') { if (ev.deleted === false && ev.message) s.failed++; else s.success++; }
+    else if (t === 'delete_done') { s.success += ev.deleted || 0; s.failed += ev.failed || 0; s.skipped += ev.skippedBound || 0; }
+    else if (t === 'segment_skipped') s.skipped++;
+    else if (t === 'error') { if (!s.errorMsg) s.errorMsg = ev.message || 'Unknown'; s.failed++; }
+  }
+
+  function buildTaskLogEntry(startedAt: string, action: string, username: string, dryRun: boolean, cidrs: string[], s: { success: number; failed: number; skipped: number; errorMsg: string }): ZenTaskLogEntry {
+    return {
+      id: `zt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      action, username, dryRun, cidrs,
+      status: s.errorMsg && s.success === 0 ? 'error' : s.failed > 0 ? 'partial' : 'success',
+      errorMessage: s.errorMsg || undefined,
+      summary: { total: cidrs.length, success: s.success, failed: s.failed, skipped: s.skipped },
+    };
   }
 
   // 通用 CORS + JSON 响应头设置
@@ -9256,6 +9309,17 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       req.on('error', reject);
     });
   }
+
+  // ─── GET /api/zen/task-log ─── 读取 ZEN 任务日志
+  server.middlewares.use('/api/zen/task-log', (req: any, res: any, _next: any) => {
+    setCorsJson(res);
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'GET') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
+    const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const limit = Math.min(500, Math.max(1, Number(reqUrl.searchParams.get('limit')) || 200));
+    res.statusCode = 200;
+    res.end(JSON.stringify({ ok: true, logs: loadZenTaskLog(limit) }));
+  });
 
   // ─── GET /api/zen/config ─── 读取 ZEN 配置
   server.middlewares.use('/api/zen/config', (req: any, res: any, _next: any) => {
@@ -9435,7 +9499,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       }
       const { ak, sk } = getZenCreds();
       const { runPipeline } = await import('./src/lib/zen/pipeline.js' as any);
-      await streamNdjson(res, runPipeline(body, ak, sk));
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      await streamNdjson(res, runPipeline(body, ak, sk), ev => trackZenEvent(ev, _tl.s));
+      appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'zec_announce', zenPipeSession?.username || '?', Boolean(body?.dryRun), zenCidrs, _tl.s));
     } catch (e: any) {
       if (!res.headersSent) { res.setHeader('Content-Type', 'application/json'); res.statusCode = 500; }
       res.end(JSON.stringify({ type: 'error', message: e.message }));
@@ -9474,7 +9540,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const eipDelSess = getTokenSession(req);
       if (eipDelSess) logAudit(req, eipDelSess.userId, eipDelSess.username, eipDelSess.role, 'withdraw.zen_eip_delete', normalized.tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: normalized.tasks.length, dryRun: Boolean(body?.dryRun) });
       const { runEipDelete } = await import('./src/lib/zen/eip-delete.js' as any);
-      await streamNdjson(res, runEipDelete(normalized, ak, sk));
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      await streamNdjson(res, runEipDelete(normalized, ak, sk), ev => trackZenEvent(ev, _tl.s));
+      appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'eip_delete', eipDelSess?.username || '?', Boolean(body?.dryRun), normalized.tasks.map((t: any) => t.cidrBlock), _tl.s));
     } catch (e: any) {
       if (!res.headersSent) { res.setHeader('Content-Type', 'application/json'); res.statusCode = 500; }
       res.end(JSON.stringify({ type: 'error', message: e.message }));
@@ -9504,7 +9572,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (byoipAnnSession) logAudit(req, byoipAnnSession.userId, byoipAnnSession.username, byoipAnnSession.role, 'announce.zen_byoip', jobs.map((j: any) => j.cidrBlock).join(','), { jobCount: jobs.length, dryRun: Boolean(body?.dryRun) });
       const { ak, sk } = getZenCreds();
       const { runByoipAnnounce } = await import('./src/lib/zen/byoip-announce.js' as any);
-      await streamNdjson(res, runByoipAnnounce({ jobs, dryRun: Boolean(body?.dryRun) }, ak, sk));
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      await streamNdjson(res, runByoipAnnounce({ jobs, dryRun: Boolean(body?.dryRun) }, ak, sk), ev => trackZenEvent(ev, _tl.s));
+      appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'vob_announce', byoipAnnSession?.username || '?', Boolean(body?.dryRun), jobs.map((j: any) => j.cidrBlock), _tl.s));
     } catch (e: any) {
       if (!res.headersSent) { res.setHeader('Content-Type', 'application/json'); res.statusCode = 500; }
       res.end(JSON.stringify({ type: 'error', message: e.message }));
@@ -9545,7 +9615,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (byoipWdSession) logAudit(req, byoipWdSession.userId, byoipWdSession.username, byoipWdSession.role, 'withdraw.zen_byoip', tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: tasks.length, dryRun: Boolean(body?.dryRun) });
       const scanRegionIds = (body?.scanRegionIds || []).map((x: any) => String(x).trim()).filter(Boolean);
       const { runByoipWithdraw } = await import('./src/lib/zen/byoip-withdraw.js' as any);
-      await streamNdjson(res, runByoipWithdraw({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk));
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      await streamNdjson(res, runByoipWithdraw({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk), ev => trackZenEvent(ev, _tl.s));
+      appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'byoip_withdraw', byoipWdSession?.username || '?', Boolean(body?.dryRun), tasks.map((t: any) => t.cidrBlock), _tl.s));
     } catch (e: any) {
       if (!res.headersSent) { res.setHeader('Content-Type', 'application/json'); res.statusCode = 500; }
       res.end(JSON.stringify({ type: 'error', message: e.message }));
@@ -9585,7 +9657,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (zecDelSess) logAudit(req, zecDelSess.userId, zecDelSess.username, zecDelSess.role, 'withdraw.zen_zec_cidr', tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: tasks.length, dryRun: Boolean(body?.dryRun) });
       const scanRegionIds = (body?.scanRegionIds || []).map((x: any) => String(x).trim()).filter(Boolean);
       const { runZecCidrDelete } = await import('./src/lib/zen/zec-cidr-delete.js' as any);
-      await streamNdjson(res, runZecCidrDelete({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk));
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      await streamNdjson(res, runZecCidrDelete({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk), ev => trackZenEvent(ev, _tl.s));
+      appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'zec_cidr_delete', zecDelSess?.username || '?', Boolean(body?.dryRun), tasks.map((t: any) => t.cidrBlock), _tl.s));
     } catch (e: any) {
       if (!res.headersSent) { res.setHeader('Content-Type', 'application/json'); res.statusCode = 500; }
       res.end(JSON.stringify({ type: 'error', message: e.message }));
@@ -9623,11 +9697,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.setHeader('Transfer-Encoding', 'chunked');
       res.statusCode = 200;
       const write = (ev: any) => res.write(JSON.stringify(ev) + '\n');
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
       for (let i = 0; i < ids.length; i++) {
         const cidrBlockId = ids[i];
         write({ type: 'log', level: 'info', message: `[${i + 1}/${ids.length}] cidrBlockId=${cidrBlockId}${dryRun ? ' [演练]' : ''}` });
         if (dryRun) {
           write({ type: 'id_done', index: i, cidrBlockId, dryRun: true, deleted: false, message: '演练模式未实际取消' });
+          _tl.s.skipped++;
           continue;
         }
         try {
@@ -9635,13 +9711,17 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           unwrapResponse(result);
           write({ type: 'log', level: 'info', message: `[${i + 1}/${ids.length}] TerminateCidrBlock 成功 cidrBlockId=${cidrBlockId}` });
           write({ type: 'id_done', index: i, cidrBlockId, dryRun: false, deleted: true });
+          _tl.s.success++;
         } catch (e: any) {
           write({ type: 'log', level: 'error', message: `[${i + 1}/${ids.length}] 失败：${e.message}` });
           write({ type: 'id_done', index: i, cidrBlockId, dryRun: false, deleted: false, message: e.message });
+          _tl.s.failed++;
+          if (!_tl.s.errorMsg) _tl.s.errorMsg = e.message;
         }
       }
       write({ type: 'done' });
       res.end();
+      appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'byoip_withdraw_by_id', byoipByIdSess?.username || '?', dryRun, ids, _tl.s));
     } catch (e: any) {
       if (!res.headersSent) { res.setHeader('Content-Type', 'application/json'); res.statusCode = 500; }
       res.end(JSON.stringify({ type: 'error', message: e.message }));

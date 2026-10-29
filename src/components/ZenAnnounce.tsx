@@ -4,13 +4,14 @@ import { useUrlTab } from '../hooks/useUrlTab';
 import { LockOutlined } from '@ant-design/icons';
 import {
   SoundOutlined, DeleteOutlined, GlobalOutlined, ScissorOutlined,
-  UnorderedListOutlined,
+  UnorderedListOutlined, HistoryOutlined,
 } from '@ant-design/icons';
 import ZenAnnounceTab from './ZenAnnounceTab';
 import ZenEipDelete from './ZenEipDelete';
 import ZenVobTab from './ZenVobTab';
 import ZenCidrDeleteTab from './ZenCidrDeleteTab';
 import ZenAnnouncedList from './ZenAnnouncedList';
+import ZenTaskLog from './ZenTaskLog';
 import { useAuth } from '../contexts/AuthContext';
 
 interface RegionOption { regionId: string; label: string; }
@@ -31,7 +32,7 @@ const PermGate: React.FC<{ perm: string; children: React.ReactNode }> = ({ perm,
 
 const ZenAnnounce: React.FC = () => {
   const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
-  const [outerTab, setOuterTab] = useUrlTab(1, ['announce', 'vob', 'announced'] as const, 'announce');
+  const [outerTab, setOuterTab] = useUrlTab(1, ['announce', 'vob', 'announced', 'task-log'] as const, 'announce');
   const [innerTab, setInnerTab] = useUrlTab(2, ['zec-announce', 'zec-eip-delete', 'zec-cidr-delete'] as const, 'zec-announce');
 
   return (
@@ -82,6 +83,11 @@ const ZenAnnounce: React.FC = () => {
             key: 'announced',
             label: <span><UnorderedListOutlined /> 已宣告IP段</span>,
             children: <ZenAnnouncedList />,
+          },
+          {
+            key: 'task-log',
+            label: <span><HistoryOutlined /> 任务记录</span>,
+            children: <ZenTaskLog />,
           },
         ]}
       />

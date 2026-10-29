@@ -288,7 +288,7 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
             <Tooltip title="已从 ZEN-Auto-Announce/.env 自动读取"><Tag color="cyan">自动读取 .env</Tag></Tooltip>
           )}
           {configured === true && configSource === 'config' && <Tag color="success">API 已配置</Tag>}
-          {user.role === 'admin' && <Button icon={<SettingOutlined />} onClick={openConfigModal}>密钥配置</Button>}
+          {user?.role === 'admin' && <Button icon={<SettingOutlined />} onClick={openConfigModal}>密钥配置</Button>}
           {configured && (
             <Button icon={<SyncOutlined spin={metaLoading} />} onClick={loadMeta} loading={metaLoading}>刷新地域</Button>
           )}
