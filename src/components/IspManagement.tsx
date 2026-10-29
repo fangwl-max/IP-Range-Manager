@@ -117,6 +117,7 @@ const IspManagement: React.FC = () => {
   const handleTabChange = useCallback((key: string) => {
     setActiveTab(key);
     setSelectedRowKeys([]);
+    setTableFilteredData(null);
   }, [setActiveTab]);
 
   // ISP 管理的 IP 段
@@ -196,6 +197,8 @@ const IspManagement: React.FC = () => {
   const displayCancelled = useMemo(() => starSort(filterBySearch(cancelledSegments)), [filterBySearch, cancelledSegments]);
   const displayAll = useMemo(() => starSort(filterBySearch(gttSegments)), [filterBySearch, gttSegments]);
 
+  const [tableFilteredData, setTableFilteredData] = useState<IPSegment[] | null>(null);
+
   const currentDisplayData = useMemo(() => {
     switch (activeTab) {
       case 'active': return displayActive;
@@ -206,14 +209,15 @@ const IspManagement: React.FC = () => {
   }, [activeTab, displayAll, displayActive, displayUnused, displayCancelled]);
 
   const filteredStats = useMemo(() => {
+    const source = tableFilteredData ?? currentDisplayData;
     let inUse = 0, unused = 0, cancelled = 0;
-    currentDisplayData.forEach(s => {
+    source.forEach(s => {
       if (isCancelled(s) && s.gttInUse !== true) cancelled++;
       else if (s.gttInUse === false) unused++;
       else inUse++;
     });
-    return { total: currentDisplayData.length, inUse, unused, cancelled };
-  }, [currentDisplayData]);
+    return { total: source.length, inUse, unused, cancelled };
+  }, [currentDisplayData, tableFilteredData]);
 
   // ── 使用方式内联编辑 ──
 
@@ -659,6 +663,10 @@ const IspManagement: React.FC = () => {
     { title: '用户', dataIndex: 'ispUser', key: 'ispUser', width: 100, render: (t: string) => t ? <Tag color="blue">{t}</Tag> : '-' },
   ];
 
+  const handleTableChange = useCallback((_pagination: any, _filters: any, _sorter: any, extra: any) => {
+    setTableFilteredData(extra.currentDataSource as IPSegment[]);
+  }, []);
+
   const renderTable = (data: IPSegment[]) => (
     <Table
       columns={columns}
@@ -667,6 +675,7 @@ const IspManagement: React.FC = () => {
       size="small"
       scroll={{ x: 1350, y: 'calc(100vh - 380px)' }}
       pagination={false}
+      onChange={handleTableChange}
       rowSelection={canEdit ? {
         columnWidth: 46,
         selectedRowKeys,
