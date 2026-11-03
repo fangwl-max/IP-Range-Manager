@@ -3673,6 +3673,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   server.middlewares.use('/cds-proxy', (req: any, res: any, _next: any) => {
     const proxyPath = req.url || '/';
     const cdsPort = loadCdsConfig()?.port || 9010;
+    let cdsTaskMeta: { action: string; cidrs: string[]; username: string; startedAt: string } | null = null;
 
     // 主系统登录检查：非 API 调用未登录时重定向到主系统登录页
     const mainToken = (req.headers['authorization'] || '').replace('Bearer ', '').trim();
@@ -3697,6 +3698,27 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     const proxyReq = http.request(options, (proxyRes: any) => {
       const isHtml = (proxyRes.headers['content-type'] || '').includes('text/html');
       res.statusCode = proxyRes.statusCode;
+      if (cdsTaskMeta) {
+        const httpOk = proxyRes.statusCode < 400;
+        appendCdsTaskLog({
+          id: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          startedAt: cdsTaskMeta.startedAt,
+          completedAt: new Date().toISOString(),
+          action: cdsTaskMeta.action,
+          username: cdsTaskMeta.username,
+          cidrs: cdsTaskMeta.cidrs,
+          status: httpOk ? 'success' : 'error',
+          httpStatus: proxyRes.statusCode,
+          errorMessage: httpOk ? undefined : `HTTP ${proxyRes.statusCode}`,
+          summary: {
+            total: cdsTaskMeta.cidrs.length,
+            success: httpOk ? cdsTaskMeta.cidrs.length : 0,
+            failed: httpOk ? 0 : cdsTaskMeta.cidrs.length,
+            skipped: 0,
+          },
+        });
+        cdsTaskMeta = null;
+      }
       Object.entries(proxyRes.headers as Record<string, any>).forEach(([k, v]) => {
         if (k.toLowerCase() === 'transfer-encoding') return;
         if (k.toLowerCase() === 'content-length' && isHtml) return;
@@ -3719,12 +3741,20 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
           const interceptScript = `
 <script>
 (function(){
+  var _authTk = '';
+  try { _authTk = localStorage.getItem('ip-management-auth-token') || ''; } catch(e){}
   var _fetch = window.fetch;
   window.fetch = function(input, init) {
     if (typeof input === 'string' && input.startsWith('/') && !input.startsWith('/cds-proxy')) {
       input = '/cds-proxy' + input;
     } else if (input instanceof Request && input.url.startsWith('/') && !input.url.startsWith('/cds-proxy')) {
       input = new Request('/cds-proxy' + input.url, input);
+    }
+    if (_authTk) {
+      init = Object.assign({}, init);
+      var h = new Headers(init.headers || {});
+      if (!h.has('Authorization')) h.set('Authorization', 'Bearer ' + _authTk);
+      init.headers = h;
     }
     return _fetch.call(this, input, init);
   };
@@ -3733,7 +3763,15 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('/cds-proxy')) {
       url = '/cds-proxy' + url;
     }
+    this._needAuth = true;
     return _open.apply(this, arguments);
+  };
+  var _xhrSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function() {
+    if (_authTk && this._needAuth) {
+      try { this.setRequestHeader('Authorization', 'Bearer ' + _authTk); } catch(e){}
+    }
+    return _xhrSend.apply(this, arguments);
   };
   var _winOpen = window.open;
   window.open = function(url) {
@@ -3853,6 +3891,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         if (cdsSess) {
           const cdsAction = isCdsWithdraw ? 'withdraw.cds' : 'announce.cds';
           logAudit(req, (cdsSess as any).userId, (cdsSess as any).username, (cdsSess as any).role, cdsAction, cdsCidrs.slice(0, 10).join(',') || proxyPath, { path: proxyPath, cidrs: cdsCidrs.slice(0, 50) });
+        }
+        if (cdsCidrs.length > 0) {
+          cdsTaskMeta = {
+            action: isCdsWithdraw ? 'cds_withdraw' : 'cds_announce',
+            cidrs: cdsCidrs,
+            username: cdsSess ? (cdsSess as any).username : 'unknown',
+            startedAt: new Date().toISOString(),
+          };
         }
         proxyReq.write(rawBody);
         proxyReq.end();
@@ -9309,6 +9355,46 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       req.on('error', reject);
     });
   }
+
+  // ─── CDS 任务日志 ──────────────────────────────────────────────────────
+  const cdsTaskLogPath = path.resolve(__dirname, 'cds-task-log.json');
+
+  interface CdsTaskLogEntry {
+    id: string;
+    startedAt: string;
+    completedAt: string;
+    action: string;
+    username: string;
+    cidrs: string[];
+    status: 'success' | 'error';
+    httpStatus: number;
+    errorMessage?: string;
+    summary: { total: number; success: number; failed: number; skipped: number };
+  }
+
+  function appendCdsTaskLog(entry: CdsTaskLogEntry): void {
+    try { fs.appendFileSync(cdsTaskLogPath, JSON.stringify(entry) + '\n'); }
+    catch (e: any) { console.error('[CdsTaskLog] Write error:', e.message); }
+  }
+
+  function loadCdsTaskLog(limit = 200): CdsTaskLogEntry[] {
+    try {
+      if (!fs.existsSync(cdsTaskLogPath)) return [];
+      const lines = fs.readFileSync(cdsTaskLogPath, 'utf-8').trim().split('\n').filter(Boolean);
+      return lines.slice(-limit).reverse().map(l => JSON.parse(l));
+    } catch { return []; }
+  }
+
+  // ─── GET /api/cds/task-log ─── 读取 CDS 任务日志
+  server.middlewares.use('/api/cds/task-log', (req: any, res: any, _next: any) => {
+    setCorsJson(res);
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'GET') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
+    const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const limit = Math.min(500, Math.max(1, Number(reqUrl.searchParams.get('limit')) || 200));
+    res.statusCode = 200;
+    res.end(JSON.stringify({ ok: true, logs: loadCdsTaskLog(limit) }));
+  });
 
   // ─── GET /api/zen/task-log ─── 读取 ZEN 任务日志
   server.middlewares.use('/api/zen/task-log', (req: any, res: any, _next: any) => {

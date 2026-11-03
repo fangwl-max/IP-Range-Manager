@@ -3,14 +3,16 @@ import { Alert, Spin, Tabs, Result, Typography } from 'antd';
 import { useUrlTab } from '../hooks/useUrlTab';
 
 const { Text } = Typography;
-import { LockOutlined, SoundOutlined, StopOutlined, UnorderedListOutlined, FileTextOutlined } from '@ant-design/icons';
+import { LockOutlined, SoundOutlined, StopOutlined, UnorderedListOutlined, FileTextOutlined, HistoryOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
+import CdsTaskLog from './CdsTaskLog';
 
 const CDS_PAGES = [
   { key: 'announce',     label: '批量宣告',     icon: <SoundOutlined />,         path: '/cds-proxy/',              adminOnly: false },
   { key: 'withdraw',     label: '批量撤播',     icon: <StopOutlined />,          path: '/cds-proxy/withdraw',      adminOnly: true  },
   { key: 'announced',   label: '已宣告 IP 段', icon: <UnorderedListOutlined />, path: '/cds-proxy/announced',     adminOnly: false },
   { key: 'loa-manager', label: 'LOA 管理',     icon: <FileTextOutlined />,      path: '/cds-proxy/loa-manager',   adminOnly: false },
+  { key: 'task-log',    label: '任务记录',     icon: <HistoryOutlined />,       path: '',                         adminOnly: false },
 ];
 
 /**
@@ -26,7 +28,7 @@ const CapitalOnlineAnnounce: React.FC = () => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [errMsg, setErrMsg] = useState('');
-  const [activeTab, setActiveTab] = useUrlTab(1, ['announce', 'withdraw', 'announced', 'loa-manager'] as const, 'announce');
+  const [activeTab, setActiveTab] = useUrlTab(1, ['announce', 'withdraw', 'announced', 'loa-manager', 'task-log'] as const, 'announce');
 
   // 检查 CDS 服务是否可用
   useEffect(() => {
@@ -102,13 +104,15 @@ const CapitalOnlineAnnounce: React.FC = () => {
       </div>
 
       {/* 内容区 */}
-      {status === 'loading' && (
+      {activeTab === 'task-log' ? (
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <CdsTaskLog />
+        </div>
+      ) : status === 'loading' ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Spin tip="加载首都在线宣告服务..." size="large" />
         </div>
-      )}
-
-      {status === 'error' && (
+      ) : status === 'error' ? (
         <div style={{ padding: 24 }}>
           <Alert
             type="error"
@@ -124,9 +128,7 @@ const CapitalOnlineAnnounce: React.FC = () => {
             }
           />
         </div>
-      )}
-
-      {status === 'ok' && (
+      ) : (
         currentPage.adminOnly && !canWithdraw ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Result

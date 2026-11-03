@@ -141,6 +141,8 @@ const PrePurchaseCheck: React.FC = () => {
   const [priceMax, setPriceMax] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState('price');
   const [limit, setLimit] = useState(100);
+  const [searchAddrType, setSearchAddrType] = useState<'a' | 'ab'>('ab');
+  const [searchAddrValue, setSearchAddrValue] = useState('');
 
   // 数据
   const [items, setItems] = useState<MarketItem[]>([]);
@@ -162,6 +164,10 @@ const PrePurchaseCheck: React.FC = () => {
 
   // 选择
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+
+  // IP 段筛选（A/B/C/AB 段）
+  const [segFilterType, setSegFilterType] = useState<'a' | 'b' | 'c' | 'ab'>('ab');
+  const [segFilterValue, setSegFilterValue] = useState('');
 
   // 智能筛选
   const [smartFilterModalVisible, setSmartFilterModalVisible] = useState(false);
@@ -229,9 +235,11 @@ const PrePurchaseCheck: React.FC = () => {
   const [lookupResults, setLookupResults] = useState<{
     notation: string; available: boolean; price?: number;
     registry?: string; country?: string; city?: string; serviceUuid?: string; error?: string;
+    abuseScore?: number | null; _abuseData?: any;
   }[]>([]);
   const [lookupSelectedKeys, setLookupSelectedKeys] = useState<string[]>([]);
   const [addingLookupToCart, setAddingLookupToCart] = useState(false);
+  const [checkingLookupAbuse, setCheckingLookupAbuse] = useState<Set<string>>(new Set());
 
   // ── 通用复制工具 ─────────────────────────────────────────────────────
   const copyText = useCallback((text: string, label?: string) => {
@@ -338,6 +346,11 @@ const PrePurchaseCheck: React.FC = () => {
       if (registry) params.set('registrar', registry.toLowerCase());
       // 国家地区过滤
       if (countryCode) params.set('geo_country_code', countryCode.toUpperCase());
+      // A/AB 段搜索
+      const addrVal = searchAddrValue.trim();
+      if (addrVal) {
+        params.set('address_string', addrVal);
+      }
       // 价格范围
       if (priceMin) params.set('price_min', String(priceMin));
       if (priceMax) params.set('price_max', String(priceMax));
@@ -387,9 +400,19 @@ const PrePurchaseCheck: React.FC = () => {
         };
       });
 
+      // A/AB 段客户端二次过滤（API 可能返回不严格匹配的结果）
+      let filtered = mapped;
+      if (addrVal) {
+        filtered = mapped.filter(m => {
+          const parts = m.address.split('.');
+          if (searchAddrType === 'a') return parts[0] === addrVal;
+          return `${parts[0]}.${parts[1]}` === addrVal;
+        });
+      }
+
       // 计算重复 AB 段数量
       setExistingAbMap(prev => {
-        const updated = mapped.map(m => ({
+        const updated = filtered.map(m => ({
           ...m,
           dupCount: m.abSegKey ? (prev.get(m.abSegKey) || 0) : 0,
         }));
@@ -397,17 +420,17 @@ const PrePurchaseCheck: React.FC = () => {
         return prev;
       });
 
-      if (mapped.length === 0) {
+      if (filtered.length === 0) {
         message.info('未找到符合条件的 IP 段，请调整搜索条件');
       } else {
-        message.success(`找到 ${mapped.length} 个可购买 IP 段`);
+        message.success(`找到 ${filtered.length} 个可购买 IP 段`);
       }
     } catch (e: any) {
       message.error('搜索异常: ' + e.message);
     } finally {
       setSearching(false);
     }
-  }, [prefixLength, registry, countryCode, priceMin, priceMax, sortBy, limit, loadExistingSegments]);
+  }, [prefixLength, registry, countryCode, priceMin, priceMax, sortBy, limit, searchAddrType, searchAddrValue, loadExistingSegments]);
 
   // ── AbuseIPDB 检测：调用后端代理获取滥用数据 ───────────────────────────
   const handleCheckAbuse = useCallback(async (item: MarketItem, forceRefresh?: boolean) => {
@@ -521,6 +544,46 @@ const PrePurchaseCheck: React.FC = () => {
       setAddingLookupToCart(false);
     }
   }, [lookupResults, lookupSelectedKeys]);
+
+  // ── 精准查询：AbuseIPDB 检测 ──────────────────────────────────────────
+  const handleCheckLookupAbuse = useCallback(async (notation: string, forceRefresh?: boolean) => {
+    if (!abuseKeySet) { setAbuseKeyModalVisible(true); return; }
+    setCheckingLookupAbuse(prev => new Set(prev).add(notation));
+    try {
+      const existing = lookupResults.find(r => r.notation === notation);
+      const refresh = forceRefresh || existing?.abuseScore != null ? '&refresh=1' : '';
+      const res = await fetch(`/api/abuse-check?segment=${encodeURIComponent(notation)}${refresh}`);
+      const json = await res.json();
+      if (json.success && json.data != null) {
+        if (abuseQuotaExhausted) setAbuseQuotaExhausted(false);
+        setLookupResults(prev => prev.map(i =>
+          i.notation === notation
+            ? { ...i, abuseScore: json.data.abuseConfidenceScore ?? 0, _abuseData: { ...json.data, cached: json.cached, cachedAt: json.cachedAt } }
+            : i
+        ));
+      } else {
+        if (json.quotaExhausted) {
+          setAbuseQuotaExhausted(true);
+          message.warning('AbuseIPDB API 调用次数已用尽');
+        } else {
+          message.error('检测失败: ' + (json.message || '未知错误'));
+          if (json.message?.includes('API Key')) { setAbuseKeySet(false); setAbuseKeyModalVisible(true); }
+        }
+      }
+    } catch (e: any) {
+      message.error('检测异常: ' + e.message);
+    } finally {
+      setCheckingLookupAbuse(prev => { const s = new Set(prev); s.delete(notation); return s; });
+    }
+  }, [abuseKeySet, abuseQuotaExhausted, lookupResults]);
+
+  const handleCheckLookupAbuseAll = useCallback(async () => {
+    if (lookupResults.length === 0) { message.warning('请先查询 IP 段'); return; }
+    for (const r of lookupResults) {
+      await handleCheckLookupAbuse(r.notation);
+      if (lookupResults.length > 1) await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }, [lookupResults, handleCheckLookupAbuse]);
 
   // ── 智能筛选：多条件组合 ────────────────────────────────────────────────
   const smartFilteredItems = useMemo(() => {
@@ -788,8 +851,24 @@ const PrePurchaseCheck: React.FC = () => {
   }, [leasedItems, leasedSelectedKeys, cancelType, cancelReason,
       leasedPage, leasedPageSize, leasedNoAsnOnly, leasedSearch, leasedNoPaging, loadLeasedSegments]);
 
+  // ── IP 段前缀筛选 ──────────────────────────────────────────────────────
+  const segFilteredItems = useMemo(() => {
+    const v = segFilterValue.trim();
+    if (!v) return smartFilteredItems;
+    return smartFilteredItems.filter(item => {
+      const octets = item.address.split('.');
+      switch (segFilterType) {
+        case 'a':  return octets[0] === v;
+        case 'b':  return octets[1] === v;
+        case 'c':  return octets[2] === v;
+        case 'ab': return `${octets[0]}.${octets[1]}` === v;
+        default:   return true;
+      }
+    });
+  }, [smartFilteredItems, segFilterType, segFilterValue]);
+
   // ── 统计 ────────────────────────────────────────────────────────────────
-  const displayItems = smartFilteredItems;
+  const displayItems = segFilteredItems;
   const selectedItems = displayItems.filter(i => selectedKeys.includes(i.segment));
   const totalSelectedFee = selectedItems.reduce((s, i) => s + i.price, 0);
   const dupItems = displayItems.filter(i => (i.dupCount || 0) > 0);
@@ -1000,6 +1079,26 @@ const PrePurchaseCheck: React.FC = () => {
                         options={[{label:'/24',value:24},{label:'/23',value:23},{label:'/22',value:22},{label:'/21',value:21}]} />
                     </Col>
                     <Col>
+                      <Input.Group compact style={{ display: 'inline-flex', width: 'auto' }}>
+                        <Select
+                          value={searchAddrType}
+                          onChange={v => { setSearchAddrType(v); setSearchAddrValue(''); }}
+                          style={{ width: 90 }}
+                          options={[
+                            { label: 'AB 段', value: 'ab' },
+                            { label: 'A 段', value: 'a' },
+                          ]}
+                        />
+                        <Input
+                          value={searchAddrValue}
+                          onChange={e => setSearchAddrValue(e.target.value)}
+                          placeholder={searchAddrType === 'ab' ? '如 79.182' : '如 79'}
+                          style={{ width: 110 }}
+                          allowClear
+                        />
+                      </Input.Group>
+                    </Col>
+                    <Col>
                       <Text>RIR：</Text>
                       <Select value={registry} onChange={setRegistry} style={{ width: 100 }} options={REGISTRY_OPTIONS} />
                     </Col>
@@ -1044,7 +1143,7 @@ const PrePurchaseCheck: React.FC = () => {
                     <Row justify="space-between" align="middle">
                       <Space wrap>
                         <Text>共 <strong>{displayItems.length}</strong> 个
-                          {smartFilterActiveCount > 0 && items.length !== displayItems.length &&
+                          {(smartFilterActiveCount > 0 || segFilterValue.trim()) && items.length !== displayItems.length &&
                             <Text type="secondary">（已从 {items.length} 个过滤）</Text>}
                         </Text>
                         <Divider type="vertical" />
@@ -1067,6 +1166,29 @@ const PrePurchaseCheck: React.FC = () => {
                           }}>清除筛选</Button>
                         )}
                         {dupItems.length > 0 && <Tag color="orange" icon={<WarningOutlined />}>{dupItems.length} 个与现有 AB 段重复</Tag>}
+                        <Divider type="vertical" />
+                        <Input.Group compact style={{ display: 'inline-flex', width: 'auto' }}>
+                          <Select
+                            value={segFilterType}
+                            onChange={v => { setSegFilterType(v); setSegFilterValue(''); }}
+                            style={{ width: 90 }}
+                            size="small"
+                            options={[
+                              { label: 'AB 段', value: 'ab' },
+                              { label: 'A 段', value: 'a' },
+                              { label: 'B 段', value: 'b' },
+                              { label: 'C 段', value: 'c' },
+                            ]}
+                          />
+                          <Input
+                            size="small"
+                            value={segFilterValue}
+                            onChange={e => setSegFilterValue(e.target.value)}
+                            placeholder={segFilterType === 'ab' ? '如 64.204' : segFilterType === 'a' ? '如 64' : segFilterType === 'b' ? '如 204' : '如 28'}
+                            style={{ width: 110 }}
+                            allowClear
+                          />
+                        </Input.Group>
                       </Space>
                       <Space>
                         {selectedKeys.length > 0 && <>
@@ -1161,8 +1283,18 @@ const PrePurchaseCheck: React.FC = () => {
                       </Space>
                     }
                     extra={
-                      lookupSelectedKeys.length > 0 && (
-                        <Space>
+                      <Space>
+                        <Tooltip title="逐个检测所有查询结果的滥用情况，每段消耗10次API调用">
+                          <Button
+                            size="small"
+                            icon={<BugOutlined />}
+                            onClick={handleCheckLookupAbuseAll}
+                            loading={checkingLookupAbuse.size > 0}
+                          >
+                            全部检测滥用
+                          </Button>
+                        </Tooltip>
+                        {lookupSelectedKeys.length > 0 && (<>
                           <Button
                             icon={<CopyOutlined />}
                             size="small"
@@ -1170,18 +1302,24 @@ const PrePurchaseCheck: React.FC = () => {
                           >
                             复制IP段 ({lookupSelectedKeys.length})
                           </Button>
-                          <Button
-                            type="primary"
-                            icon={<ShoppingCartOutlined />}
-                            size="small"
-                            loading={addingLookupToCart}
-                            onClick={handleAddLookupToCart}
-                          >
-                            加入购物车 ({lookupSelectedKeys.length})
-                          </Button>
+                          {(() => {
+                            const availCount = lookupResults.filter(r => r.available && lookupSelectedKeys.includes(r.notation)).length;
+                            return (
+                              <Button
+                                type="primary"
+                                icon={<ShoppingCartOutlined />}
+                                size="small"
+                                loading={addingLookupToCart}
+                                onClick={handleAddLookupToCart}
+                                disabled={availCount === 0}
+                              >
+                                加入购物车{availCount > 0 ? ` (${availCount})` : ''}
+                              </Button>
+                            );
+                          })()}
                           <Button size="small" onClick={() => setLookupSelectedKeys([])}>取消选择</Button>
-                        </Space>
-                      )
+                        </>)}
+                      </Space>
                     }
                   >
                     <Table
@@ -1192,7 +1330,7 @@ const PrePurchaseCheck: React.FC = () => {
                       rowSelection={{
                         selectedRowKeys: lookupSelectedKeys,
                         onChange: keys => setLookupSelectedKeys(keys as string[]),
-                        getCheckboxProps: (r: any) => ({ disabled: !r.available }),
+                        getCheckboxProps: () => ({ disabled: false }),
                       }}
                       columns={[
                         {
@@ -1241,6 +1379,67 @@ const PrePurchaseCheck: React.FC = () => {
                           render: (_: any, r: any) => {
                             const geo = [r.country, r.city].filter(Boolean).join(' / ');
                             return geo ? <Text style={{ fontSize: 12 }}>{geo}</Text> : <Text type="secondary">—</Text>;
+                          },
+                        },
+                        {
+                          title: '滥用检测',
+                          key: 'abuse',
+                          width: 170,
+                          render: (_: any, r: any) => {
+                            const isChecking = checkingLookupAbuse.has(r.notation);
+                            const abuseData = r._abuseData;
+                            return (
+                              <Space size={4} direction="vertical">
+                                {abuseKeySet === false ? (
+                                  <Button size="small" icon={<BugOutlined />} onClick={() => setAbuseKeyModalVisible(true)} type="dashed">
+                                    配置 API Key
+                                  </Button>
+                                ) : (
+                                  <Tooltip title="整网段查询近30天 + 抽样9个IP查询近1年滥用记录，每次消耗10次API调用">
+                                    <Button
+                                      size="small"
+                                      icon={<BugOutlined />}
+                                      loading={isChecking}
+                                      onClick={() => handleCheckLookupAbuse(r.notation)}
+                                    >
+                                      {r.abuseScore != null ? '重新检测' : '检测滥用'}
+                                    </Button>
+                                  </Tooltip>
+                                )}
+                                {r.abuseScore != null && (
+                                  <Space direction="vertical" size={1}>
+                                    <Tag
+                                      color={r.abuseScore === 0 ? 'green' : r.abuseScore < 25 ? 'orange' : 'red'}
+                                      style={{ fontSize: 11, marginBottom: 0 }}
+                                    >
+                                      {r.abuseScore === 0 ? '✓ 无滥用记录' : `⚠ 最高评分 ${r.abuseScore}`}
+                                    </Tag>
+                                    {abuseData && (
+                                      <Space direction="vertical" size={0}>
+                                        <Text style={{ fontSize: 10, color: '#888' }}>
+                                          {abuseData.reportedIpCount != null
+                                            ? `${abuseData.reportedIpCount} 个IP被举报 / 共 ${abuseData.totalReports} 次`
+                                            : `举报 ${abuseData.totalReports} 次`}
+                                        </Text>
+                                        {abuseData.cached && abuseData.cachedAt && (
+                                          <Text style={{ fontSize: 10, color: '#aaa' }}>
+                                            缓存于 {abuseData.cachedAt.slice(0, 10)}
+                                          </Text>
+                                        )}
+                                      </Space>
+                                    )}
+                                  </Space>
+                                )}
+                                <a
+                                  href={`https://www.abuseipdb.com/check-block/${r.notation}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  style={{ fontSize: 11 }}
+                                >
+                                  <LinkOutlined /> 查看详情
+                                </a>
+                              </Space>
+                            );
                           },
                         },
                       ]}

@@ -48,6 +48,7 @@ ip-data.json.bak*
 isp-data-cache.json
 ssh-servers.json
 zen-task-log.json
+cds-task-log.json
 ipxo-cache.json
 ipxo-upcoming-status.json
 ipxo-upcoming-status*.json
