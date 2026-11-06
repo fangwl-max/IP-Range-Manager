@@ -3632,7 +3632,7 @@ async function callIpxoApiPost(urlPath: string, bodyJson: string): Promise<any> 
 // 开发服务器与 vite preview 共用（否则 preview / 仅静态托管时 /api 会回退为 index.html，登录报 Unexpected token '<'）
 let dataPersistenceGuardsRegistered = false;
 
-function installDataPersistenceMiddlewares(server: { middlewares: any }) {
+function installDataPersistenceMiddlewares(server: { middlewares: any }, isPreview = false) {
   if (!dataPersistenceGuardsRegistered) {
     dataPersistenceGuardsRegistered = true;
     process.on('unhandledRejection', (reason, promise) => {
@@ -11119,24 +11119,26 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   });
 
   // ─── SPA 回落：未匹配的 HTML 请求一律返回 index.html ─────────────
-  server.middlewares.use((req: any, res: any, next: any) => {
-    if (req.method !== 'GET') { next(); return; }
-    const url: string = (req.url || '/').split('?')[0];
-    // 有扩展名的静态资源、API 路径、代理路径、Vite 内部路径不处理
-    if (
-      url.includes('.') ||
-      url.startsWith('/api/') ||
-      url.startsWith('/cds-proxy/') ||
-      url.startsWith('/@') ||
-      url.startsWith('/__vite') ||
-      url.startsWith('/node_modules/')
-    ) { next(); return; }
-    const indexPath = path.join(__dirname, 'index.html');
-    if (!fs.existsSync(indexPath)) { next(); return; }
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.statusCode = 200;
-    res.end(fs.readFileSync(indexPath, 'utf-8'));
-  });
+  // preview 模式下由 Vite 内置处理（自动从 dist/ 提供正确的构建产物）
+  if (!isPreview) {
+    server.middlewares.use((req: any, res: any, next: any) => {
+      if (req.method !== 'GET') { next(); return; }
+      const url: string = (req.url || '/').split('?')[0];
+      if (
+        url.includes('.') ||
+        url.startsWith('/api/') ||
+        url.startsWith('/cds-proxy/') ||
+        url.startsWith('/@') ||
+        url.startsWith('/__vite') ||
+        url.startsWith('/node_modules/')
+      ) { next(); return; }
+      const indexPath = path.join(__dirname, 'index.html');
+      if (!fs.existsSync(indexPath)) { next(); return; }
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.statusCode = 200;
+      res.end(fs.readFileSync(indexPath, 'utf-8'));
+    });
+  }
 }
 
 const dataPersistencePlugin = () => ({
@@ -11147,7 +11149,7 @@ const dataPersistencePlugin = () => ({
       setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); startPurchaseReportScheduler(); initSyncRemarks(); startLarusKeepAlive(); }, 2000);
     },
     configurePreviewServer(server) {
-      installDataPersistenceMiddlewares(server);
+      installDataPersistenceMiddlewares(server, true);
       setTimeout(() => { startNotifyScheduler(); startBackupScheduler(); startIpxoCacheRefreshScheduler(); startWeeklyReportScheduler(); startPurchaseReportScheduler(); initSyncRemarks(); startLarusKeepAlive(); }, 2000);
     },
 });
