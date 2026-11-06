@@ -9,6 +9,7 @@ import {
   SyncOutlined, DownOutlined, RightOutlined, CopyOutlined,
   ImportOutlined,
 } from "@ant-design/icons";
+import { getAuthHeaders } from '../contexts/AuthContext';
 
 const { Text } = Typography;
 const { Option } = Select;
@@ -184,7 +185,7 @@ const ZenByoipAnnounceTab: React.FC<Props> = () => {
     try {
       const resp = await fetch("/api/zen/byoip-announce", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({
           jobs: validRows.map(r => ({
             cidrBlock: r.cidrBlock.trim(),

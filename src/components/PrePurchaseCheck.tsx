@@ -10,6 +10,7 @@ import {
   ReloadOutlined, CheckCircleOutlined,
   WarningOutlined, CloudServerOutlined, TeamOutlined, CopyOutlined, LinkOutlined,
   DeleteOutlined, StopOutlined, ExclamationCircleOutlined, CheckOutlined, CloseOutlined,
+  TagOutlined, PlusOutlined, EditOutlined, MinusCircleOutlined,
 } from '@ant-design/icons';
 
 const { Text, Title, Link } = Typography;
@@ -50,6 +51,11 @@ interface LeasedSegment {
   projectGroups: string[];
   renewalStatus: string | null;
 }
+
+interface AbTagEntry { region: string; available: boolean; note?: string }
+interface AbTagRecord { id: string; abSegKey: string; tags: AbTagEntry[]; createdAt: string; updatedAt: string }
+
+const AB_PREDEFINED_REGIONS = ['伊朗', '土库曼', '俄罗斯'];
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
@@ -132,7 +138,7 @@ const COUNTRY_OPTIONS = [
 // ─── 主组件 ───────────────────────────────────────────────────────────────────
 
 const PrePurchaseCheck: React.FC = () => {
-  const [activeTab, setActiveTab] = useUrlTab(1, ['market', 'lookup', 'leased'] as const, 'market');
+  const [activeTab, setActiveTab] = useUrlTab(1, ['market', 'lookup', 'leased', 'ab-tags'] as const, 'market');
   // 搜索参数
   const [prefixLength, setPrefixLength] = useState(24);
   const [registry, setRegistry] = useState('');
@@ -143,6 +149,7 @@ const PrePurchaseCheck: React.FC = () => {
   const [limit, setLimit] = useState(100);
   const [searchAddrType, setSearchAddrType] = useState<'a' | 'ab'>('ab');
   const [searchAddrValue, setSearchAddrValue] = useState('');
+  const [marketCacheTs, setMarketCacheTs] = useState<number | null>(null);
 
   // 数据
   const [items, setItems] = useState<MarketItem[]>([]);
@@ -229,6 +236,22 @@ const PrePurchaseCheck: React.FC = () => {
   const [cancelReason, setCancelReason] = useState('End of project');
   const [cancelResults, setCancelResults] = useState<{ subnet: string; ok: boolean; message: string }[]>([]);
 
+  // ── AB段标记 state ──────────────────────────────────────────────────
+  const [abTagRecords, setAbTagRecords] = useState<AbTagRecord[]>([]);
+  const [abTagCustomRegions, setAbTagCustomRegions] = useState<string[]>([]);
+  const [abTagLoading, setAbTagLoading] = useState(false);
+  const [abTagModalVisible, setAbTagModalVisible] = useState(false);
+  const [abTagEditing, setAbTagEditing] = useState<AbTagRecord | null>(null);
+  const [abTagSearch, setAbTagSearch] = useState('');
+  const [abTagSaving, setAbTagSaving] = useState(false);
+  const [abTagForm] = Form.useForm();
+
+  const abTagMap = useMemo(() => {
+    const m = new Map<string, AbTagEntry[]>();
+    for (const r of abTagRecords) m.set(r.abSegKey, r.tags);
+    return m;
+  }, [abTagRecords]);
+
   // ── 精准查询 state ────────────────────────────────────────────────────
   const [lookupInput, setLookupInput] = useState('');
   const [lookupLoading, setLookupLoading] = useState(false);
@@ -258,6 +281,150 @@ const PrePurchaseCheck: React.FC = () => {
       doFallback();
     }
   }, []);
+
+  // ── AB段标记数据加载 ────────────────────────────────────────────────
+  const loadAbTags = useCallback(async () => {
+    setAbTagLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const r = await fetch('/api/ab-tags', { headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json();
+      if (j.success) {
+        setAbTagRecords(j.data.records || []);
+        setAbTagCustomRegions(j.data.customRegions || []);
+      }
+    } catch { /* ignore */ }
+    finally { setAbTagLoading(false); }
+  }, []);
+
+  useEffect(() => { loadAbTags(); }, [loadAbTags]);
+
+  const handleAbTagSave = useCallback(async (values: any) => {
+    setAbTagSaving(true);
+    try {
+      const token = localStorage.getItem('token');
+      const tags = (values.tags || []).map((t: any) => ({ region: t.region, available: t.available, note: t.note || '' }));
+
+      if (abTagEditing) {
+        const payload = { id: abTagEditing.id, abSegKey: abTagEditing.abSegKey, tags };
+        const r = await fetch('/api/ab-tags', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
+        const j = await r.json();
+        if (j.success) {
+          message.success('标记已更新');
+          setAbTagModalVisible(false);
+          setAbTagEditing(null);
+          abTagForm.resetFields();
+          loadAbTags();
+        } else {
+          message.error(j.message || '保存失败');
+        }
+      } else {
+        const abSegRegex = /^\d{1,3}\.\d{1,3}$/;
+        const keys = (values.abSegKeys || '').split(/[\n,，\s]+/).map((s: string) => s.trim()).filter(Boolean);
+        const invalid = keys.filter((k: string) => !abSegRegex.test(k));
+        if (invalid.length > 0) { message.error(`格式无效：${invalid.slice(0, 5).join(', ')}`); setAbTagSaving(false); return; }
+        if (keys.length === 0) { message.error('请输入至少一个 AB 段'); setAbTagSaving(false); return; }
+        let ok = 0, failed = 0;
+        for (const abSegKey of keys) {
+          const r = await fetch('/api/ab-tags', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ abSegKey, tags }) });
+          const j = await r.json();
+          if (j.success) ok++;
+          else {
+            if (j.message?.includes('已存在')) {
+              const existing = abTagRecords.find(rec => rec.abSegKey === abSegKey);
+              if (existing) {
+                const merged = [...existing.tags];
+                for (const nt of tags) { const idx = merged.findIndex(m => m.region === nt.region); if (idx >= 0) merged[idx] = nt; else merged.push(nt); }
+                const r2 = await fetch('/api/ab-tags', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ id: existing.id, abSegKey, tags: merged }) });
+                const j2 = await r2.json();
+                if (j2.success) ok++; else failed++;
+              } else failed++;
+            } else failed++;
+          }
+        }
+        message.success(`已处理 ${ok} 条${failed > 0 ? `，${failed} 条失败` : ''}`);
+        setAbTagModalVisible(false);
+        abTagForm.resetFields();
+        loadAbTags();
+      }
+    } catch { message.error('网络错误'); }
+    finally { setAbTagSaving(false); }
+  }, [abTagEditing, abTagForm, abTagRecords, loadAbTags]);
+
+  const handleAbTagDelete = useCallback(async (id: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const r = await fetch(`/api/ab-tags?id=${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json();
+      if (j.success) { message.success('已删除'); loadAbTags(); }
+      else message.error(j.message || '删除失败');
+    } catch { message.error('网络错误'); }
+  }, [loadAbTags]);
+
+  const [abTagSelectedKeys, setAbTagSelectedKeys] = useState<string[]>([]);
+  const [batchTagModalVisible, setBatchTagModalVisible] = useState(false);
+  const [batchTagSaving, setBatchTagSaving] = useState(false);
+  const [batchTagForm] = Form.useForm();
+
+  const abTagFiltered = useMemo(() => {
+    if (!abTagSearch.trim()) return abTagRecords;
+    const terms = abTagSearch.split(/[\n,\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (!terms.length) return abTagRecords;
+    return abTagRecords.filter(r =>
+      terms.some(kw =>
+        r.abSegKey.includes(kw) || r.tags.some(t => t.region.toLowerCase().includes(kw) || (t.note || '').toLowerCase().includes(kw))
+      )
+    );
+  }, [abTagRecords, abTagSearch]);
+
+  const handleBatchDelete = useCallback(async () => {
+    if (!abTagSelectedKeys.length) return;
+    try {
+      const token = localStorage.getItem('token');
+      let ok = 0;
+      for (const id of abTagSelectedKeys) {
+        const r = await fetch(`/api/ab-tags?id=${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+        const j = await r.json();
+        if (j.success) ok++;
+      }
+      message.success(`已删除 ${ok} 条`);
+      setAbTagSelectedKeys([]);
+      loadAbTags();
+    } catch { message.error('网络错误'); }
+  }, [abTagSelectedKeys, loadAbTags]);
+
+  const handleBatchTagSave = useCallback(async (values: any) => {
+    if (!abTagSelectedKeys.length) return;
+    setBatchTagSaving(true);
+    try {
+      const token = localStorage.getItem('token');
+      const newTags: AbTagEntry[] = (values.tags || []).map((t: any) => ({ region: t.region, available: t.available, note: t.note || '' }));
+      let ok = 0;
+      for (const id of abTagSelectedKeys) {
+        const record = abTagRecords.find(r => r.id === id);
+        if (!record) continue;
+        const merged = [...record.tags];
+        for (const nt of newTags) {
+          const idx = merged.findIndex(m => m.region === nt.region);
+          if (idx >= 0) merged[idx] = nt; else merged.push(nt);
+        }
+        const r = await fetch('/api/ab-tags', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ id, abSegKey: record.abSegKey, tags: merged }) });
+        const j = await r.json();
+        if (j.success) ok++;
+      }
+      message.success(`已更新 ${ok} 条`);
+      setBatchTagModalVisible(false);
+      batchTagForm.resetFields();
+      setAbTagSelectedKeys([]);
+      loadAbTags();
+    } catch { message.error('网络错误'); }
+    finally { setBatchTagSaving(false); }
+  }, [abTagSelectedKeys, abTagRecords, batchTagForm, loadAbTags]);
+
+  const allRegionOptions = useMemo(() => {
+    const set = new Set([...AB_PREDEFINED_REGIONS, ...abTagCustomRegions]);
+    return Array.from(set);
+  }, [abTagCustomRegions]);
 
   // ── 加载已有 IP 段的 AB 段统计（包含所有历史购买段，含已取消） ────────
   const loadExistingSegments = useCallback(async () => {
@@ -333,7 +500,7 @@ const PrePurchaseCheck: React.FC = () => {
   useEffect(() => { checkAbuseKey(); }, [checkAbuseKey]);
 
   // ── 搜索可购买 IP 段 ────────────────────────────────────────────────────
-  const handleSearch = useCallback(async () => {
+  const handleSearch = useCallback(async (forceRefresh = false) => {
     setSearching(true);
     setItems([]);
     setSelectedKeys([]);
@@ -346,68 +513,86 @@ const PrePurchaseCheck: React.FC = () => {
       if (registry) params.set('registrar', registry.toLowerCase());
       // 国家地区过滤
       if (countryCode) params.set('geo_country_code', countryCode.toUpperCase());
-      // A/AB 段搜索
-      const addrVal = searchAddrValue.trim();
-      if (addrVal) {
-        params.set('address_string', addrVal);
-      }
-      // 价格范围
-      if (priceMin) params.set('price_min', String(priceMin));
-      if (priceMax) params.set('price_max', String(priceMax));
-      params.set('sort', sortBy);
-      params.set('limit', String(limit));
-
-      const res = await fetch(`/api/ipxo/market/search?${params.toString()}`);
-      const json = await res.json();
-
-      if (!json.success) {
-        message.error('搜索失败: ' + (json.message || json.data?.message || '未知错误'));
-        return;
+      // A/AB 段搜索：支持多个值，逗号/空格/换行分隔
+      const addrValues = searchAddrValue.split(/[,，\s\n]+/).map(v => v.trim()).filter(Boolean);
+      if (!addrValues.length) {
+        if (priceMin) params.set('price_min', String(priceMin));
+        if (priceMax) params.set('price_max', String(priceMax));
+        params.set('sort', sortBy);
       }
 
-      const rawItems: any[] = json.data?.data || json.data?.items || [];
-      const mapped: MarketItem[] = rawItems.map((item: any) => {
-        // IPXO 市场 API 返回字段：
-        // address_string: IP 地址字符串
-        // prefix_length: CIDR 长度
-        // notation: "1.2.3.0/24"
-        // pricing.price: 月费
-        // registrar: 注册局（ripencc/arin/apnic 等）
-        // geo_data.dbip / ip2location 等: 地理信息
+      const mapItem = (item: any): MarketItem => {
         const addr = item.address_string || item.notation?.split('/')[0] || '';
         const cidr = item.prefix_length ?? prefixLength;
         const seg = item.notation || `${addr}/${cidr}`;
         const parts = addr.split('.');
         const abKey = parts.length >= 2 ? `${parts[0]}.${parts[1]}` : '';
-        // 取多个地理数据源的国家和城市（优先 ipgeolocation）
         const geoSources = item.geo_data ? Object.values(item.geo_data) : [];
         const geoFirst: any = (geoSources.find((s: any) => s?.country_name) || geoSources[0] || {}) as any;
         const countryName = geoFirst?.country_name || geoFirst?.country_code || '';
         const cityName = geoFirst?.city_name || '';
         return {
-          address: addr,
-          cidr,
-          segment: seg,
+          address: addr, cidr, segment: seg,
           price: item.pricing?.price || 0,
           registry: (item.registrar || '').toUpperCase(),
-          country: countryName,
-          city: cityName,
+          country: countryName, city: cityName,
           serviceUuid: item.pricing?.uuid || '',
           marketUuid: item.notation || '',
-          abSegKey: abKey,
-          dupCount: 0,
-          abuseScore: null,
+          abSegKey: abKey, dupCount: 0, abuseScore: null,
         };
-      });
+      };
 
-      // A/AB 段客户端二次过滤（API 可能返回不严格匹配的结果）
-      let filtered = mapped;
-      if (addrVal) {
-        filtered = mapped.filter(m => {
-          const parts = m.address.split('.');
-          if (searchAddrType === 'a') return parts[0] === addrVal;
-          return `${parts[0]}.${parts[1]}` === addrVal;
+      let filtered: MarketItem[];
+
+      if (addrValues.length > 0) {
+        // 使用后端聚合接口（服务端遍历分页+缓存，速度更快）
+        const segRes = await fetch('/api/ipxo/market/search-segments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            addrType: searchAddrType,
+            values: addrValues,
+            prefixLength,
+            registry: registry || undefined,
+            countryCode: countryCode || undefined,
+            priceMin: priceMin || undefined,
+            priceMax: priceMax || undefined,
+            sortBy,
+            forceRefresh,
+          }),
         });
+        const segJson = await segRes.json();
+        if (!segJson.success) {
+          message.error('搜索失败: ' + (segJson.message || '未知错误'));
+          return;
+        }
+        if (segJson.errors?.length) {
+          segJson.errors.forEach((e: string) => message.warning(e));
+        }
+        const rawItems: any[] = segJson.data?.data || [];
+        filtered = rawItems.map(mapItem);
+        const totalBefore = segJson.totalBeforeFilter || rawItems.length;
+        if (segJson.cacheTs) setMarketCacheTs(segJson.cacheTs);
+        if (filtered.length === 0) {
+          message.info('未找到符合条件的 IP 段，请调整搜索条件');
+        } else {
+          message.success(`找到 ${filtered.length} 个可购买 IP 段` + (totalBefore !== filtered.length ? `（从 ${totalBefore} 个中过滤）` : ''));
+        }
+      } else {
+        params.set('limit', String(limit));
+        const res = await fetch(`/api/ipxo/market/search?${params.toString()}`);
+        const json = await res.json();
+        if (!json.success) {
+          message.error('搜索失败: ' + (json.message || json.data?.message || '未知错误'));
+          return;
+        }
+        const rawItems: any[] = json.data?.data || json.data?.items || [];
+        filtered = rawItems.map(mapItem);
+        if (filtered.length === 0) {
+          message.info('未找到符合条件的 IP 段，请调整搜索条件');
+        } else {
+          message.success(`找到 ${filtered.length} 个可购买 IP 段`);
+        }
       }
 
       // 计算重复 AB 段数量
@@ -419,12 +604,6 @@ const PrePurchaseCheck: React.FC = () => {
         setItems(updated);
         return prev;
       });
-
-      if (filtered.length === 0) {
-        message.info('未找到符合条件的 IP 段，请调整搜索条件');
-      } else {
-        message.success(`找到 ${filtered.length} 个可购买 IP 段`);
-      }
     } catch (e: any) {
       message.error('搜索异常: ' + e.message);
     } finally {
@@ -899,17 +1078,29 @@ const PrePurchaseCheck: React.FC = () => {
       render: (_: any, r: MarketItem) => {
         const dup = r.dupCount || 0;
         const dupColor = dup === 0 ? 'green' : dup <= 7 ? 'blue' : dup <= 19 ? 'orange' : 'red';
+        const abTags = abTagMap.get(r.abSegKey || '');
         return (
-          <Space size={4}>
-            <Text style={{ fontFamily: 'monospace', fontSize: 13 }}>{r.abSegKey}</Text>
-            {dup > 0 ? (
-              <Tag color={dupColor} style={{ fontSize: 11, margin: 0 }}>
-                {dup}
-              </Tag>
-            ) : (
-              <Tag color="green" style={{ fontSize: 11, margin: 0 }}>
-                <CheckCircleOutlined />
-              </Tag>
+          <Space size={4} direction="vertical" style={{ gap: 2 }}>
+            <Space size={4}>
+              <Text style={{ fontFamily: 'monospace', fontSize: 13 }}>{r.abSegKey}</Text>
+              {dup > 0 ? (
+                <Tag color={dupColor} style={{ fontSize: 11, margin: 0 }}>
+                  {dup}
+                </Tag>
+              ) : (
+                <Tag color="green" style={{ fontSize: 11, margin: 0 }}>
+                  <CheckCircleOutlined />
+                </Tag>
+              )}
+            </Space>
+            {abTags && abTags.length > 0 && (
+              <Space size={2} wrap>
+                {abTags.map((t, i) => (
+                  <Tag key={i} color={t.available ? 'green' : 'red'} style={{ fontSize: 10, margin: 0, lineHeight: '16px' }}>
+                    {t.region}{t.available ? '可用' : '不可用'}
+                  </Tag>
+                ))}
+              </Space>
             )}
           </Space>
         );
@@ -1092,8 +1283,8 @@ const PrePurchaseCheck: React.FC = () => {
                         <Input
                           value={searchAddrValue}
                           onChange={e => setSearchAddrValue(e.target.value)}
-                          placeholder={searchAddrType === 'ab' ? '如 79.182' : '如 79'}
-                          style={{ width: 110 }}
+                          placeholder={searchAddrType === 'ab' ? '79.182, 206.206' : '79, 206'}
+                          style={{ width: 200 }}
                           allowClear
                         />
                       </Input.Group>
@@ -1133,8 +1324,29 @@ const PrePurchaseCheck: React.FC = () => {
                       <InputNumber value={limit} onChange={v => setLimit(v ?? 100)} min={1} max={5000} style={{ width: 90 }} />
                     </Col>
                     <Col>
-                      <Button type="primary" icon={<SearchOutlined />} loading={searching} onClick={handleSearch}>搜索</Button>
+                      <Space>
+                        <Button type="primary" icon={<SearchOutlined />} loading={searching} onClick={() => handleSearch()}>搜索</Button>
+                        {searchAddrValue.trim() && (
+                          <Tooltip title="清除市场数据缓存并重新获取最新数据">
+                            <Button
+                              icon={<ReloadOutlined />}
+                              loading={searching}
+                              onClick={() => handleSearch(true)}
+                            >刷新数据</Button>
+                          </Tooltip>
+                        )}
+                      </Space>
                     </Col>
+                    {marketCacheTs && searchAddrValue.trim() && (
+                      <Col>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          市场数据更新于 {(() => {
+                            const mins = Math.floor((Date.now() - marketCacheTs) / 60000);
+                            return mins < 1 ? '刚刚' : `${mins} 分钟前`;
+                          })()}
+                        </Text>
+                      </Col>
+                    )}
                   </Row>
                 </Card>
 
@@ -1683,6 +1895,269 @@ const PrePurchaseCheck: React.FC = () => {
                     </Form.Item>
                     <Form.Item label="公司名称（可选）">
                       <Input value={loaCompany} onChange={e => setLoaCompany(e.target.value)} placeholder="填写公司/组织名称（可留空）" />
+                    </Form.Item>
+                  </Form>
+                </Modal>
+              </div>
+            ),
+          },
+          {
+            key: 'ab-tags',
+            label: <Space><TagOutlined />AB段标记</Space>,
+            children: (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 }}>
+                  <Space size={8}>
+                    <Tooltip title="支持批量搜索：输入多个 AB 段（用逗号、空格或换行分隔）">
+                      <Input
+                        placeholder="搜索 AB 段 / 地区 / 备注（多个用逗号或空格分隔）"
+                        prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
+                        value={abTagSearch}
+                        onChange={e => setAbTagSearch(e.target.value)}
+                        style={{ width: 360 }}
+                        allowClear
+                      />
+                    </Tooltip>
+                    <Text type="secondary">共 {abTagRecords.length} 条{abTagSelectedKeys.length > 0 && `，已选 ${abTagSelectedKeys.length} 条`}</Text>
+                  </Space>
+                  <Space size={8}>
+                    {abTagSelectedKeys.length > 0 && (
+                      <>
+                        <Button icon={<CopyOutlined />} onClick={() => {
+                          const segs = abTagSelectedKeys.map(id => abTagRecords.find(r => r.id === id)?.abSegKey).filter(Boolean).join(', ');
+                          copyText(segs, `${abTagSelectedKeys.length} 个 AB 段`);
+                        }}>批量复制</Button>
+                        <Button icon={<SearchOutlined />} onClick={() => {
+                          const segs = abTagSelectedKeys.map(id => abTagRecords.find(r => r.id === id)?.abSegKey).filter(Boolean).join(', ');
+                          setSearchAddrType('ab');
+                          setSearchAddrValue(segs);
+                          setActiveTab('market');
+                        }}>去市场搜索</Button>
+                        <Button icon={<EditOutlined />} onClick={() => { batchTagForm.resetFields(); batchTagForm.setFieldsValue({ tags: [{ region: AB_PREDEFINED_REGIONS[0], available: true, note: '' }] }); setBatchTagModalVisible(true); }}>批量标记</Button>
+                        <Popconfirm title={`确认删除选中的 ${abTagSelectedKeys.length} 条标记？`} onConfirm={handleBatchDelete} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+                          <Button danger icon={<DeleteOutlined />}>批量删除</Button>
+                        </Popconfirm>
+                        <Divider type="vertical" style={{ height: 24 }} />
+                      </>
+                    )}
+                    <Button icon={<ReloadOutlined />} onClick={loadAbTags} loading={abTagLoading}>刷新</Button>
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => { setAbTagEditing(null); abTagForm.resetFields(); abTagForm.setFieldsValue({ abSegKeys: '', tags: [{ region: AB_PREDEFINED_REGIONS[0], available: true, note: '' }] }); setAbTagModalVisible(true); }}>添加AB段</Button>
+                  </Space>
+                </div>
+                <Table
+                  dataSource={abTagFiltered}
+                  rowKey="id"
+                  size="small"
+                  loading={abTagLoading}
+                  pagination={{ pageSize: 50, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
+                  rowSelection={{
+                    selectedRowKeys: abTagSelectedKeys,
+                    onChange: (keys) => setAbTagSelectedKeys(keys as string[]),
+                  }}
+                  columns={[
+                    {
+                      title: 'AB 段',
+                      dataIndex: 'abSegKey',
+                      key: 'abSegKey',
+                      width: 120,
+                      sorter: (a: AbTagRecord, b: AbTagRecord) => a.abSegKey.localeCompare(b.abSegKey),
+                      render: (v: string) => (
+                        <Tooltip title="点击复制">
+                          <Text
+                            style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}
+                            onClick={() => copyText(v, v)}
+                          >{v}</Text>
+                        </Tooltip>
+                      ),
+                    },
+                    {
+                      title: '区域标记',
+                      dataIndex: 'tags',
+                      key: 'tags',
+                      render: (tags: AbTagEntry[]) => (
+                        <Space size={4} wrap>
+                          {tags.map((t, i) => (
+                            <Tag key={i} color={t.available ? 'green' : 'red'}>
+                              {t.region}{t.available ? '可用' : '不可用'}
+                            </Tag>
+                          ))}
+                        </Space>
+                      ),
+                    },
+                    {
+                      title: '备注',
+                      key: 'notes',
+                      ellipsis: true,
+                      render: (_: any, r: AbTagRecord) => {
+                        const notes = r.tags.map(t => t.note).filter(Boolean).join('；');
+                        return notes ? <Text type="secondary" style={{ fontSize: 12 }}>{notes}</Text> : '-';
+                      },
+                    },
+                    {
+                      title: '更新时间',
+                      dataIndex: 'updatedAt',
+                      key: 'updatedAt',
+                      width: 160,
+                      sorter: (a: AbTagRecord, b: AbTagRecord) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime(),
+                      defaultSortOrder: 'descend' as const,
+                      render: (v: string) => v ? <Text style={{ fontSize: 12 }}>{new Date(v).toLocaleString('zh-CN')}</Text> : '-',
+                    },
+                    {
+                      title: '操作',
+                      key: 'actions',
+                      width: 120,
+                      render: (_: any, r: AbTagRecord) => (
+                        <Space size={4}>
+                          <Button
+                            type="link" size="small" icon={<EditOutlined />}
+                            onClick={() => {
+                              setAbTagEditing(r);
+                              abTagForm.setFieldsValue({ tags: r.tags.map(t => ({ region: t.region, available: t.available, note: t.note || '' })) });
+                              setAbTagModalVisible(true);
+                            }}
+                          >编辑</Button>
+                          <Popconfirm title="确认删除此标记？" onConfirm={() => handleAbTagDelete(r.id)} okText="删除" cancelText="取消">
+                            <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                          </Popconfirm>
+                        </Space>
+                      ),
+                    },
+                  ]}
+                />
+
+                {/* AB段 编辑/新增 Modal */}
+                <Modal
+                  title={abTagEditing ? '编辑 AB 段标记' : '添加 AB 段'}
+                  open={abTagModalVisible}
+                  onCancel={() => { setAbTagModalVisible(false); setAbTagEditing(null); }}
+                  footer={null}
+                  width={600}
+                  destroyOnClose
+                >
+                  <Form form={abTagForm} layout="vertical" onFinish={handleAbTagSave} initialValues={{ tags: [{ region: AB_PREDEFINED_REGIONS[0], available: true, note: '' }] }}>
+                    {abTagEditing ? (
+                      <Form.Item label="AB 段">
+                        <Input value={abTagEditing.abSegKey} disabled style={{ width: 200, fontFamily: 'monospace' }} />
+                      </Form.Item>
+                    ) : (
+                      <Form.Item
+                        name="abSegKeys" label="AB 段"
+                        rules={[{ required: true, message: '请输入至少一个 AB 段' }]}
+                        extra="支持批量添加：多个 AB 段用逗号、空格或换行分隔（如 103.45, 206.206）"
+                      >
+                        <Input.TextArea placeholder={"103.45\n206.206\n79.182"} rows={4} style={{ fontFamily: 'monospace' }} />
+                      </Form.Item>
+                    )}
+                    <Form.List name="tags">
+                      {(fields, { add, remove }) => (
+                        <>
+                          {fields.map(({ key, name, ...restField }) => (
+                            <Space key={key} align="baseline" style={{ display: 'flex', marginBottom: 8 }} wrap>
+                              <Form.Item {...restField} name={[name, 'region']} rules={[{ required: true, message: '选择地区' }]} style={{ marginBottom: 0 }}>
+                                <Select style={{ width: 140 }} placeholder="选择地区" showSearch allowClear={false}
+                                  options={allRegionOptions.map(r => ({ label: r, value: r }))}
+                                  dropdownRender={menu => (
+                                    <>
+                                      {menu}
+                                      <Divider style={{ margin: '4px 0' }} />
+                                      <Input
+                                        placeholder="自定义地区"
+                                        size="small"
+                                        style={{ padding: '4px 8px' }}
+                                        onPressEnter={(e: any) => {
+                                          const v = e.target.value.trim();
+                                          if (v && !allRegionOptions.includes(v)) {
+                                            setAbTagCustomRegions(prev => [...prev, v]);
+                                            const token = localStorage.getItem('token');
+                                            fetch('/api/ab-tags/custom-regions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ regions: [...abTagCustomRegions, v] }) });
+                                          }
+                                          const tags = abTagForm.getFieldValue('tags') || [];
+                                          tags[name] = { ...tags[name], region: v };
+                                          abTagForm.setFieldsValue({ tags });
+                                          e.target.value = '';
+                                        }}
+                                      />
+                                    </>
+                                  )}
+                                />
+                              </Form.Item>
+                              <Form.Item {...restField} name={[name, 'available']} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                                <Radio.Group>
+                                  <Radio value={true}><Tag color="green">可用</Tag></Radio>
+                                  <Radio value={false}><Tag color="red">不可用</Tag></Radio>
+                                </Radio.Group>
+                              </Form.Item>
+                              <Form.Item {...restField} name={[name, 'note']} style={{ marginBottom: 0 }}>
+                                <Input placeholder="备注（可选）" style={{ width: 160 }} />
+                              </Form.Item>
+                              {fields.length > 1 && (
+                                <MinusCircleOutlined onClick={() => remove(name)} style={{ color: '#ff4d4f' }} />
+                              )}
+                            </Space>
+                          ))}
+                          <Form.Item>
+                            <Button type="dashed" onClick={() => add({ region: AB_PREDEFINED_REGIONS[0], available: true, note: '' })} icon={<PlusOutlined />} block>
+                              添加地区标记
+                            </Button>
+                          </Form.Item>
+                        </>
+                      )}
+                    </Form.List>
+                    <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
+                      <Space>
+                        <Button onClick={() => { setAbTagModalVisible(false); setAbTagEditing(null); }}>取消</Button>
+                        <Button type="primary" htmlType="submit" loading={abTagSaving}>{abTagEditing ? '保存' : '添加'}</Button>
+                      </Space>
+                    </Form.Item>
+                  </Form>
+                </Modal>
+
+                {/* 批量标记 Modal */}
+                <Modal
+                  title={`批量标记（${abTagSelectedKeys.length} 条）`}
+                  open={batchTagModalVisible}
+                  onCancel={() => setBatchTagModalVisible(false)}
+                  footer={null}
+                  width={560}
+                  destroyOnClose
+                >
+                  <Alert type="info" showIcon message="将为选中的 AB 段追加/覆盖以下区域标记（同名地区会覆盖原有标记）" style={{ marginBottom: 16 }} />
+                  <Form form={batchTagForm} layout="vertical" onFinish={handleBatchTagSave} initialValues={{ tags: [{ region: AB_PREDEFINED_REGIONS[0], available: true, note: '' }] }}>
+                    <Form.List name="tags">
+                      {(fields, { add, remove }) => (
+                        <>
+                          {fields.map(({ key, name, ...restField }) => (
+                            <Space key={key} align="baseline" style={{ display: 'flex', marginBottom: 8 }} wrap>
+                              <Form.Item {...restField} name={[name, 'region']} rules={[{ required: true, message: '选择地区' }]} style={{ marginBottom: 0 }}>
+                                <Select style={{ width: 140 }} placeholder="选择地区" showSearch allowClear={false}
+                                  options={allRegionOptions.map(r => ({ label: r, value: r }))}
+                                />
+                              </Form.Item>
+                              <Form.Item {...restField} name={[name, 'available']} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                                <Radio.Group>
+                                  <Radio value={true}><Tag color="green">可用</Tag></Radio>
+                                  <Radio value={false}><Tag color="red">不可用</Tag></Radio>
+                                </Radio.Group>
+                              </Form.Item>
+                              <Form.Item {...restField} name={[name, 'note']} style={{ marginBottom: 0 }}>
+                                <Input placeholder="备注（可选）" style={{ width: 140 }} />
+                              </Form.Item>
+                              {fields.length > 1 && <MinusCircleOutlined onClick={() => remove(name)} style={{ color: '#ff4d4f' }} />}
+                            </Space>
+                          ))}
+                          <Form.Item>
+                            <Button type="dashed" onClick={() => add({ region: AB_PREDEFINED_REGIONS[0], available: true, note: '' })} icon={<PlusOutlined />} block>
+                              添加地区标记
+                            </Button>
+                          </Form.Item>
+                        </>
+                      )}
+                    </Form.List>
+                    <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
+                      <Space>
+                        <Button onClick={() => setBatchTagModalVisible(false)}>取消</Button>
+                        <Button type="primary" htmlType="submit" loading={batchTagSaving}>应用到 {abTagSelectedKeys.length} 条</Button>
+                      </Space>
                     </Form.Item>
                   </Form>
                 </Modal>

@@ -1,9 +1,16 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Table, Tag, Button, Space, Typography, Tooltip } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Table, Tag, Button, Space, Typography, Tooltip, Input } from 'antd';
+import { ReloadOutlined, SearchOutlined, DownOutlined, RightOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 const { Text } = Typography;
+const { TextArea } = Input;
+
+interface CidrDetail {
+  cidr: string;
+  status: 'success' | 'failed' | 'skipped';
+  message?: string;
+}
 
 interface TaskLogEntry {
   id: string;
@@ -16,6 +23,7 @@ interface TaskLogEntry {
   status: 'success' | 'partial' | 'error';
   errorMessage?: string;
   summary: { total: number; success: number; failed: number; skipped: number };
+  details?: CidrDetail[];
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -42,9 +50,24 @@ const STATUS_TAG: Record<string, { color: string; label: string }> = {
   error: { color: 'error', label: '失败' },
 };
 
+const DETAIL_STATUS_TAG: Record<string, { color: string; label: string }> = {
+  success: { color: 'success', label: '成功' },
+  failed: { color: 'error', label: '失败' },
+  skipped: { color: 'default', label: '跳过' },
+};
+
+function parseSearchTerms(raw: string): string[] {
+  return raw
+    .split(/[\n,\s]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
 const ZenTaskLog: React.FC = () => {
   const [logs, setLogs] = useState<TaskLogEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
@@ -57,6 +80,29 @@ const ZenTaskLog: React.FC = () => {
   }, []);
 
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
+
+  const filteredLogs = useMemo(() => {
+    const terms = parseSearchTerms(searchText);
+    if (!terms.length) return logs;
+    return logs.filter(log =>
+      terms.some(term => {
+        const t = term.toLowerCase();
+        if (log.cidrs.some(c => c.toLowerCase().includes(t))) return true;
+        if (log.details?.some(d => d.cidr.toLowerCase().includes(t))) return true;
+        if (log.username.toLowerCase().includes(t)) return true;
+        if ((ACTION_LABELS[log.action] || log.action).toLowerCase().includes(t)) return true;
+        return false;
+      })
+    );
+  }, [logs, searchText]);
+
+  const toggleExpand = (id: string) => {
+    setExpandedKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   const columns = [
     {
@@ -93,14 +139,25 @@ const ZenTaskLog: React.FC = () => {
       dataIndex: 'cidrs',
       key: 'cidrs',
       ellipsis: true,
-      render: (cidrs: string[]) => {
+      render: (cidrs: string[], r: TaskLogEntry) => {
         if (!cidrs?.length) return '-';
+        const hasDetails = r.details && r.details.length > 0;
         const display = cidrs.slice(0, 3).join(', ');
         const more = cidrs.length > 3 ? ` +${cidrs.length - 3}` : '';
         return (
-          <Tooltip title={cidrs.join('\n')} overlayStyle={{ whiteSpace: 'pre-wrap', maxWidth: 400 }}>
-            <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{display}{more}</Text>
-          </Tooltip>
+          <Space size={4}>
+            {hasDetails && (
+              <span
+                style={{ cursor: 'pointer', fontSize: 11, color: '#1677ff' }}
+                onClick={(e) => { e.stopPropagation(); toggleExpand(r.id); }}
+              >
+                {expandedKeys.has(r.id) ? <DownOutlined /> : <RightOutlined />}
+              </span>
+            )}
+            <Tooltip title={cidrs.join('\n')} overlayStyle={{ whiteSpace: 'pre-wrap', maxWidth: 400 }}>
+              <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{display}{more}</Text>
+            </Tooltip>
+          </Space>
         );
       },
     },
@@ -148,19 +205,77 @@ const ZenTaskLog: React.FC = () => {
     },
   ];
 
+  const expandedRowRender = (record: TaskLogEntry) => {
+    if (!record.details?.length) return null;
+    const detailColumns = [
+      {
+        title: 'IP 段',
+        dataIndex: 'cidr',
+        key: 'cidr',
+        width: 200,
+        render: (v: string) => <Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{v}</Text>,
+      },
+      {
+        title: '状态',
+        dataIndex: 'status',
+        key: 'status',
+        width: 80,
+        render: (v: string) => {
+          const st = DETAIL_STATUS_TAG[v] || { color: 'default', label: v };
+          return <Tag color={st.color}>{st.label}</Tag>;
+        },
+      },
+      {
+        title: '说明',
+        dataIndex: 'message',
+        key: 'message',
+        ellipsis: true,
+        render: (v: string) => v ? <Text type="secondary" style={{ fontSize: 12 }}>{v}</Text> : '-',
+      },
+    ];
+    return (
+      <Table
+        dataSource={record.details}
+        columns={detailColumns}
+        rowKey={(_, i) => String(i)}
+        size="small"
+        pagination={false}
+        style={{ margin: '-8px 0' }}
+      />
+    );
+  };
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <Text type="secondary">记录所有 ZEN 宣告和取消宣告任务的执行结果</Text>
-        <Button icon={<ReloadOutlined />} onClick={fetchLogs} loading={loading}>刷新</Button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 }}>
+        <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>记录所有 ZEN 宣告和取消宣告任务的执行结果</Text>
+        <Space size={8} style={{ flexShrink: 0 }}>
+          <Tooltip title="支持批量搜索：输入多个 IP 段（用逗号、空格或换行分隔），可搜索 IP 段、操作者、类型">
+            <Input
+              placeholder="搜索 IP 段 / 操作者 / 类型（多个用逗号分隔）"
+              prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
+              value={searchText}
+              onChange={e => setSearchText(e.target.value)}
+              style={{ width: 360 }}
+              allowClear
+            />
+          </Tooltip>
+          <Button icon={<ReloadOutlined />} onClick={fetchLogs} loading={loading}>刷新</Button>
+        </Space>
       </div>
       <Table
-        dataSource={logs}
+        dataSource={filteredLogs}
         columns={columns}
         rowKey="id"
         size="small"
         loading={loading}
         pagination={{ pageSize: 50, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
+        expandable={{
+          expandedRowRender,
+          expandedRowKeys: Array.from(expandedKeys),
+          onExpand: (expanded, record) => toggleExpand(record.id),
+          rowExpandable: (record) => !!(record.details && record.details.length > 0),
+        }}
       />
     </div>
   );

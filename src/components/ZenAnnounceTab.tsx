@@ -9,7 +9,7 @@ import {
   CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined,
   CopyOutlined, SyncOutlined, ImportOutlined, SettingOutlined,
 } from '@ant-design/icons';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth, getAuthHeaders } from '../contexts/AuthContext';
 
 const { Text } = Typography;
 const { Option } = Select;
@@ -219,7 +219,7 @@ const ZenAnnounceTab: React.FC<Props> = ({ onRegionsLoaded }) => {
     try {
       const resp = await fetch('/api/zen/pipeline', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           jobs: validRows.map(r => ({
             cidrBlock: r.cidrBlock.trim(),

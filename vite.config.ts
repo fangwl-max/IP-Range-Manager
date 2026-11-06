@@ -438,6 +438,31 @@ const sshServersPath = path.resolve(__dirname, 'ssh-servers.json');
 /** 远程数据同步服务器配置文件（与 traceroute 节点相互独立） */
 const syncServersPath = path.resolve(__dirname, 'sync-servers.json');
 
+// ===================== AB 段标记数据 =====================
+const abTagsFilePath = path.resolve(__dirname, 'ab-tags.json');
+
+interface AbTagEntry { region: string; available: boolean; note?: string }
+interface AbTagRecord { id: string; abSegKey: string; tags: AbTagEntry[]; createdAt: string; updatedAt: string }
+interface AbTagsData { records: AbTagRecord[]; customRegions: string[]; updatedAt: string }
+
+function loadAbTags(): AbTagsData {
+  try {
+    if (fs.existsSync(abTagsFilePath)) {
+      const raw = fs.readFileSync(abTagsFilePath, 'utf-8').trim();
+      if (raw) {
+        const data = JSON.parse(raw);
+        return { records: data.records || [], customRegions: data.customRegions || [], updatedAt: data.updatedAt || '' };
+      }
+    }
+  } catch (e) { console.error('[AB-Tags] Load error:', e); }
+  return { records: [], customRegions: [], updatedAt: '' };
+}
+
+function saveAbTags(data: AbTagsData): void {
+  data.updatedAt = new Date().toISOString();
+  fs.writeFileSync(abTagsFilePath, JSON.stringify(data, null, 2), 'utf-8');
+}
+
 // ===================== Larus 配置存储 =====================
 const larusConfigPath = path.resolve(__dirname, 'larus-config.json');
 const larusDataPath = path.resolve(__dirname, 'larus-data.json');
@@ -3697,8 +3722,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     };
     const proxyReq = http.request(options, (proxyRes: any) => {
       const isHtml = (proxyRes.headers['content-type'] || '').includes('text/html');
-      res.statusCode = proxyRes.statusCode;
-      if (cdsTaskMeta) {
+      const isNdjson = (proxyRes.headers['content-type'] || '').includes('ndjson');
+      const capturedCdsMeta = cdsTaskMeta;
+      if (cdsTaskMeta && !isNdjson) {
         const httpOk = proxyRes.statusCode < 400;
         appendCdsTaskLog({
           id: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -3717,8 +3743,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
             skipped: 0,
           },
         });
-        cdsTaskMeta = null;
       }
+      cdsTaskMeta = null;
+      res.statusCode = proxyRes.statusCode;
       Object.entries(proxyRes.headers as Record<string, any>).forEach(([k, v]) => {
         if (k.toLowerCase() === 'transfer-encoding') return;
         if (k.toLowerCase() === 'content-length' && isHtml) return;
@@ -3859,6 +3886,51 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 </script>`;
           html = html.replace(/<\/body>/i, larusScript + '</body>');
           res.end(html);
+        });
+      } else if (isNdjson && capturedCdsMeta) {
+        const cdsDetails: CdsCidrDetail[] = [];
+        let lineBuf = '';
+        proxyRes.on('data', (chunk: Buffer) => {
+          res.write(chunk);
+          lineBuf += chunk.toString('utf-8');
+          const lines = lineBuf.split('\n');
+          lineBuf = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const ev = JSON.parse(line);
+              if (ev.type === 'cidr_result' && ev.cidr) {
+                cdsDetails.push({ cidr: ev.cidr, ok: Boolean(ev.ok), error: ev.error || undefined });
+              }
+            } catch {}
+          }
+        });
+        proxyRes.on('end', () => {
+          if (lineBuf.trim()) {
+            try {
+              const ev = JSON.parse(lineBuf);
+              if (ev.type === 'cidr_result' && ev.cidr) {
+                cdsDetails.push({ cidr: ev.cidr, ok: Boolean(ev.ok), error: ev.error || undefined });
+              }
+            } catch {}
+          }
+          const succCount = cdsDetails.filter(d => d.ok).length;
+          const failCount = cdsDetails.filter(d => !d.ok).length;
+          const st: 'success' | 'partial' | 'error' = failCount === 0 ? 'success' : succCount === 0 ? 'error' : 'partial';
+          appendCdsTaskLog({
+            id: `ct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            startedAt: capturedCdsMeta.startedAt,
+            completedAt: new Date().toISOString(),
+            action: capturedCdsMeta.action,
+            username: capturedCdsMeta.username,
+            cidrs: capturedCdsMeta.cidrs,
+            status: st,
+            httpStatus: proxyRes.statusCode,
+            errorMessage: st === 'error' ? cdsDetails.find(d => d.error)?.error : undefined,
+            summary: { total: capturedCdsMeta.cidrs.length, success: succCount, failed: failCount, skipped: 0 },
+            details: cdsDetails.length > 0 ? cdsDetails : undefined,
+          });
+          res.end();
         });
       } else {
         proxyRes.pipe(res, { end: true });
@@ -4164,6 +4236,12 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
 
     // 初始化默认用户（首次启动）
     initDefaultUserIfNeeded();
+
+    server.middlewares.use('/api/health', (_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, ts: Date.now() }));
+    });
 
     // 认证 API - 登录
     server.middlewares.use('/api/auth/login', (req, res, next) => {
@@ -5364,6 +5442,94 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
         if (!deleteId) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 id 参数' })); return; }
         const servers = loadSyncServers();
         saveSyncServers(servers.filter(s => s.id !== deleteId));
+        res.end(JSON.stringify({ success: true }));
+        return;
+      }
+
+      res.statusCode = 405;
+      res.end();
+    });
+
+    // ─── AB 段标记 CRUD ─────────────────────────────────────────────────
+    server.middlewares.use('/api/ab-tags', (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+
+      const reqUrl = new URL(req.url || '/', 'http://localhost');
+      const subPath = (req.url || '').split('?')[0].replace(/^\/+/, '');
+
+      // POST /api/ab-tags/custom-regions
+      if (subPath === 'custom-regions' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (c: Buffer) => { body += c.toString(); });
+        req.on('end', () => {
+          try {
+            const { regions } = JSON.parse(body);
+            if (!Array.isArray(regions)) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'regions 必须是数组' })); return; }
+            const data = loadAbTags();
+            data.customRegions = regions.map((r: any) => String(r).trim()).filter(Boolean);
+            saveAbTags(data);
+            res.end(JSON.stringify({ success: true }));
+          } catch { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '请求体解析失败' })); }
+        });
+        return;
+      }
+
+      const abSegRegex = /^(\d{1,3})\.(\d{1,3})$/;
+      function isValidAbSeg(v: string): boolean {
+        const m = abSegRegex.exec(v);
+        if (!m) return false;
+        return Number(m[1]) <= 255 && Number(m[2]) <= 255;
+      }
+
+      // GET /api/ab-tags
+      if (req.method === 'GET') {
+        const data = loadAbTags();
+        res.end(JSON.stringify({ success: true, data }));
+        return;
+      }
+
+      // POST /api/ab-tags — 创建或更新
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (c: Buffer) => { body += c.toString(); });
+        req.on('end', () => {
+          try {
+            const { id, abSegKey, tags } = JSON.parse(body);
+            if (!abSegKey || !isValidAbSeg(abSegKey)) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'AB 段格式无效，应为 A.B（0-255.0-255）' })); return; }
+            if (!Array.isArray(tags) || tags.length === 0) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '至少需要一个标记' })); return; }
+            const data = loadAbTags();
+            const now = new Date().toISOString();
+            if (id) {
+              const idx = data.records.findIndex(r => r.id === id);
+              if (idx === -1) { res.statusCode = 404; res.end(JSON.stringify({ success: false, message: '记录不存在' })); return; }
+              data.records[idx].abSegKey = abSegKey;
+              data.records[idx].tags = tags;
+              data.records[idx].updatedAt = now;
+            } else {
+              const existing = data.records.find(r => r.abSegKey === abSegKey);
+              if (existing) { res.statusCode = 409; res.end(JSON.stringify({ success: false, message: `AB 段 ${abSegKey} 已存在，请编辑而非新建` })); return; }
+              data.records.push({ id: `abt_${Date.now()}`, abSegKey, tags, createdAt: now, updatedAt: now });
+            }
+            saveAbTags(data);
+            res.end(JSON.stringify({ success: true }));
+          } catch { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '请求体解析失败' })); }
+        });
+        return;
+      }
+
+      // DELETE /api/ab-tags?id=xxx
+      if (req.method === 'DELETE') {
+        const deleteId = reqUrl.searchParams.get('id') || '';
+        if (!deleteId) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 id 参数' })); return; }
+        const data = loadAbTags();
+        const before = data.records.length;
+        data.records = data.records.filter(r => r.id !== deleteId);
+        if (data.records.length === before) { res.statusCode = 404; res.end(JSON.stringify({ success: false, message: '记录不存在' })); return; }
+        saveAbTags(data);
         res.end(JSON.stringify({ success: true }));
         return;
       }
@@ -7242,6 +7408,157 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     });
 
     // ─── 购前检测：搜索 IPXO 市场可购买 IP 段 ─────────────────────────────
+    // ─── 购前检测：A/AB 段聚合搜索（后端遍历分页+缓存） ──────────────────
+    // POST { addrType: 'a'|'ab', values: string[], prefixLength, registry?, countryCode?, priceMin?, priceMax?, sortBy? }
+    const marketSegCacheMap = new Map<string, { ts: number; items: any[] }>();
+    const MARKET_SEG_CACHE_TTL = 30 * 60 * 1000; // 30 分钟
+
+    async function fetchIpxoMarketAll(prefixLen: number, reg?: string, cc?: string): Promise<any[]> {
+      const cacheKey = `allpw|${prefixLen}|${reg || ''}|${cc || ''}`;
+      const cached = marketSegCacheMap.get(cacheKey);
+      if (cached && Date.now() - cached.ts < MARKET_SEG_CACHE_TTL) {
+        return cached.items;
+      }
+      const LIMIT = 1000;
+      const CONCURRENCY = 10;
+
+      async function fetchRange(pMin: number, pMax: number): Promise<any[]> {
+        const params = new URLSearchParams();
+        params.set('prefix_length', String(prefixLen));
+        params.set('limit', String(LIMIT));
+        if (reg) params.set('registrar', reg);
+        if (cc) params.set('geo_country_code', cc);
+        params.set('price_min', String(pMin));
+        params.set('price_max', String(pMax));
+        const r = await callIpxoApi(`/billing/v1/{tenant_uuid}/market/search?${params.toString()}`);
+        if (r.status !== 200) return [];
+        return r.body?.data || r.body?.items || [];
+      }
+
+      async function fetchBatch(ranges: [number, number][]): Promise<{ items: any[]; overflow: [number, number][] }> {
+        const items: any[] = [];
+        const overflow: [number, number][] = [];
+        for (let i = 0; i < ranges.length; i += CONCURRENCY) {
+          const batch = ranges.slice(i, i + CONCURRENCY);
+          const results = await Promise.allSettled(batch.map(([min, max]) => fetchRange(min, max)));
+          results.forEach((r, idx) => {
+            if (r.status === 'fulfilled') {
+              items.push(...r.value);
+              if (r.value.length >= LIMIT) overflow.push(batch[idx]);
+            }
+          });
+        }
+        return { items, overflow };
+      }
+
+      const ranges: [number, number][] = [];
+      for (let p = 0; p < 300; p += 10) ranges.push([p, p + 10]);
+      ranges.push([300, 10000]);
+
+      const { items: firstItems, overflow: ov1 } = await fetchBatch(ranges);
+      let allItems = [...firstItems];
+
+      if (ov1.length > 0) {
+        const splitRanges = ov1.flatMap(([min, max]): [number, number][] => {
+          const step = Math.max(1, Math.floor((max - min) / 3));
+          const r: [number, number][] = [];
+          for (let p = min; p < max; p += step) r.push([p, Math.min(p + step, max)]);
+          return r;
+        });
+        const { items: splitItems } = await fetchBatch(splitRanges);
+        allItems.push(...splitItems);
+      }
+
+      const seen = new Set<string>();
+      allItems = allItems.filter(item => {
+        const notation = item.notation || `${item.address_string}/${item.prefix_length || prefixLen}`;
+        if (seen.has(notation)) return false;
+        seen.add(notation);
+        return true;
+      });
+
+      console.log(`[SegSearch] 市场全量数据 items=${allItems.length}`);
+      marketSegCacheMap.set(cacheKey, { ts: Date.now(), items: allItems });
+      for (const [k, v] of marketSegCacheMap) {
+        if (Date.now() - v.ts >= MARKET_SEG_CACHE_TTL) marketSegCacheMap.delete(k);
+      }
+      return allItems;
+    }
+
+    server.middlewares.use('/api/ipxo/market/search-segments', async (req: any, res: any, _next: any) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+      if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false })); return; }
+      try {
+        const config = loadIpxoConfig();
+        if (!config) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: 'IPXO 配置未设置' })); return; }
+        const body = await readBody(req);
+        const { addrType = 'ab', values = [], prefixLength = 24, registry, countryCode, priceMin, priceMax, sortBy = 'price', forceRefresh = false } = body;
+        if (!Array.isArray(values) || values.length === 0) {
+          res.end(JSON.stringify({ success: false, message: '请提供搜索值' }));
+          return;
+        }
+
+        if (forceRefresh) {
+          for (const k of marketSegCacheMap.keys()) marketSegCacheMap.delete(k);
+          console.log('[SegSearch] 手动刷新：已清除全部缓存');
+        }
+
+        let allRawItems: any[];
+        const errors: string[] = [];
+        try {
+          allRawItems = [...await fetchIpxoMarketAll(prefixLength, registry?.toLowerCase(), countryCode?.toUpperCase())];
+        } catch (e: any) {
+          allRawItems = [];
+          errors.push(e.message || '获取市场数据失败');
+        }
+
+        const cacheKey = `allpw|${prefixLength}|${(registry || '').toLowerCase()}|${(countryCode || '').toUpperCase()}`;
+        const cacheEntry = marketSegCacheMap.get(cacheKey);
+        const cacheTs = cacheEntry?.ts || Date.now();
+
+        // 去重
+        const seen = new Set<string>();
+        allRawItems = allRawItems.filter(item => {
+          const notation = item.notation || `${item.address_string}/${item.prefix_length || prefixLength}`;
+          if (seen.has(notation)) return false;
+          seen.add(notation);
+          return true;
+        });
+
+        // 客户端过滤：精确匹配 A/AB 段
+        const addrSet = new Set(values.map((v: string) => v.trim()));
+        let filtered = allRawItems.filter(item => {
+          const addr = item.address_string || item.notation?.split('/')[0] || '';
+          const parts = addr.split('.');
+          if (addrType === 'a') return addrSet.has(parts[0]);
+          return addrSet.has(`${parts[0]}.${parts[1]}`);
+        });
+
+        // 价格过滤
+        if (priceMin) filtered = filtered.filter(item => (item.pricing?.price || 0) >= priceMin);
+        if (priceMax) filtered = filtered.filter(item => (item.pricing?.price || 0) <= priceMax);
+
+        // 排序
+        if (sortBy === 'price') filtered.sort((a, b) => (a.pricing?.price || 0) - (b.pricing?.price || 0));
+        else if (sortBy === '-price') filtered.sort((a, b) => (b.pricing?.price || 0) - (a.pricing?.price || 0));
+
+        res.end(JSON.stringify({
+          success: true,
+          data: { data: filtered, total: filtered.length },
+          totalBeforeFilter: allRawItems.length,
+          cacheTs,
+          errors: errors.length > 0 ? errors : undefined,
+        }));
+      } catch (e: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, message: e.message }));
+      }
+    });
+
     server.middlewares.use('/api/ipxo/market/search', async (req: any, res: any, _next: any) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -9292,6 +9609,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   // ─── ZEN 任务日志 ──────────────────────────────────────────────────────
   const zenTaskLogPath = path.resolve(__dirname, 'zen-task-log.json');
 
+  interface ZenCidrDetail { cidr: string; status: 'success' | 'failed' | 'skipped'; message?: string }
+
   interface ZenTaskLogEntry {
     id: string;
     startedAt: string;
@@ -9303,6 +9622,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     status: 'success' | 'partial' | 'error';
     errorMessage?: string;
     summary: { total: number; success: number; failed: number; skipped: number };
+    details?: ZenCidrDetail[];
   }
 
   function appendZenTaskLog(entry: ZenTaskLogEntry): void {
@@ -9318,17 +9638,31 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     } catch { return []; }
   }
 
-  function trackZenEvent(ev: any, s: { success: number; failed: number; skipped: number; errorMsg: string }): void {
+  function trackZenEvent(ev: any, s: { success: number; failed: number; skipped: number; errorMsg: string; details: ZenCidrDetail[] }): void {
     const t = ev.type;
-    if (t === 'job_done') s.success++;
-    else if (t === 'segment_done') { if (ev.deleted === false) s.failed++; else s.success++; }
-    else if (t === 'id_done') { if (ev.deleted === false && ev.message) s.failed++; else s.success++; }
-    else if (t === 'delete_done') { s.success += ev.deleted || 0; s.failed += ev.failed || 0; s.skipped += ev.skippedBound || 0; }
-    else if (t === 'segment_skipped') s.skipped++;
-    else if (t === 'error') { if (!s.errorMsg) s.errorMsg = ev.message || 'Unknown'; s.failed++; }
+    const cidr: string = ev.cidr || ev.cidrBlock || '';
+    if (t === 'job_done') { s.success++; if (cidr) s.details.push({ cidr, status: 'success' }); }
+    else if (t === 'segment_done') {
+      if (ev.deleted === false) { s.failed++; if (cidr) s.details.push({ cidr, status: 'failed', message: ev.message }); }
+      else { s.success++; if (cidr) s.details.push({ cidr, status: 'success' }); }
+    }
+    else if (t === 'id_done') {
+      if (ev.deleted === false && ev.message) { s.failed++; if (cidr) s.details.push({ cidr, status: 'failed', message: ev.message }); }
+      else { s.success++; if (cidr) s.details.push({ cidr, status: 'success' }); }
+    }
+    else if (t === 'delete_done') {
+      s.success += ev.deleted || 0; s.failed += ev.failed || 0; s.skipped += ev.skippedBound || 0;
+      if (cidr) {
+        if ((ev.failed || 0) > 0) s.details.push({ cidr, status: 'failed', message: `删除 ${ev.deleted || 0}, 失败 ${ev.failed}` });
+        else if ((ev.deleted || 0) > 0) s.details.push({ cidr, status: 'success', message: `删除 ${ev.deleted}` });
+        else s.details.push({ cidr, status: 'skipped', message: `跳过 ${ev.skippedBound || 0}` });
+      }
+    }
+    else if (t === 'segment_skipped') { s.skipped++; if (cidr) s.details.push({ cidr, status: 'skipped', message: ev.message }); }
+    else if (t === 'error') { if (!s.errorMsg) s.errorMsg = ev.message || 'Unknown'; s.failed++; if (cidr) s.details.push({ cidr, status: 'failed', message: ev.message }); }
   }
 
-  function buildTaskLogEntry(startedAt: string, action: string, username: string, dryRun: boolean, cidrs: string[], s: { success: number; failed: number; skipped: number; errorMsg: string }): ZenTaskLogEntry {
+  function buildTaskLogEntry(startedAt: string, action: string, username: string, dryRun: boolean, cidrs: string[], s: { success: number; failed: number; skipped: number; errorMsg: string; details: ZenCidrDetail[] }): ZenTaskLogEntry {
     return {
       id: `zt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       startedAt,
@@ -9337,6 +9671,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       status: s.errorMsg && s.success === 0 ? 'error' : s.failed > 0 ? 'partial' : 'success',
       errorMessage: s.errorMsg || undefined,
       summary: { total: cidrs.length, success: s.success, failed: s.failed, skipped: s.skipped },
+      details: s.details.length > 0 ? s.details : undefined,
     };
   }
 
@@ -9359,6 +9694,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   // ─── CDS 任务日志 ──────────────────────────────────────────────────────
   const cdsTaskLogPath = path.resolve(__dirname, 'cds-task-log.json');
 
+  interface CdsCidrDetail { cidr: string; ok: boolean; error?: string }
+
   interface CdsTaskLogEntry {
     id: string;
     startedAt: string;
@@ -9366,10 +9703,11 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
     action: string;
     username: string;
     cidrs: string[];
-    status: 'success' | 'error';
+    status: 'success' | 'partial' | 'error';
     httpStatus: number;
     errorMessage?: string;
     summary: { total: number; success: number; failed: number; skipped: number };
+    details?: CdsCidrDetail[];
   }
 
   function appendCdsTaskLog(entry: CdsTaskLogEntry): void {
@@ -9572,20 +9910,20 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   server.middlewares.use('/api/zen/pipeline', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
     try {
       const body = await readBody(req);
       const zenPipeSession = getTokenSession(req);
-      const zenTasks = Array.isArray(body?.tasks) ? body.tasks : [];
+      const zenTasks = Array.isArray(body?.tasks) ? body.tasks : Array.isArray(body?.jobs) ? body.jobs : [];
       const zenCidrs = zenTasks.map((t: any) => t.cidrBlock || t.cidr || '').filter(Boolean);
       if (zenPipeSession) {
         logAudit(req, zenPipeSession.userId, zenPipeSession.username, zenPipeSession.role, 'announce.zen', zenCidrs.slice(0, 10).join(',') || 'pipeline', { taskCount: zenTasks.length, cidrs: zenCidrs.slice(0, 50) });
       }
       const { ak, sk } = getZenCreds();
       const { runPipeline } = await import('./src/lib/zen/pipeline.js' as any);
-      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '', details: [] as ZenCidrDetail[] } };
       await streamNdjson(res, runPipeline(body, ak, sk), ev => trackZenEvent(ev, _tl.s));
       appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'zec_announce', zenPipeSession?.username || '?', Boolean(body?.dryRun), zenCidrs, _tl.s));
     } catch (e: any) {
@@ -9626,7 +9964,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       const eipDelSess = getTokenSession(req);
       if (eipDelSess) logAudit(req, eipDelSess.userId, eipDelSess.username, eipDelSess.role, 'withdraw.zen_eip_delete', normalized.tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: normalized.tasks.length, dryRun: Boolean(body?.dryRun) });
       const { runEipDelete } = await import('./src/lib/zen/eip-delete.js' as any);
-      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '', details: [] as ZenCidrDetail[] } };
       await streamNdjson(res, runEipDelete(normalized, ak, sk), ev => trackZenEvent(ev, _tl.s));
       appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'eip_delete', eipDelSess?.username || '?', Boolean(body?.dryRun), normalized.tasks.map((t: any) => t.cidrBlock), _tl.s));
     } catch (e: any) {
@@ -9639,7 +9977,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
   server.middlewares.use('/api/zen/byoip-announce', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false })); return; }
     try {
@@ -9658,7 +9996,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (byoipAnnSession) logAudit(req, byoipAnnSession.userId, byoipAnnSession.username, byoipAnnSession.role, 'announce.zen_byoip', jobs.map((j: any) => j.cidrBlock).join(','), { jobCount: jobs.length, dryRun: Boolean(body?.dryRun) });
       const { ak, sk } = getZenCreds();
       const { runByoipAnnounce } = await import('./src/lib/zen/byoip-announce.js' as any);
-      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '', details: [] as ZenCidrDetail[] } };
       await streamNdjson(res, runByoipAnnounce({ jobs, dryRun: Boolean(body?.dryRun) }, ak, sk), ev => trackZenEvent(ev, _tl.s));
       appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'vob_announce', byoipAnnSession?.username || '?', Boolean(body?.dryRun), jobs.map((j: any) => j.cidrBlock), _tl.s));
     } catch (e: any) {
@@ -9701,7 +10039,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (byoipWdSession) logAudit(req, byoipWdSession.userId, byoipWdSession.username, byoipWdSession.role, 'withdraw.zen_byoip', tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: tasks.length, dryRun: Boolean(body?.dryRun) });
       const scanRegionIds = (body?.scanRegionIds || []).map((x: any) => String(x).trim()).filter(Boolean);
       const { runByoipWithdraw } = await import('./src/lib/zen/byoip-withdraw.js' as any);
-      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '', details: [] as ZenCidrDetail[] } };
       await streamNdjson(res, runByoipWithdraw({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk), ev => trackZenEvent(ev, _tl.s));
       appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'byoip_withdraw', byoipWdSession?.username || '?', Boolean(body?.dryRun), tasks.map((t: any) => t.cidrBlock), _tl.s));
     } catch (e: any) {
@@ -9743,7 +10081,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       if (zecDelSess) logAudit(req, zecDelSess.userId, zecDelSess.username, zecDelSess.role, 'withdraw.zen_zec_cidr', tasks.map((t: any) => t.cidrBlock).join(','), { taskCount: tasks.length, dryRun: Boolean(body?.dryRun) });
       const scanRegionIds = (body?.scanRegionIds || []).map((x: any) => String(x).trim()).filter(Boolean);
       const { runZecCidrDelete } = await import('./src/lib/zen/zec-cidr-delete.js' as any);
-      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '', details: [] as ZenCidrDetail[] } };
       await streamNdjson(res, runZecCidrDelete({ tasks, scanRegionIds, dryRun: Boolean(body?.dryRun) }, ak, sk), ev => trackZenEvent(ev, _tl.s));
       appendZenTaskLog(buildTaskLogEntry(_tl.startedAt, 'zec_cidr_delete', zecDelSess?.username || '?', Boolean(body?.dryRun), tasks.map((t: any) => t.cidrBlock), _tl.s));
     } catch (e: any) {
@@ -9783,7 +10121,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }) {
       res.setHeader('Transfer-Encoding', 'chunked');
       res.statusCode = 200;
       const write = (ev: any) => res.write(JSON.stringify(ev) + '\n');
-      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '' } };
+      const _tl = { startedAt: new Date().toISOString(), s: { success: 0, failed: 0, skipped: 0, errorMsg: '', details: [] as ZenCidrDetail[] } };
       for (let i = 0; i < ids.length; i++) {
         const cidrBlockId = ids[i];
         write({ type: 'log', level: 'info', message: `[${i + 1}/${ids.length}] cidrBlockId=${cidrBlockId}${dryRun ? ' [演练]' : ''}` });
@@ -10826,10 +11164,9 @@ export default defineConfig({
     watch: null,
   },
   preview: {
-    port: Number(process.env.VITE_PORT) || 9010,
+    port: Number(process.env.VITE_PORT) || 8081,
     host: '0.0.0.0',
     strictPort: true,
-    /** 无图形界面的 Linux 服务器上若尝试 open 浏览器会报错 spawn xdg-open ENOENT */
     open: false,
   },
 })
