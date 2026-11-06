@@ -11168,6 +11168,7 @@ export default defineConfig({
     host: '0.0.0.0',
     strictPort: true,
     open: false,
+    allowedHosts: ['localhost', '127.0.0.1', 'ip-rm.dulvora.xyz'],
   },
 })
 
