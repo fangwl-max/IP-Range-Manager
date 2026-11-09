@@ -16,7 +16,11 @@ export const ipSegmentStorage = {
     return data ? JSON.parse(data) : [];
   },
   save: (segments: IPSegment[]): void => {
-    localStorage.setItem(STORAGE_KEYS.IP_SEGMENTS, JSON.stringify(segments));
+    try {
+      localStorage.setItem(STORAGE_KEYS.IP_SEGMENTS, JSON.stringify(segments));
+    } catch {
+      // 数据已在服务端持久化，localStorage 仅作缓存；超出配额时静默跳过
+    }
   },
   add: (segment: IPSegment): void => {
     const segments = ipSegmentStorage.getAll();
