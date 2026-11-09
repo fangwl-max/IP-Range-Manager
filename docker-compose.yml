@@ -2,7 +2,10 @@ version: "3.8"
 
 services:
   ip-range-manager:
-    build: .
+    build:
+      context: .
+      args:
+        VITE_GOOGLE_CLIENT_ID: "1000065300611-667qkdmoqons4mqpb9lnqlsi89tj29u9.apps.googleusercontent.com"
     image: ip-range-manager:latest
     container_name: ip-range-manager
     restart: unless-stopped

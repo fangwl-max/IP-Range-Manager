@@ -21,6 +21,8 @@ RUN python3 -m venv ./CDS-Auto-Announce/.venv \
 COPY . .
 
 # ── 构建前端静态资源 ──────────────────────────────────────────────────────
+ARG VITE_GOOGLE_CLIENT_ID
+ENV VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}
 RUN npm run build
 
 # ── 对外暴露端口 ──────────────────────────────────────────────────────────
