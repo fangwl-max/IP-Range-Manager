@@ -22,8 +22,7 @@ COPY . .
 
 # ── 构建前端静态资源 ──────────────────────────────────────────────────────
 ARG VITE_GOOGLE_CLIENT_ID
-ENV VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}
-RUN npm run build
+RUN echo "VITE_GOOGLE_CLIENT_ID=${VITE_GOOGLE_CLIENT_ID}" > .env && npm run build
 
 # ── 对外暴露端口 ──────────────────────────────────────────────────────────
 EXPOSE 8081
