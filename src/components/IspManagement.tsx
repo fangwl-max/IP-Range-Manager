@@ -54,6 +54,11 @@ const IspManagement: React.FC = () => {
   const [editingUserValue, setEditingUserValue] = useState('');
   const userSavingRef = useRef(false);
 
+  // 主机IP内联编辑
+  const [editingHostIpId, setEditingHostIpId] = useState<string | null>(null);
+  const [editingHostIpValue, setEditingHostIpValue] = useState('');
+  const hostIpSavingRef = useRef(false);
+
   // 手动添加 Modal
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addSearch, setAddSearch] = useState('');
@@ -166,6 +171,7 @@ const IspManagement: React.FC = () => {
         String(seg.usageMethod || ''),
         String(seg.remark || ''),
         String(seg.ispUser || ''),
+        String(seg.ispHostIp || ''),
       ].map(f => f.toLowerCase());
       return keywords.some(kw => fields.some(f => f.includes(kw)));
     });
@@ -279,6 +285,26 @@ const IspManagement: React.FC = () => {
     setTimeout(() => { userSavingRef.current = false; }, 0);
   }, [editingUserId, editingUserValue, ipSegments, updateSegmentsApi]);
 
+  // ── 主机IP内联编辑 ──
+
+  const startHostIpEdit = (record: IPSegment) => {
+    setEditingHostIpId(record.id);
+    setEditingHostIpValue(record.ispHostIp || '');
+  };
+
+  const saveHostIpInline = useCallback(() => {
+    if (hostIpSavingRef.current || !editingHostIpId) return;
+    hostIpSavingRef.current = true;
+    const seg = ipSegments.find(s => s.id === editingHostIpId);
+    const oldVal = seg?.ispHostIp || '';
+    if (editingHostIpValue !== oldVal) {
+      setIpSegments(prev => prev.map(s => s.id === editingHostIpId ? { ...s, ispHostIp: editingHostIpValue } : s));
+      updateSegmentsApi([{ id: editingHostIpId, data: { ispHostIp: editingHostIpValue } }]);
+    }
+    setEditingHostIpId(null);
+    setTimeout(() => { hostIpSavingRef.current = false; }, 0);
+  }, [editingHostIpId, editingHostIpValue, ipSegments, updateSegmentsApi]);
+
   const handleStarToggle = (record: IPSegment) => {
     const newVal = !record.ispStarred;
     setIpSegments(prev => prev.map(s => s.id === record.id ? { ...s, ispStarred: newVal } : s));
@@ -350,6 +376,9 @@ const IspManagement: React.FC = () => {
 
       const userVal = (values.ispUser || '').trim();
       if (userVal) updateData.ispUser = userVal;
+
+      const hostIpVal = (values.ispHostIp || '').trim();
+      if (hostIpVal) updateData.ispHostIp = hostIpVal;
 
       const usageVal = (values.usageMethod || '').trim();
       if (usageVal) updateData.usageMethod = usageVal;
@@ -522,6 +551,41 @@ const IspManagement: React.FC = () => {
       },
     },
     {
+      title: '主机IP',
+      dataIndex: 'ispHostIp',
+      key: 'ispHostIp',
+      width: 150,
+      render: (text: string, record: IPSegment) => {
+        if (canEdit && editingHostIpId === record.id) {
+          return (
+            <Input
+              size="small"
+              autoFocus
+              value={editingHostIpValue}
+              onChange={e => setEditingHostIpValue(e.target.value)}
+              onPressEnter={saveHostIpInline}
+              onBlur={saveHostIpInline}
+              style={{ width: '100%' }}
+              placeholder="输入主机IP"
+            />
+          );
+        }
+        return (
+          <div
+            style={{ cursor: canEdit ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: 4, minHeight: 22 }}
+            onClick={() => canEdit && startHostIpEdit(record)}
+          >
+            {text ? (
+              <Text style={{ fontFamily: 'monospace', fontSize: 13 }}>{text}</Text>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>{canEdit ? '点击输入' : '-'}</Text>
+            )}
+            {canEdit && <EditOutlined style={{ color: '#999', fontSize: 12 }} />}
+          </div>
+        );
+      },
+    },
+    {
       title: '购买时间',
       dataIndex: 'purchaseDate',
       key: 'purchaseDate',
@@ -673,7 +737,7 @@ const IspManagement: React.FC = () => {
       dataSource={data}
       rowKey="id"
       size="small"
-      scroll={{ x: 1350, y: 'calc(100vh - 380px)' }}
+      scroll={{ x: 1500, y: 'calc(100vh - 380px)' }}
       pagination={false}
       onChange={handleTableChange}
       rowSelection={canEdit ? {
@@ -850,6 +914,9 @@ const IspManagement: React.FC = () => {
         <Form form={batchEditForm} layout="vertical">
           <Form.Item name="ispUser" label="用户">
             <Input placeholder="留空则不修改" maxLength={100} />
+          </Form.Item>
+          <Form.Item name="ispHostIp" label="主机IP">
+            <Input placeholder="留空则不修改" maxLength={45} />
           </Form.Item>
           <Form.Item name="usageMethod" label="使用方式">
             <Input.TextArea placeholder="留空则不修改" rows={2} maxLength={500} showCount />

@@ -39,6 +39,11 @@ interface FileSyncResult {
   groupACount?: number;
   groupBCount?: number;
   upcomingCount?: number;
+  entryCount?: number;
+  hasCookie?: boolean;
+  recordCount?: number;
+  itemCount?: number;
+  serverCount?: number;
   backupPath?: string;
 }
 
@@ -58,6 +63,14 @@ const FILE_OPTIONS = [
   { label: 'asn-standby-groups.json — ASN 备用分组数据', value: 'asn-standby-groups.json' },
   { label: 'ipxo-upcoming-status.json — IPXO 续租状态', value: 'ipxo-upcoming-status.json' },
   { label: 'ipxo-cache.json — IPXO API 缓存', value: 'ipxo-cache.json' },
+  { label: 'zen-config.json — Zenlayer API 配置', value: 'zen-config.json' },
+  { label: 'platform-settings.json — 平台设置', value: 'platform-settings.json' },
+  { label: 'cds-config.json — CDS 配置', value: 'cds-config.json' },
+  { label: 'larus-config.json — Larus 登录配置', value: 'larus-config.json' },
+  { label: 'larus-data.json — Larus 数据缓存', value: 'larus-data.json' },
+  { label: 'ab-tags.json — AB段标记数据', value: 'ab-tags.json' },
+  { label: 'local-cart.json — 购物车数据', value: 'local-cart.json' },
+  { label: 'ssh-servers.json — SSH 服务器配置', value: 'ssh-servers.json' },
 ];
 
 const formatSize = (bytes: number) => {
@@ -452,6 +465,24 @@ const RemoteDataSync: React.FC = () => {
                   )}
                   {filename === 'ipxo-upcoming-status.json' && (
                     <Descriptions.Item label="续租记录数" span={2}><Text strong>{info.upcomingCount ?? '-'}</Text></Descriptions.Item>
+                  )}
+                  {(filename === 'zen-config.json' || filename === 'platform-settings.json' || filename === 'cds-config.json') && (
+                    <Descriptions.Item label="配置项数" span={2}><Text strong>{info.entryCount ?? '-'}</Text></Descriptions.Item>
+                  )}
+                  {filename === 'larus-config.json' && (
+                    <Descriptions.Item label="Cookie 状态" span={2}><Text strong>{info.hasCookie ? '已配置' : '未配置'}</Text></Descriptions.Item>
+                  )}
+                  {filename === 'larus-data.json' && (
+                    <Descriptions.Item label="分配记录数" span={2}><Text strong>{info.recordCount ?? '-'}</Text></Descriptions.Item>
+                  )}
+                  {filename === 'ab-tags.json' && (
+                    <Descriptions.Item label="标记记录数" span={2}><Text strong>{info.recordCount ?? '-'}</Text></Descriptions.Item>
+                  )}
+                  {filename === 'local-cart.json' && (
+                    <Descriptions.Item label="购物车条目数" span={2}><Text strong>{info.itemCount ?? '-'}</Text></Descriptions.Item>
+                  )}
+                  {filename === 'ssh-servers.json' && (
+                    <Descriptions.Item label="服务器数" span={2}><Text strong>{info.serverCount ?? '-'}</Text></Descriptions.Item>
                   )}
                   <Descriptions.Item label="文件大小">{formatSize(info.size ?? 0)}</Descriptions.Item>
                   <Descriptions.Item label="状态">

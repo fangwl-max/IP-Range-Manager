@@ -3273,7 +3273,7 @@ function startIpxoCacheRefreshScheduler(): void {
 /** 清理 backups/ 目录中超过两个月的备份文件，返回已删除的文件名列表 */
 function cleanupOldBackups(backupDir: string): string[] {
   const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - 2);
+  cutoff.setMonth(cutoff.getMonth() - 1);
   const deleted: string[] = [];
   try {
     const files = fs.readdirSync(backupDir).filter(f => f.endsWith('.json'));
@@ -3330,6 +3330,17 @@ function startBackupScheduler(): void {
         'ipxo-config': path.resolve(__dirname, 'ipxo-config.json'),
         'asn-standby-groups': path.resolve(__dirname, 'asn-standby-groups.json'),
         'ipxo-upcoming-status': upcomingStatusPath,
+        'ipxo-cache': ipxoCachePath,
+        'zen-config': zenConfigFilePath,
+        'platform-settings': platformSettingsPath,
+        'cds-config': cdsConfigFilePath,
+        'larus-config': larusConfigPath,
+        'larus-data': larusDataPath,
+        'ab-tags': abTagsFilePath,
+        'local-cart': path.resolve(__dirname, 'local-cart.json'),
+        'ssh-servers': sshServersPath,
+        'sync-servers': syncServersPath,
+        'isp-data-cache': path.resolve(__dirname, 'isp-data-cache.json'),
       };
 
       const backed: string[] = [];
@@ -3360,7 +3371,7 @@ function startBackupScheduler(): void {
       // 发送 Google Chat 通知（如果已配置）
       if (cfg?.googleChatWebhook) {
         const cleanupLine = cleanedFiles.length > 0
-          ? `\n🗑️ 已清理过期备份：${cleanedFiles.length} 个文件（超过 2 个月）`
+          ? `\n🗑️ 已清理过期备份：${cleanedFiles.length} 个文件（超过 1 个月）`
           : '';
         const chatText = `✅ 数据备份完成\n时间：${bjDate} 03:00（北京时间）\n备份日期：${prevDay}\n文件：${backed.join('、')}\n共 ${backed.length} 个文件已备份到 backups/ 目录${cleanupLine}`;
         const chatPayload = JSON.stringify({ text: chatText });
@@ -5652,6 +5663,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           'ipxo-config.json': ipxoConfigPath,
           'asn-standby-groups.json': asnStandbyFilePath,
           'ipxo-upcoming-status.json': upcomingStatusPath,
+          'zen-config.json': zenConfigFilePath,
+          'platform-settings.json': platformSettingsPath,
+          'cds-config.json': cdsConfigFilePath,
+          'larus-config.json': larusConfigPath,
+          'larus-data.json': larusDataPath,
+          'ab-tags.json': abTagsFilePath,
+          'local-cart.json': path.resolve(__dirname, 'local-cart.json'),
+          'ssh-servers.json': sshServersPath,
         };
         const filesToSync = files.filter(f => allowedFiles[f]);
         if (filesToSync.length === 0) {
@@ -5728,6 +5747,22 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
             info.groupBCount = Array.isArray(parsed.B?.items) ? parsed.B.items.length : 0;
           } else if (filename === 'ipxo-upcoming-status.json') {
             info.upcomingCount = typeof parsed === 'object' && parsed !== null ? Object.keys(parsed).length : 0;
+          } else if (filename === 'zen-config.json') {
+            info.entryCount = typeof parsed === 'object' && parsed !== null ? Object.keys(parsed).length : 0;
+          } else if (filename === 'platform-settings.json') {
+            info.entryCount = typeof parsed === 'object' && parsed !== null ? Object.keys(parsed).length : 0;
+          } else if (filename === 'cds-config.json') {
+            info.entryCount = typeof parsed === 'object' && parsed !== null ? Object.keys(parsed).length : 0;
+          } else if (filename === 'larus-config.json') {
+            info.hasCookie = !!(parsed.cookie || parsed.Cookie);
+          } else if (filename === 'larus-data.json') {
+            info.recordCount = Array.isArray(parsed.allocations) ? parsed.allocations.length : (Array.isArray(parsed) ? parsed.length : 0);
+          } else if (filename === 'ab-tags.json') {
+            info.recordCount = Array.isArray(parsed.records) ? parsed.records.length : 0;
+          } else if (filename === 'local-cart.json') {
+            info.itemCount = Array.isArray(parsed.items) ? parsed.items.length : 0;
+          } else if (filename === 'ssh-servers.json') {
+            info.serverCount = Array.isArray(parsed) ? parsed.length : 0;
           }
 
           if (!dryRun) {

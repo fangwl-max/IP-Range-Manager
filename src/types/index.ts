@@ -71,6 +71,8 @@ export interface IPSegment {
   ispUser?: string;
   /** ISP 管理页面星标置顶 */
   ispStarred?: boolean;
+  /** ISP 管理页面主机IP */
+  ispHostIp?: string;
   createdAt: string; // 创建时间
   updatedAt: string; // 更新时间
 }

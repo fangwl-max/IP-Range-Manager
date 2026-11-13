@@ -52,7 +52,9 @@ export const projectGroupStorage = {
     return data ? JSON.parse(data) : [];
   },
   save: (groups: ProjectGroup[]): void => {
-    localStorage.setItem(STORAGE_KEYS.PROJECT_GROUPS, JSON.stringify(groups));
+    try {
+      localStorage.setItem(STORAGE_KEYS.PROJECT_GROUPS, JSON.stringify(groups));
+    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
   },
   add: (group: ProjectGroup): void => {
     const groups = projectGroupStorage.getAll();
@@ -80,7 +82,9 @@ export const supplierStorage = {
     return data ? JSON.parse(data) : [];
   },
   save: (suppliers: Supplier[]): void => {
-    localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(suppliers));
+    try {
+      localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(suppliers));
+    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
   },
   add: (supplier: Supplier): void => {
     const suppliers = supplierStorage.getAll();
@@ -108,7 +112,9 @@ export const usageAreaStorage = {
     return data ? JSON.parse(data) : [];
   },
   save: (areas: UsageAreaOption[]): void => {
-    localStorage.setItem(STORAGE_KEYS.USAGE_AREAS, JSON.stringify(areas));
+    try {
+      localStorage.setItem(STORAGE_KEYS.USAGE_AREAS, JSON.stringify(areas));
+    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
   },
   add: (area: UsageAreaOption): void => {
     const areas = usageAreaStorage.getAll();
@@ -136,7 +142,9 @@ export const asnGroupStorage = {
     return data ? JSON.parse(data) : [];
   },
   save: (groups: AsnGroup[]): void => {
-    localStorage.setItem(STORAGE_KEYS.ASN_GROUPS, JSON.stringify(groups));
+    try {
+      localStorage.setItem(STORAGE_KEYS.ASN_GROUPS, JSON.stringify(groups));
+    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
   },
   add: (group: AsnGroup): void => {
     const groups = asnGroupStorage.getAll();
@@ -164,7 +172,9 @@ export const asnStorage = {
     return data ? JSON.parse(data) : [];
   },
   save: (asns: ASN[]): void => {
-    localStorage.setItem(STORAGE_KEYS.ASNS, JSON.stringify(asns));
+    try {
+      localStorage.setItem(STORAGE_KEYS.ASNS, JSON.stringify(asns));
+    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
   },
   add: (asn: ASN): void => {
     const asns = asnStorage.getAll();
