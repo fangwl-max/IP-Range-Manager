@@ -106,12 +106,18 @@ else
 fi
 
 # 空数据文件（避免容器启动时报错）
-for f in ip-data.json ipxo-config.json notify-config.json ipxo-cache.json ipxo-upcoming-status.json asn-standby-groups.json ab-tags.json; do
+for f in ip-data.json ipxo-config.json notify-config.json ipxo-cache.json ipxo-upcoming-status.json asn-standby-groups.json ab-tags.json platform-settings.json ssh-servers.json larus-config.json larus-data.json sync-servers.json local-cart.json .auth-sessions.json; do
   if [ ! -f "$DATA_DIR/$f" ]; then
     echo '{}' > "$DATA_DIR/$f"
     echo "  [OK] 已创建 $f"
   fi
 done
+
+# audit.log（追加写入的 NDJSON 日志）
+if [ ! -f "$DATA_DIR/audit.log" ]; then
+  touch "$DATA_DIR/audit.log"
+  echo "  [OK] 已创建 audit.log"
+fi
 
 echo ""
 echo "[init-data] 完成！可执行 docker compose up -d 启动服务"
