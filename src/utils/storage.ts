@@ -9,18 +9,36 @@ const STORAGE_KEYS = {
   ASN_GROUPS: 'asn_groups',
 } as const;
 
+// 内存缓存：localStorage 可能因 5MB 配额限制写入失败，
+// 内存缓存保证 getAll 始终返回最新完整数据
+let _ipSegmentsCache: IPSegment[] | null = null;
+let _projectGroupsCache: ProjectGroup[] | null = null;
+let _suppliersCache: Supplier[] | null = null;
+let _usageAreasCache: UsageAreaOption[] | null = null;
+let _asnsCache: ASN[] | null = null;
+let _asnGroupsCache: AsnGroup[] | null = null;
+
+function readLS<T>(key: string): T[] | null {
+  try {
+    const data = localStorage.getItem(key);
+    return data ? JSON.parse(data) : null;
+  } catch { return null; }
+}
+
+function writeLS(key: string, value: unknown): void {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* 配额溢出静默跳过 */ }
+}
+
 // IP段存储
 export const ipSegmentStorage = {
   getAll: (): IPSegment[] => {
-    const data = localStorage.getItem(STORAGE_KEYS.IP_SEGMENTS);
-    return data ? JSON.parse(data) : [];
+    if (_ipSegmentsCache !== null) return _ipSegmentsCache;
+    _ipSegmentsCache = readLS<IPSegment>(STORAGE_KEYS.IP_SEGMENTS) || [];
+    return _ipSegmentsCache;
   },
   save: (segments: IPSegment[]): void => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.IP_SEGMENTS, JSON.stringify(segments));
-    } catch {
-      // 数据已在服务端持久化，localStorage 仅作缓存；超出配额时静默跳过
-    }
+    _ipSegmentsCache = segments;
+    writeLS(STORAGE_KEYS.IP_SEGMENTS, segments);
   },
   add: (segment: IPSegment): void => {
     const segments = ipSegmentStorage.getAll();
@@ -48,13 +66,13 @@ export const ipSegmentStorage = {
 // 项目组存储
 export const projectGroupStorage = {
   getAll: (): ProjectGroup[] => {
-    const data = localStorage.getItem(STORAGE_KEYS.PROJECT_GROUPS);
-    return data ? JSON.parse(data) : [];
+    if (_projectGroupsCache !== null) return _projectGroupsCache;
+    _projectGroupsCache = readLS<ProjectGroup>(STORAGE_KEYS.PROJECT_GROUPS) || [];
+    return _projectGroupsCache;
   },
   save: (groups: ProjectGroup[]): void => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.PROJECT_GROUPS, JSON.stringify(groups));
-    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
+    _projectGroupsCache = groups;
+    writeLS(STORAGE_KEYS.PROJECT_GROUPS, groups);
   },
   add: (group: ProjectGroup): void => {
     const groups = projectGroupStorage.getAll();
@@ -78,13 +96,13 @@ export const projectGroupStorage = {
 // 供应商存储
 export const supplierStorage = {
   getAll: (): Supplier[] => {
-    const data = localStorage.getItem(STORAGE_KEYS.SUPPLIERS);
-    return data ? JSON.parse(data) : [];
+    if (_suppliersCache !== null) return _suppliersCache;
+    _suppliersCache = readLS<Supplier>(STORAGE_KEYS.SUPPLIERS) || [];
+    return _suppliersCache;
   },
   save: (suppliers: Supplier[]): void => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(suppliers));
-    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
+    _suppliersCache = suppliers;
+    writeLS(STORAGE_KEYS.SUPPLIERS, suppliers);
   },
   add: (supplier: Supplier): void => {
     const suppliers = supplierStorage.getAll();
@@ -108,13 +126,13 @@ export const supplierStorage = {
 // 宣告地区选项存储
 export const usageAreaStorage = {
   getAll: (): UsageAreaOption[] => {
-    const data = localStorage.getItem(STORAGE_KEYS.USAGE_AREAS);
-    return data ? JSON.parse(data) : [];
+    if (_usageAreasCache !== null) return _usageAreasCache;
+    _usageAreasCache = readLS<UsageAreaOption>(STORAGE_KEYS.USAGE_AREAS) || [];
+    return _usageAreasCache;
   },
   save: (areas: UsageAreaOption[]): void => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.USAGE_AREAS, JSON.stringify(areas));
-    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
+    _usageAreasCache = areas;
+    writeLS(STORAGE_KEYS.USAGE_AREAS, areas);
   },
   add: (area: UsageAreaOption): void => {
     const areas = usageAreaStorage.getAll();
@@ -138,13 +156,13 @@ export const usageAreaStorage = {
 // ASN 分组（仅配置页维护）
 export const asnGroupStorage = {
   getAll: (): AsnGroup[] => {
-    const data = localStorage.getItem(STORAGE_KEYS.ASN_GROUPS);
-    return data ? JSON.parse(data) : [];
+    if (_asnGroupsCache !== null) return _asnGroupsCache;
+    _asnGroupsCache = readLS<AsnGroup>(STORAGE_KEYS.ASN_GROUPS) || [];
+    return _asnGroupsCache;
   },
   save: (groups: AsnGroup[]): void => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.ASN_GROUPS, JSON.stringify(groups));
-    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
+    _asnGroupsCache = groups;
+    writeLS(STORAGE_KEYS.ASN_GROUPS, groups);
   },
   add: (group: AsnGroup): void => {
     const groups = asnGroupStorage.getAll();
@@ -168,13 +186,13 @@ export const asnGroupStorage = {
 // ASN存储
 export const asnStorage = {
   getAll: (): ASN[] => {
-    const data = localStorage.getItem(STORAGE_KEYS.ASNS);
-    return data ? JSON.parse(data) : [];
+    if (_asnsCache !== null) return _asnsCache;
+    _asnsCache = readLS<ASN>(STORAGE_KEYS.ASNS) || [];
+    return _asnsCache;
   },
   save: (asns: ASN[]): void => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.ASNS, JSON.stringify(asns));
-    } catch { /* 服务端已持久化，localStorage 仅缓存 */ }
+    _asnsCache = asns;
+    writeLS(STORAGE_KEYS.ASNS, asns);
   },
   add: (asn: ASN): void => {
     const asns = asnStorage.getAll();
@@ -186,7 +204,6 @@ export const asnStorage = {
     const index = asns.findIndex(a => a.id === id);
     if (index !== -1) {
       const merged: ASN = { ...asns[index], ...asn };
-      // 配置页保存新版「宣告地区多选」时，去掉旧单选字段与已废弃的 supplier 字段
       if (Object.prototype.hasOwnProperty.call(asn, 'usageAreaIds')) {
         delete merged.usageAreaId;
         delete merged.usageAreaName;
@@ -229,4 +246,3 @@ export const asnStorage = {
     asnStorage.save(asns.filter(a => a.id !== id));
   },
 };
-
