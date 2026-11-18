@@ -608,20 +608,43 @@ const IPManagement: React.FC = () => {
   const handleSyncArchivedDates = async () => {
     setArchiveSyncing(true);
     try {
-      const res = await fetch('/api/dulvora/sync-archived', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        const parts: string[] = [];
-        if (data.updatedCount > 0) parts.push(`${data.updatedCount} 条更新`);
-        if (data.multiPurchaseCount > 0) parts.push(`${data.multiPurchaseCount} 条标记为多次购买`);
-        message.success(parts.length ? `同步完成：${parts.join('，')}` : '同步完成：无变化');
-        if (data.updatedCount > 0) {
-          cacheVersionRef.current++;
-          loadData();
-        }
-      } else {
-        message.error(data.message || '同步失败');
-      }
+      const previewRes = await fetch('/api/dulvora/sync-archived');
+      const preview = await previewRes.json();
+      if (!preview.success) { message.error(preview.message || '预览失败'); return; }
+      if (preview.toUpdate === 0) { message.info('无需同步，所有下架日期已是最新'); return; }
+
+      const detailList = (preview.details as string[]).map((d: string) => `• ${d}`).join('\n');
+      const extraNote = preview.toMultiPurchase > 0 ? `\n其中 ${preview.toMultiPurchase} 条将标记为多次购买` : '';
+
+      Modal.confirm({
+        title: '同步下架日期预览',
+        width: 560,
+        content: (
+          <div>
+            <p>API 共返回 {preview.apiTotal} 条已下架记录，本地将更新 <b>{preview.toUpdate}</b> 条{preview.toMultiPurchase > 0 && <>（其中 <b>{preview.toMultiPurchase}</b> 条将标记为多次购买）</>}：</p>
+            <pre style={{ maxHeight: 300, overflow: 'auto', fontSize: 12, background: '#f5f5f5', padding: 8, borderRadius: 4 }}>{detailList}</pre>
+            {preview.toUpdate > 20 && <p style={{ color: '#999' }}>仅显示前 20 条</p>}
+          </div>
+        ),
+        okText: '确认同步',
+        cancelText: '取消',
+        onOk: async () => {
+          const res = await fetch('/api/dulvora/sync-archived', { method: 'POST' });
+          const data = await res.json();
+          if (data.success) {
+            const parts: string[] = [];
+            if (data.updatedCount > 0) parts.push(`${data.updatedCount} 条更新`);
+            if (data.multiPurchaseCount > 0) parts.push(`${data.multiPurchaseCount} 条标记为多次购买`);
+            message.success(parts.length ? `同步完成：${parts.join('，')}` : '同步完成：无变化');
+            if (data.updatedCount > 0) {
+              cacheVersionRef.current++;
+              loadData();
+            }
+          } else {
+            message.error(data.message || '同步失败');
+          }
+        },
+      });
     } catch (e: any) {
       message.error('同步请求失败: ' + e.message);
     } finally {
