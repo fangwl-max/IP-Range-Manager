@@ -3952,7 +3952,7 @@ const IPManagement: React.FC = () => {
             }}
             tabBarExtraContent={
               <Space>
-                {(activeTabKey === 'cancelled' || activeTabKey === 'cancelledButNotExpired') && (
+                {activeTabKey === 'active' && (
                   <Button
                     icon={<SyncOutlined spin={archiveSyncing} />}
                     onClick={handleSyncArchivedDates}
