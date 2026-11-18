@@ -106,7 +106,7 @@ else
 fi
 
 # 空数据文件（避免容器启动时报错）
-for f in ip-data.json ipxo-config.json notify-config.json ipxo-cache.json ipxo-upcoming-status.json asn-standby-groups.json ab-tags.json platform-settings.json ssh-servers.json larus-config.json larus-data.json sync-servers.json local-cart.json .auth-sessions.json dulvora-config.json; do
+for f in ip-data.json ipxo-config.json notify-config.json ipxo-cache.json ipxo-upcoming-status.json asn-standby-groups.json ab-tags.json platform-settings.json ssh-servers.json larus-config.json larus-data.json sync-servers.json local-cart.json .auth-sessions.json dulvora-config.json isp-fields.json; do
   if [ ! -f "$DATA_DIR/$f" ]; then
     echo '{}' > "$DATA_DIR/$f"
     echo "  [OK] 已创建 $f"

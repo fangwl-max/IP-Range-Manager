@@ -1694,17 +1694,39 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
   return { addedCount, updatedCount, cancelledCount };
 }
 
-// ===================== Dulvora 下架日期同步 =====================
-async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPurchaseCount: number }> {
-  const cfg = loadDulvoraConfig();
-  if (!cfg || !cfg.enabled) return { updatedCount: 0, multiPurchaseCount: 0 };
+// ===================== Dulvora 映射表 =====================
+const DULVORA_GROUP_MAP: Record<string, string> = { 'A': 'A组-JUMP', 'B': 'B组-ST' };
+const DULVORA_SKIP_GROUPS = new Set(['资源', '广告', '俄罗斯测试']);
+const DULVORA_IDC_MAP: Record<string, string> = {
+  'ZEN-法兰克福': 'ZEN法兰克福', 'ZEN-华盛顿': 'ZEN华盛顿', 'ZEN-达拉斯': 'ZEN达拉斯',
+  'ZEN-赫尔辛基': 'ZEN赫尔辛基', 'ZEN-阿姆斯特丹': 'ZEN-阿姆斯特丹', 'ZEN-马赛': 'ZEN-马赛',
+  'NL自建-圣何塞': '自建-圣何塞', 'NL自建-新加坡': '自建-新加坡', 'NL自建-法兰克福': '自建-法兰克福',
+  'Liasail-法兰克福': 'liasail-法兰克福', 'Liasail-洛杉矶': 'liasail-洛杉矶', 'Liasail-纽约': 'liasail-纽约',
+};
+const DULVORA_SKIP_IDC = new Set(['备用ASN']);
+const DULVORA_AUTO_COLORS = ['#B7EB8F', '#FFD591', '#D3ADF7', '#87E8DE', '#FFA39E', '#ADC6FF', '#F4FFB8', '#FFADD2', '#95DE64', '#FF9C6E'];
 
-  const url = `${cfg.baseUrl}/ip-segments?status=archived`;
-  const resp = await fetch(url, { headers: { 'X-API-Key': cfg.apiKey } });
-  if (!resp.ok) throw new Error(`Dulvora API ${resp.status}: ${resp.statusText}`);
-  const apiData = await resp.json();
-  const apiItems: any[] = apiData?.data || [];
-  if (!apiItems.length) return { updatedCount: 0, multiPurchaseCount: 0 };
+function normalizeAsnDigits(raw: string): string {
+  if (!raw) return '';
+  const s = raw.trim().replace(/^AS\s*/i, '');
+  const m = s.match(/^(\d+)/);
+  return m ? m[1] : '';
+}
+
+// ===================== Dulvora 同步 =====================
+async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPurchaseCount: number; fieldSyncCount: number }> {
+  const cfg = loadDulvoraConfig();
+  if (!cfg || !cfg.enabled) return { updatedCount: 0, multiPurchaseCount: 0, fieldSyncCount: 0 };
+
+  const headers = { 'X-API-Key': cfg.apiKey };
+  const [archivedResp, activeResp] = await Promise.all([
+    fetch(`${cfg.baseUrl}/ip-segments?status=archived`, { headers }),
+    fetch(`${cfg.baseUrl}/ip-segments?status=active`, { headers }),
+  ]);
+  if (!archivedResp.ok) throw new Error(`Dulvora API archived ${archivedResp.status}: ${archivedResp.statusText}`);
+  if (!activeResp.ok) throw new Error(`Dulvora API active ${activeResp.status}: ${activeResp.statusText}`);
+  const archivedItems: any[] = (await archivedResp.json())?.data || [];
+  const activeItems: any[] = (await activeResp.json())?.data || [];
 
   let localData: any = { ipSegments: [] };
   if (fs.existsSync(dataFilePath)) {
@@ -1713,64 +1735,110 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
   const localSegments: any[] = localData.ipSegments || [];
   const nowIso = new Date().toISOString();
 
-  const apiBySegment = new Map<string, any>();
-  for (const item of apiItems) {
-    if (item.cidr) apiBySegment.set(item.cidr.trim().toLowerCase(), item);
+  const archivedBySegment = new Map<string, any>();
+  for (const item of archivedItems) {
+    if (item.cidr) archivedBySegment.set(item.cidr.trim().toLowerCase(), item);
+  }
+  const activeBySegment = new Map<string, any>();
+  for (const item of activeItems) {
+    if (item.cidr) activeBySegment.set(item.cidr.trim().toLowerCase(), item);
   }
 
   let updatedCount = 0;
   let multiPurchaseCount = 0;
+  let fieldSyncCount = 0;
   const RE_LET_MIN_GAP_DAYS = 30;
+  const usageAreas: any[] = localData.usageAreas || [];
+  const usageAreaNames = new Set(usageAreas.map((u: any) => u.name));
+  const usedColors = new Set(usageAreas.map((u: any) => u.color));
 
   for (let i = 0; i < localSegments.length; i++) {
     const seg = localSegments[i];
     const cidr = (seg.segment || '').trim().toLowerCase();
-    const apiItem = apiBySegment.get(cidr);
-    if (!apiItem) continue;
 
-    const archivedAt = apiItem.archivedAt;
-    if (!archivedAt) continue;
-    if (archivedAt === seg.cancellationDate) continue;
-
-    const oldCancel = (seg.cancellationDate || '').trim();
-    if (oldCancel) {
-      const oldMs = new Date(oldCancel).getTime();
-      const newMs = new Date(archivedAt).getTime();
-      const gapDays = (newMs - oldMs) / (24 * 60 * 60 * 1000);
-      if (gapDays > RE_LET_MIN_GAP_DAYS) {
-        console.log(`[DulvoraSync] ${seg.segment} 下架日期跳变 ${oldCancel} → ${archivedAt}（${Math.round(gapDays)}天），标记多次购买`);
-        if (seg.purchaseDate) {
-          const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
-          if (!records.some((r: any) => r.date === seg.purchaseDate)) {
-            records.push(seg.monthlyPrice ? { date: seg.purchaseDate, fee: seg.monthlyPrice } : { date: seg.purchaseDate });
-            records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-            seg.previousPurchaseRecords = records;
+    // ── 下架日期同步（archived 段）──
+    const archivedItem = archivedBySegment.get(cidr);
+    if (archivedItem?.archivedAt && archivedItem.archivedAt !== seg.cancellationDate) {
+      const oldCancel = (seg.cancellationDate || '').trim();
+      if (oldCancel) {
+        const oldMs = new Date(oldCancel).getTime();
+        const newMs = new Date(archivedItem.archivedAt).getTime();
+        const gapDays = (newMs - oldMs) / (24 * 60 * 60 * 1000);
+        if (gapDays > RE_LET_MIN_GAP_DAYS) {
+          console.log(`[DulvoraSync] ${seg.segment} 下架日期跳变 ${oldCancel} → ${archivedItem.archivedAt}（${Math.round(gapDays)}天），标记多次购买`);
+          if (seg.purchaseDate) {
+            const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
+            if (!records.some((r: any) => r.date === seg.purchaseDate)) {
+              records.push(seg.monthlyPrice ? { date: seg.purchaseDate, fee: seg.monthlyPrice } : { date: seg.purchaseDate });
+              records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+              seg.previousPurchaseRecords = records;
+            }
+            const dates: string[] = seg.previousPurchaseDates || [];
+            if (!dates.includes(seg.purchaseDate)) {
+              seg.previousPurchaseDates = [...new Set([...dates, seg.purchaseDate])].sort();
+            }
           }
-          const dates: string[] = seg.previousPurchaseDates || [];
-          if (!dates.includes(seg.purchaseDate)) {
-            seg.previousPurchaseDates = [...new Set([...dates, seg.purchaseDate])].sort();
-          }
+          seg.multiPurchaseMarked = true;
+          multiPurchaseCount++;
         }
-        seg.multiPurchaseMarked = true;
-        multiPurchaseCount++;
+      }
+      if (seg.renewalStatus !== 'cancelled' && seg.renewalStatus !== 'refunded') {
+        seg.renewalStatus = 'cancelled';
+      }
+      seg.cancellationDate = archivedItem.archivedAt;
+      seg.updatedAt = nowIso;
+      updatedCount++;
+    }
+
+    // ── 字段同步（active 段）──
+    const activeItem = activeBySegment.get(cidr);
+    if (!activeItem) continue;
+    const group = activeItem.group || '';
+    if (DULVORA_SKIP_GROUPS.has(group)) continue;
+    const idc = activeItem.idc || '';
+    if (DULVORA_SKIP_IDC.has(idc)) continue;
+
+    let fieldChanged = false;
+    // 项目组
+    const curGroups: string[] = seg.projectGroups || [];
+    if (curGroups.length === 0 && DULVORA_GROUP_MAP[group]) {
+      seg.projectGroups = [DULVORA_GROUP_MAP[group]];
+      fieldChanged = true;
+    }
+    // 宣告地区
+    const curArea = (seg.usageArea || '').trim();
+    if ((!curArea || curArea === '未使用') && idc) {
+      const mapped = DULVORA_IDC_MAP[idc] || idc;
+      seg.usageArea = mapped;
+      fieldChanged = true;
+      if (!usageAreaNames.has(mapped)) {
+        const color = DULVORA_AUTO_COLORS.find(c => !usedColors.has(c)) || DULVORA_AUTO_COLORS[0];
+        usageAreas.push({ id: `ua-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: mapped, color });
+        usageAreaNames.add(mapped);
+        usedColors.add(color);
+        console.log(`[DulvoraSync] 自动创建宣告地区: ${mapped}`);
       }
     }
-
-    // 本地未标记取消的段，API 侧已下架 → 同步标记为取消
-    if (seg.renewalStatus !== 'cancelled' && seg.renewalStatus !== 'refunded') {
-      seg.renewalStatus = 'cancelled';
+    // ASN
+    const curAsn = (seg.asn || '').trim();
+    if (!curAsn && activeItem.asn) {
+      seg.asn = normalizeAsnDigits(activeItem.asn);
+      if (seg.asn) fieldChanged = true;
     }
-    seg.cancellationDate = archivedAt;
-    seg.updatedAt = nowIso;
-    updatedCount++;
+
+    if (fieldChanged) {
+      seg.updatedAt = nowIso;
+      fieldSyncCount++;
+    }
   }
 
-  if (updatedCount > 0) {
+  if (updatedCount > 0 || fieldSyncCount > 0) {
+    localData.usageAreas = usageAreas;
     localData.exportTime = nowIso;
     fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
   }
 
-  return { updatedCount, multiPurchaseCount };
+  return { updatedCount, multiPurchaseCount, fieldSyncCount };
 }
 
 /**
@@ -3449,6 +3517,7 @@ function startBackupScheduler(): void {
         'ssh-servers': sshServersPath,
         'sync-servers': syncServersPath,
         'isp-data-cache': path.resolve(__dirname, 'isp-data-cache.json'),
+        'isp-fields': path.resolve(__dirname, 'isp-fields.json'),
       };
 
       const backed: string[] = [];
@@ -4129,6 +4198,18 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
                 oldSaveData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8') || '{}');
               }
             } catch {}
+
+            // ISP 专属字段以 isp-fields.json 为权威源，全量保存时合并回来
+            const ispFields = loadIspFields();
+            for (const seg of (savedData.ipSegments || [])) {
+              const fields = ispFields[seg.id];
+              if (fields) {
+                for (const k of ISP_FIELD_KEYS) {
+                  if (fields[k] !== undefined) seg[k] = fields[k];
+                }
+              }
+            }
+
             fs.writeFileSync(dataFilePath, JSON.stringify(savedData, null, 2), 'utf-8');
 
             // ── 同步备注到 ipxo-upcoming-status.json ──────────────────────────
@@ -4254,10 +4335,60 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
 
     // ── ISP 管理专用 API ──
     const ispCachePath = path.resolve(__dirname, 'isp-data-cache.json');
+    const ispFieldsPath = path.resolve(__dirname, 'isp-fields.json');
+    const ISP_FIELD_KEYS = ['ispStarred', 'ispUser', 'ispHostIp', 'usageMethod', 'gttInUse'];
+
+    function loadIspFields(): Record<string, any> {
+      try {
+        if (fs.existsSync(ispFieldsPath)) {
+          const raw = JSON.parse(fs.readFileSync(ispFieldsPath, 'utf-8'));
+          if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+        }
+      } catch {}
+      return {};
+    }
+
+    function saveIspFields(fields: Record<string, any>): void {
+      fs.writeFileSync(ispFieldsPath, JSON.stringify(fields, null, 2), 'utf-8');
+    }
+
+    // 启动迁移：从 ip-data.json 提取 ISP 字段到独立文件（仅首次）
+    (function migrateIspFields() {
+      const existing = loadIspFields();
+      if (Object.keys(existing).length > 0) return;
+      try {
+        if (!fs.existsSync(dataFilePath)) return;
+        const raw = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
+        const segments: any[] = raw?.ipSegments || [];
+        const fields: Record<string, any> = {};
+        for (const seg of segments) {
+          if (!seg.id) continue;
+          const entry: Record<string, any> = {};
+          for (const k of ISP_FIELD_KEYS) {
+            if (seg[k] !== undefined && seg[k] !== null && seg[k] !== '' && seg[k] !== false) {
+              entry[k] = seg[k];
+            }
+          }
+          if (Object.keys(entry).length > 0) fields[seg.id] = entry;
+        }
+        if (Object.keys(fields).length > 0) {
+          saveIspFields(fields);
+          console.log(`[ISP] 迁移完成：从 ip-data.json 提取 ${Object.keys(fields).length} 条 ISP 字段到 isp-fields.json`);
+        }
+      } catch (e: any) {
+        console.error('[ISP] 迁移失败:', e.message);
+      }
+    })();
 
     function buildIspCache() {
       const raw = fs.existsSync(dataFilePath) ? JSON.parse(fs.readFileSync(dataFilePath, 'utf-8')) : null;
-      const ispSegments = (raw?.ipSegments || []).filter((s: any) => s.gttManaged === true);
+      const ispFields = loadIspFields();
+      const ispSegments = (raw?.ipSegments || [])
+        .filter((s: any) => s.gttManaged === true)
+        .map((s: any) => {
+          const fields = ispFields[s.id];
+          return fields ? { ...s, ...fields } : s;
+        });
       const cache = { ipSegments: ispSegments, cachedAt: new Date().toISOString() };
       fs.writeFileSync(ispCachePath, JSON.stringify(cache, null, 2), 'utf-8');
       return cache;
@@ -4325,22 +4456,36 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
               res.end(JSON.stringify({ error: 'updates array required' }));
               return;
             }
+            const ispFields = loadIspFields();
             const raw = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
             const segments: any[] = raw.ipSegments || [];
             const idMap = new Map(segments.map((s, i) => [s.id, i]));
             let changed = 0;
+            let ispChanged = false;
             for (const { id, data } of updates) {
               const idx = idMap.get(id);
-              if (idx !== undefined) {
-                Object.assign(segments[idx], data, { updatedAt: new Date().toISOString() });
+              if (idx === undefined) continue;
+              const ispPart: Record<string, any> = {};
+              const sharedPart: Record<string, any> = {};
+              for (const [k, v] of Object.entries(data)) {
+                if (ISP_FIELD_KEYS.includes(k)) ispPart[k] = v;
+                else sharedPart[k] = v;
+              }
+              if (Object.keys(ispPart).length > 0) {
+                ispFields[id] = { ...(ispFields[id] || {}), ...ispPart };
+                ispChanged = true;
+              }
+              if (Object.keys(sharedPart).length > 0) {
+                Object.assign(segments[idx], sharedPart, { updatedAt: new Date().toISOString() });
                 changed++;
               }
             }
+            if (ispChanged) saveIspFields(ispFields);
             if (changed > 0) {
               raw.exportTime = new Date().toISOString();
               fs.writeFileSync(dataFilePath, JSON.stringify(raw, null, 2), 'utf-8');
-              buildIspCache();
             }
+            if (ispChanged || changed > 0) buildIspCache();
             res.setHeader('Content-Type', 'application/json');
             res.statusCode = 200;
             res.end(JSON.stringify({ success: true, changed }));
@@ -11274,11 +11419,15 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           res.end(JSON.stringify({ success: false, message: 'Dulvora API 未配置或未启用' }));
           return;
         }
-        const url = `${cfg.baseUrl}/ip-segments?status=archived`;
-        const resp = await fetch(url, { headers: { 'X-API-Key': cfg.apiKey } });
-        if (!resp.ok) throw new Error(`API ${resp.status}: ${resp.statusText}`);
-        const apiData = await resp.json();
-        const apiItems: any[] = apiData?.data || [];
+        const headers = { 'X-API-Key': cfg.apiKey };
+        const [archivedResp, activeResp] = await Promise.all([
+          fetch(`${cfg.baseUrl}/ip-segments?status=archived`, { headers }),
+          fetch(`${cfg.baseUrl}/ip-segments?status=active`, { headers }),
+        ]);
+        if (!archivedResp.ok) throw new Error(`API archived ${archivedResp.status}: ${archivedResp.statusText}`);
+        if (!activeResp.ok) throw new Error(`API active ${activeResp.status}: ${activeResp.statusText}`);
+        const archivedItems: any[] = (await archivedResp.json())?.data || [];
+        const activeItems: any[] = (await activeResp.json())?.data || [];
 
         let localData: any = { ipSegments: [] };
         if (fs.existsSync(dataFilePath)) {
@@ -11286,30 +11435,64 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
         }
         const localSegments: any[] = localData.ipSegments || [];
 
-        const apiBySegment = new Map<string, any>();
-        for (const item of apiItems) {
-          if (item.cidr) apiBySegment.set(item.cidr.trim().toLowerCase(), item);
+        const archivedBySegment = new Map<string, any>();
+        for (const item of archivedItems) {
+          if (item.cidr) archivedBySegment.set(item.cidr.trim().toLowerCase(), item);
+        }
+        const activeBySegment = new Map<string, any>();
+        for (const item of activeItems) {
+          if (item.cidr) activeBySegment.set(item.cidr.trim().toLowerCase(), item);
         }
 
         let toUpdate = 0;
         let toMultiPurchase = 0;
+        let toFieldSync = 0;
         const details: string[] = [];
+        const fieldDetails: string[] = [];
         for (const seg of localSegments) {
           const cidr = (seg.segment || '').trim().toLowerCase();
-          const apiItem = apiBySegment.get(cidr);
-          if (!apiItem?.archivedAt) continue;
-          if (apiItem.archivedAt === seg.cancellationDate) continue;
-          toUpdate++;
-          const oldCancel = (seg.cancellationDate || '').trim();
-          if (oldCancel) {
-            const gapDays = (new Date(apiItem.archivedAt).getTime() - new Date(oldCancel).getTime()) / (24 * 60 * 60 * 1000);
-            if (gapDays > 30) toMultiPurchase++;
+          // 下架日期预览
+          const archivedItem = archivedBySegment.get(cidr);
+          if (archivedItem?.archivedAt && archivedItem.archivedAt !== seg.cancellationDate) {
+            toUpdate++;
+            const oldCancel = (seg.cancellationDate || '').trim();
+            if (oldCancel) {
+              const gapDays = (new Date(archivedItem.archivedAt).getTime() - new Date(oldCancel).getTime()) / (24 * 60 * 60 * 1000);
+              if (gapDays > 30) toMultiPurchase++;
+            }
+            if (details.length < 20) {
+              details.push(`${seg.segment}: ${seg.cancellationDate || '(空)'} → ${archivedItem.archivedAt}`);
+            }
           }
-          if (details.length < 20) {
-            details.push(`${seg.segment}: ${seg.cancellationDate || '(空)'} → ${apiItem.archivedAt}`);
+          // 字段同步预览
+          const activeItem = activeBySegment.get(cidr);
+          if (!activeItem) continue;
+          const group = activeItem.group || '';
+          if (DULVORA_SKIP_GROUPS.has(group)) continue;
+          const idc = activeItem.idc || '';
+          if (DULVORA_SKIP_IDC.has(idc)) continue;
+          const changes: string[] = [];
+          const curGroups: string[] = seg.projectGroups || [];
+          if (curGroups.length === 0 && DULVORA_GROUP_MAP[group]) {
+            changes.push(`项目组→${DULVORA_GROUP_MAP[group]}`);
+          }
+          const curArea = (seg.usageArea || '').trim();
+          if ((!curArea || curArea === '未使用') && idc) {
+            changes.push(`地区→${DULVORA_IDC_MAP[idc] || idc}`);
+          }
+          const curAsn = (seg.asn || '').trim();
+          if (!curAsn && activeItem.asn) {
+            const normalized = normalizeAsnDigits(activeItem.asn);
+            if (normalized) changes.push(`ASN→${normalized}`);
+          }
+          if (changes.length > 0) {
+            toFieldSync++;
+            if (fieldDetails.length < 20) {
+              fieldDetails.push(`${seg.segment}: ${changes.join(', ')}`);
+            }
           }
         }
-        res.end(JSON.stringify({ success: true, preview: true, toUpdate, toMultiPurchase, apiTotal: apiItems.length, details }));
+        res.end(JSON.stringify({ success: true, preview: true, toUpdate, toMultiPurchase, toFieldSync, apiTotal: archivedItems.length, activeTotal: activeItems.length, details, fieldDetails }));
       } else if (req.method === 'POST') {
         const result = await autoSyncArchivedDates();
         res.end(JSON.stringify({ success: true, ...result }));

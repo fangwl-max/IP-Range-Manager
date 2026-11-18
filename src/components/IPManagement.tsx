@@ -611,19 +611,30 @@ const IPManagement: React.FC = () => {
       const previewRes = await fetch('/api/dulvora/sync-archived');
       const preview = await previewRes.json();
       if (!preview.success) { message.error(preview.message || '预览失败'); return; }
-      if (preview.toUpdate === 0) { message.info('无需同步，所有下架日期已是最新'); return; }
+      if (preview.toUpdate === 0 && preview.toFieldSync === 0) { message.info('无需同步，所有数据已是最新'); return; }
 
       const detailList = (preview.details as string[]).map((d: string) => `• ${d}`).join('\n');
-      const extraNote = preview.toMultiPurchase > 0 ? `\n其中 ${preview.toMultiPurchase} 条将标记为多次购买` : '';
+      const fieldDetailList = (preview.fieldDetails as string[] || []).map((d: string) => `• ${d}`).join('\n');
 
       Modal.confirm({
-        title: '同步下架日期预览',
-        width: 560,
+        title: '同步预览',
+        width: 600,
         content: (
           <div>
-            <p>API 共返回 {preview.apiTotal} 条已下架记录，本地将更新 <b>{preview.toUpdate}</b> 条{preview.toMultiPurchase > 0 && <>（其中 <b>{preview.toMultiPurchase}</b> 条将标记为多次购买）</>}：</p>
-            <pre style={{ maxHeight: 300, overflow: 'auto', fontSize: 12, background: '#f5f5f5', padding: 8, borderRadius: 4 }}>{detailList}</pre>
-            {preview.toUpdate > 20 && <p style={{ color: '#999' }}>仅显示前 20 条</p>}
+            {preview.toUpdate > 0 && (
+              <>
+                <p>将更新 <b>{preview.toUpdate}</b> 条下架日期{preview.toMultiPurchase > 0 && <>（其中 <b>{preview.toMultiPurchase}</b> 条标记为多次购买）</>}：</p>
+                <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 12, background: '#f5f5f5', padding: 8, borderRadius: 4 }}>{detailList}</pre>
+                {preview.toUpdate > 20 && <p style={{ color: '#999', margin: '4px 0' }}>仅显示前 20 条</p>}
+              </>
+            )}
+            {preview.toFieldSync > 0 && (
+              <>
+                <p style={{ marginTop: preview.toUpdate > 0 ? 12 : 0 }}>将同步 <b>{preview.toFieldSync}</b> 条 IP 段的项目组/宣告地区/ASN：</p>
+                <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 12, background: '#f5f5f5', padding: 8, borderRadius: 4 }}>{fieldDetailList}</pre>
+                {preview.toFieldSync > 20 && <p style={{ color: '#999', margin: '4px 0' }}>仅显示前 20 条</p>}
+              </>
+            )}
           </div>
         ),
         okText: '确认同步',
@@ -633,11 +644,21 @@ const IPManagement: React.FC = () => {
           const data = await res.json();
           if (data.success) {
             const parts: string[] = [];
-            if (data.updatedCount > 0) parts.push(`${data.updatedCount} 条更新`);
+            if (data.updatedCount > 0) parts.push(`${data.updatedCount} 条下架日期更新`);
             if (data.multiPurchaseCount > 0) parts.push(`${data.multiPurchaseCount} 条标记为多次购买`);
+            if (data.fieldSyncCount > 0) parts.push(`${data.fieldSyncCount} 条字段同步`);
             message.success(parts.length ? `同步完成：${parts.join('，')}` : '同步完成：无变化');
-            if (data.updatedCount > 0) {
+            if (data.updatedCount > 0 || data.fieldSyncCount > 0) {
               cacheVersionRef.current++;
+              try {
+                const freshResp = await fetch('/api/get-data');
+                if (freshResp.ok) {
+                  const fresh = await freshResp.json();
+                  if (fresh?.ipSegments) ipSegmentStorage.save(fresh.ipSegments);
+                  if (fresh?.projectGroups) projectGroupStorage.save(fresh.projectGroups);
+                  if (fresh?.usageAreas) usageAreaStorage.save(fresh.usageAreas);
+                }
+              } catch {}
               loadData();
             }
           } else {
