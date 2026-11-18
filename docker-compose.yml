@@ -34,6 +34,7 @@ services:
       - ./data/sync-servers.json:/app/sync-servers.json
       - ./data/local-cart.json:/app/local-cart.json
       - ./data/ab-tags.json:/app/ab-tags.json
+      - ./data/dulvora-config.json:/app/dulvora-config.json
 
       # ── 持久化目录（备份、导出、LOA 文件）──────────────────────────────
       - ./data/backups:/app/backups

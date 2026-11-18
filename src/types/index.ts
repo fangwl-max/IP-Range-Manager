@@ -80,6 +80,7 @@ export interface IPSegment {
 // 续费状态选项（用于表单选择）
 export const RENEWAL_STATUS_OPTIONS = [
   { label: '无', value: 'not_renewed', color: 'default' },
+  { label: '已续费', value: 'renewed', color: 'green' },
   { label: '取消续费', value: 'cancelled', color: 'orange' },
   { label: '已退款', value: 'refunded', color: 'blue' },
 ] as const;

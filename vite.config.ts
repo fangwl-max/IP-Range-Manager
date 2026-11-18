@@ -463,6 +463,22 @@ function saveAbTags(data: AbTagsData): void {
   fs.writeFileSync(abTagsFilePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
+// ===================== Dulvora 外部 API 配置 =====================
+const dulvoraConfigPath = path.resolve(__dirname, 'dulvora-config.json');
+interface DulvoraConfig { apiKey: string; baseUrl: string; enabled: boolean }
+function loadDulvoraConfig(): DulvoraConfig | null {
+  try {
+    if (fs.existsSync(dulvoraConfigPath)) {
+      const cfg = JSON.parse(fs.readFileSync(dulvoraConfigPath, 'utf-8'));
+      if (cfg.apiKey && cfg.baseUrl) return cfg;
+    }
+  } catch (e) { console.error('[Dulvora] Load config error:', e); }
+  return null;
+}
+function saveDulvoraConfig(config: DulvoraConfig): void {
+  fs.writeFileSync(dulvoraConfigPath, JSON.stringify(config, null, 2), 'utf-8');
+}
+
 // ===================== Larus 配置存储 =====================
 const larusConfigPath = path.resolve(__dirname, 'larus-config.json');
 const larusDataPath = path.resolve(__dirname, 'larus-data.json');
@@ -1679,6 +1695,85 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
   }
 
   return { addedCount, updatedCount, cancelledCount };
+}
+
+// ===================== Dulvora 下架日期同步 =====================
+async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPurchaseCount: number }> {
+  const cfg = loadDulvoraConfig();
+  if (!cfg || !cfg.enabled) return { updatedCount: 0, multiPurchaseCount: 0 };
+
+  const url = `${cfg.baseUrl}/ip-segments?status=archived`;
+  const resp = await fetch(url, { headers: { 'X-API-Key': cfg.apiKey } });
+  if (!resp.ok) throw new Error(`Dulvora API ${resp.status}: ${resp.statusText}`);
+  const apiData = await resp.json();
+  const apiItems: any[] = apiData?.data || [];
+  if (!apiItems.length) return { updatedCount: 0, multiPurchaseCount: 0 };
+
+  let localData: any = { ipSegments: [] };
+  if (fs.existsSync(dataFilePath)) {
+    localData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
+  }
+  const localSegments: any[] = localData.ipSegments || [];
+  const nowIso = new Date().toISOString();
+
+  const apiBySegment = new Map<string, any>();
+  for (const item of apiItems) {
+    if (item.cidr) apiBySegment.set(item.cidr.trim().toLowerCase(), item);
+  }
+
+  let updatedCount = 0;
+  let multiPurchaseCount = 0;
+  const RE_LET_MIN_GAP_DAYS = 30;
+
+  for (let i = 0; i < localSegments.length; i++) {
+    const seg = localSegments[i];
+    const cidr = (seg.segment || '').trim().toLowerCase();
+    const apiItem = apiBySegment.get(cidr);
+    if (!apiItem) continue;
+
+    const archivedAt = apiItem.archivedAt;
+    if (!archivedAt) continue;
+    if (archivedAt === seg.cancellationDate) continue;
+
+    const oldCancel = (seg.cancellationDate || '').trim();
+    if (oldCancel) {
+      const oldMs = new Date(oldCancel).getTime();
+      const newMs = new Date(archivedAt).getTime();
+      const gapDays = (newMs - oldMs) / (24 * 60 * 60 * 1000);
+      if (gapDays > RE_LET_MIN_GAP_DAYS) {
+        console.log(`[DulvoraSync] ${seg.segment} 下架日期跳变 ${oldCancel} → ${archivedAt}（${Math.round(gapDays)}天），标记多次购买`);
+        if (seg.purchaseDate) {
+          const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
+          if (!records.some((r: any) => r.date === seg.purchaseDate)) {
+            records.push(seg.monthlyPrice ? { date: seg.purchaseDate, fee: seg.monthlyPrice } : { date: seg.purchaseDate });
+            records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+            seg.previousPurchaseRecords = records;
+          }
+          const dates: string[] = seg.previousPurchaseDates || [];
+          if (!dates.includes(seg.purchaseDate)) {
+            seg.previousPurchaseDates = [...new Set([...dates, seg.purchaseDate])].sort();
+          }
+        }
+        seg.multiPurchaseMarked = true;
+        multiPurchaseCount++;
+      }
+    }
+
+    // 本地未标记取消的段，API 侧已下架 → 同步标记为取消
+    if (seg.renewalStatus !== 'cancelled' && seg.renewalStatus !== 'refunded') {
+      seg.renewalStatus = 'cancelled';
+    }
+    seg.cancellationDate = archivedAt;
+    seg.updatedAt = nowIso;
+    updatedCount++;
+  }
+
+  if (updatedCount > 0) {
+    localData.exportTime = nowIso;
+    fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
+  }
+
+  return { updatedCount, multiPurchaseCount };
 }
 
 /**
@@ -3179,6 +3274,7 @@ function startIpxoCacheRefreshScheduler(): void {
   let lastRefreshDate = '';
   let lastLarusSyncDate = '';
   let lastLoaCleanupDate = '';
+  let lastDulvoraSyncDate = '';
 
   setInterval(async () => {
     try {
@@ -3245,6 +3341,21 @@ function startIpxoCacheRefreshScheduler(): void {
           }
         } catch (e: any) {
           console.error('[LarusSync] 同步失败:', e.message);
+        }
+      }
+
+      // ── Dulvora 下架日期同步 ──────────────────────────────────────
+      if (lastDulvoraSyncDate !== bjDate) {
+        lastDulvoraSyncDate = bjDate;
+        try {
+          const r = await autoSyncArchivedDates();
+          if (r.updatedCount > 0 || r.multiPurchaseCount > 0) {
+            console.log(`[DulvoraSync] 下架日期同步完成：更新 ${r.updatedCount} 条，多次购买标记 ${r.multiPurchaseCount} 条`);
+          } else {
+            console.log('[DulvoraSync] 下架日期同步完成：无变化');
+          }
+        } catch (e: any) {
+          console.error('[DulvoraSync] 同步失败:', e.message);
         }
       }
 
@@ -11151,6 +11262,112 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
       res.statusCode = 200;
       res.end(Buffer.from(await upstream.arrayBuffer()));
     } catch (e: any) { res.statusCode = 502; res.end(e.message); }
+  });
+
+  // ─── Dulvora 下架日期同步 API ─────────────────────────────────────
+  server.middlewares.use('/api/dulvora/sync-archived', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    try {
+      if (req.method === 'GET') {
+        // 预览模式
+        const cfg = loadDulvoraConfig();
+        if (!cfg || !cfg.enabled) {
+          res.end(JSON.stringify({ success: false, message: 'Dulvora API 未配置或未启用' }));
+          return;
+        }
+        const url = `${cfg.baseUrl}/ip-segments?status=archived`;
+        const resp = await fetch(url, { headers: { 'X-API-Key': cfg.apiKey } });
+        if (!resp.ok) throw new Error(`API ${resp.status}: ${resp.statusText}`);
+        const apiData = await resp.json();
+        const apiItems: any[] = apiData?.data || [];
+
+        let localData: any = { ipSegments: [] };
+        if (fs.existsSync(dataFilePath)) {
+          localData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
+        }
+        const localSegments: any[] = localData.ipSegments || [];
+
+        const apiBySegment = new Map<string, any>();
+        for (const item of apiItems) {
+          if (item.cidr) apiBySegment.set(item.cidr.trim().toLowerCase(), item);
+        }
+
+        let toUpdate = 0;
+        let toMultiPurchase = 0;
+        const details: string[] = [];
+        for (const seg of localSegments) {
+          const cidr = (seg.segment || '').trim().toLowerCase();
+          const apiItem = apiBySegment.get(cidr);
+          if (!apiItem?.archivedAt) continue;
+          if (apiItem.archivedAt === seg.cancellationDate) continue;
+          toUpdate++;
+          const oldCancel = (seg.cancellationDate || '').trim();
+          if (oldCancel) {
+            const gapDays = (new Date(apiItem.archivedAt).getTime() - new Date(oldCancel).getTime()) / (24 * 60 * 60 * 1000);
+            if (gapDays > 30) toMultiPurchase++;
+          }
+          if (details.length < 20) {
+            details.push(`${seg.segment}: ${seg.cancellationDate || '(空)'} → ${apiItem.archivedAt}`);
+          }
+        }
+        res.end(JSON.stringify({ success: true, preview: true, toUpdate, toMultiPurchase, apiTotal: apiItems.length, details }));
+      } else if (req.method === 'POST') {
+        const result = await autoSyncArchivedDates();
+        res.end(JSON.stringify({ success: true, ...result }));
+      } else {
+        res.statusCode = 405;
+        res.end(JSON.stringify({ success: false, message: 'Method not allowed' }));
+      }
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  server.middlewares.use('/api/dulvora/config', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    try {
+      if (req.method === 'GET') {
+        const cfg = loadDulvoraConfig();
+        if (!cfg) {
+          res.end(JSON.stringify({ success: true, data: null }));
+          return;
+        }
+        res.end(JSON.stringify({ success: true, data: { ...cfg, apiKey: cfg.apiKey.slice(0, 8) + '***' } }));
+      } else if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (c: any) => { body += c; });
+        req.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            if (!data.apiKey || !data.baseUrl) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ success: false, message: '缺少 apiKey 或 baseUrl' }));
+              return;
+            }
+            saveDulvoraConfig({ apiKey: data.apiKey, baseUrl: data.baseUrl, enabled: data.enabled !== false });
+            res.end(JSON.stringify({ success: true }));
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ success: false, message: e.message }));
+          }
+        });
+      } else {
+        res.statusCode = 405;
+        res.end(JSON.stringify({ success: false, message: 'Method not allowed' }));
+      }
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
   });
 
   // ─── SPA 回落：未匹配的 HTML 请求一律返回 index.html ─────────────

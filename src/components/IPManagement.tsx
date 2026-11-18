@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useUrlTab } from '../hooks/useUrlTab';
 import {
   Table,
@@ -35,6 +35,7 @@ import {
   DownloadOutlined,
   HistoryOutlined,
   CopyOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -307,6 +308,9 @@ const IPManagement: React.FC = () => {
   const [isHistoryViewModalVisible, setIsHistoryViewModalVisible] = useState(false);
   const [isBatchHistoryEditVisible, setIsBatchHistoryEditVisible] = useState(false);
   const [viewingSegment, setViewingSegment] = useState<IPSegment | null>(null);
+  const [archiveSyncing, setArchiveSyncing] = useState(false);
+  // 本地写入计数器：loadDataFromFile 用此判断 fetch 期间是否有本地保存，避免用旧服务端数据覆盖
+  const cacheVersionRef = useRef(0);
   const [editingHistoryIndex, setEditingHistoryIndex] = useState<number | null>(null);
   const [historyForm] = Form.useForm();
   const [batchHistoryForm] = Form.useForm();
@@ -331,25 +335,28 @@ const IPManagement: React.FC = () => {
     loadData();
 
     const loadDataFromFile = async () => {
+      const versionBeforeFetch = cacheVersionRef.current;
       try {
         const response = await fetch('/api/get-data');
         if (response.ok) {
           const data = await response.json();
           if (data) {
-            // 如果文件中有数据，覆盖 localStorage
-            if (data.ipSegments) ipSegmentStorage.save(data.ipSegments);
-            if (data.projectGroups) projectGroupStorage.save(data.projectGroups);
-            if (data.suppliers) supplierStorage.save(data.suppliers);
-            if (data.usageAreas) {
-              const filtered = (data.usageAreas as UsageAreaOption[]).filter(
-                a => a.name !== '准备取消' && a.name !== '已取消'
-              );
-              usageAreaStorage.save(filtered);
+            if (cacheVersionRef.current !== versionBeforeFetch) {
+              console.log('loadDataFromFile: fetch 期间有本地保存操作，跳过服务端数据覆盖');
+            } else {
+              if (data.ipSegments) ipSegmentStorage.save(data.ipSegments);
+              if (data.projectGroups) projectGroupStorage.save(data.projectGroups);
+              if (data.suppliers) supplierStorage.save(data.suppliers);
+              if (data.usageAreas) {
+                const filtered = (data.usageAreas as UsageAreaOption[]).filter(
+                  a => a.name !== '准备取消' && a.name !== '已取消'
+                );
+                usageAreaStorage.save(filtered);
+              }
+              if (data.asnGroups) asnGroupStorage.save(data.asnGroups);
+              if (data.asns) asnStorage.save(data.asns);
+              console.log('已自动加载本地保存的数据');
             }
-            if (data.asnGroups) asnGroupStorage.save(data.asnGroups);
-            if (data.asns) asnStorage.save(data.asns);
-
-            console.log('已自动加载本地保存的数据');
           }
         }
       } catch (error) {
@@ -555,6 +562,7 @@ const IPManagement: React.FC = () => {
 
   // 保存数据到本地文件（实际执行保存），silent 为 true 时不显示成功提示
   const saveDataToFile = async (silent = false) => {
+    cacheVersionRef.current++;
     try {
       const allData = {
         ipSegments: ipSegmentStorage.getAll(),
@@ -595,6 +603,30 @@ const IPManagement: React.FC = () => {
       cancelText: '暂不保存',
       onOk: saveDataToFile,
     });
+  };
+
+  const handleSyncArchivedDates = async () => {
+    setArchiveSyncing(true);
+    try {
+      const res = await fetch('/api/dulvora/sync-archived', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        const parts: string[] = [];
+        if (data.updatedCount > 0) parts.push(`${data.updatedCount} 条更新`);
+        if (data.multiPurchaseCount > 0) parts.push(`${data.multiPurchaseCount} 条标记为多次购买`);
+        message.success(parts.length ? `同步完成：${parts.join('，')}` : '同步完成：无变化');
+        if (data.updatedCount > 0) {
+          cacheVersionRef.current++;
+          loadData();
+        }
+      } else {
+        message.error(data.message || '同步失败');
+      }
+    } catch (e: any) {
+      message.error('同步请求失败: ' + e.message);
+    } finally {
+      setArchiveSyncing(false);
+    }
   };
 
   // 获取 IP 段到期时间（用于展示和导出，含取消续费无取消时间时的续费时间回退）
@@ -2752,7 +2784,7 @@ const IPManagement: React.FC = () => {
   };
 
   // 执行批量添加
-  const executeBatchAdd = (
+  const executeBatchAdd = async (
     itemsToAdd: Partial<IPSegment>[],
     existingSegmentMap: Map<string, IPSegment>,
     overwrite: boolean
@@ -2762,6 +2794,11 @@ const IPManagement: React.FC = () => {
     let overwriteCount = 0;
     let updateCount = 0; // 被墙信息更新计数
     const failedSegments: string[] = [];
+
+    // 一次性读取当前全量数据，在内存中修改，最后一次性保存
+    const allSegments = [...ipSegmentStorage.getAll()];
+    const segmentById = new Map<string, number>();
+    allSegments.forEach((seg, idx) => segmentById.set(seg.id, idx));
 
     itemsToAdd.forEach((item, index) => {
       if (!item.segment) {
@@ -2782,7 +2819,7 @@ const IPManagement: React.FC = () => {
           console.error(`第 ${index + 1} 条数据缺少必填字段（购买时间）：`, item);
           return;
         }
-        
+
         let validPurchaseDate = item.purchaseDate;
         if (!dayjs(validPurchaseDate).isValid()) {
           failCount++;
@@ -2801,8 +2838,6 @@ const IPManagement: React.FC = () => {
         // 检查是否为被墙信息导入（有 _detectedCountries 标记）
         const isBlockedInfoImport = (item as any)._detectedCountries !== undefined;
 
-        let segmentData: IPSegment;
-        
         if (existingData && overwrite && isBlockedInfoImport) {
           // 被墙信息导入且存在旧数据：只更新检测到的地区信息（含被墙、限速）
           const detectedCountries = (item as any)._detectedCountries;
@@ -2830,20 +2865,16 @@ const IPManagement: React.FC = () => {
           if (detectedCountries?.turkmenistan) updateCountryStatus('turkmenistan');
           if (detectedCountries?.russia) updateCountryStatus('russia');
 
-          segmentData = {
-            ...existingData,
-            blockedCountries: newBlockedCountries,
-            rateLimitedCountries: newRateLimitedCountries,
-            detectedCountries: newDetectedCountries,
-            updatedAt: new Date().toISOString(),
-          };
-          ipSegmentStorage.update(existingData.id, {
-            blockedCountries: newBlockedCountries,
-            rateLimitedCountries: newRateLimitedCountries,
-            detectedCountries: newDetectedCountries,
-            updatedAt: new Date().toISOString(),
-            // 被墙信息导入不覆盖使用后被墙字段
-          });
+          const existingIdx = segmentById.get(existingData.id);
+          if (existingIdx !== undefined) {
+            allSegments[existingIdx] = {
+              ...existingData,
+              blockedCountries: newBlockedCountries,
+              rateLimitedCountries: newRateLimitedCountries,
+              detectedCountries: newDetectedCountries,
+              updatedAt: new Date().toISOString(),
+            };
+          }
           updateCount++;
           successCount++;
         } else {
@@ -2859,7 +2890,7 @@ const IPManagement: React.FC = () => {
             if (detected?.russia && !newDetected.includes('russia')) newDetected.push('russia');
             detectedCountriesList = newDetected;
           }
-          
+
           // 判断字段是否有值（非空、非undefined）
           const hasValue = (value: any): boolean => {
             if (value === undefined || value === null) return false;
@@ -2867,13 +2898,13 @@ const IPManagement: React.FC = () => {
             if (typeof value === 'number' && isNaN(value)) return false;
             return true;
           };
-          
+
           if (existingData && overwrite) {
             // IP段已存在且需要更新：只更新导入数据中提供的字段，未涉及的字段保留原值
             const updateData: Partial<IPSegment> = {
               updatedAt: new Date().toISOString(),
             };
-            
+
             // 只更新导入数据中有值的字段
             if (hasValue(item.supplier)) {
               updateData.supplier = String(item.supplier).trim();
@@ -2931,9 +2962,12 @@ const IPManagement: React.FC = () => {
             if (Array.isArray((item as any).postUseBlockedCountries) && (item as any).postUseBlockedCountries.length > 0) {
               updateData.postUseBlockedCountries = (item as any).postUseBlockedCountries;
             }
-            
-            // 使用update方法进行部分更新
-            ipSegmentStorage.update(existingData.id, updateData);
+
+            // 在本地数组中直接更新
+            const existingIdx = segmentById.get(existingData.id);
+            if (existingIdx !== undefined) {
+              allSegments[existingIdx] = { ...allSegments[existingIdx], ...updateData };
+            }
             if (isBlockedInfoImport) {
               updateCount++; // 被墙信息导入的更新
             } else {
@@ -2942,7 +2976,7 @@ const IPManagement: React.FC = () => {
             successCount++;
           } else if (!existingData) {
             // 新增数据：使用完整数据（只有当existingData不存在时才添加）
-            segmentData = {
+            const segmentData: IPSegment = {
               id: `ip-${Date.now()}-${Math.random()}-${index}`,
               segment: String(item.segment).trim(),
               supplier: item.supplier ? String(item.supplier).trim() : '',
@@ -2964,9 +2998,9 @@ const IPManagement: React.FC = () => {
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             };
-            
-            // 添加新数据
-            ipSegmentStorage.add(segmentData);
+
+            // 追加到本地数组
+            allSegments.push(segmentData);
             successCount++;
           }
           // 如果existingData存在但overwrite为false，跳过这条数据（不执行任何操作）
@@ -2979,9 +3013,13 @@ const IPManagement: React.FC = () => {
     });
 
     if (successCount > 0) {
+      // 一次性写入 storage（只触发一次 JSON.stringify + localStorage 写入）
+      cacheVersionRef.current++;
+      ipSegmentStorage.save(allSegments);
+
       let successMsg = '';
       const addCount = successCount - overwriteCount - updateCount;
-      
+
       // 构建成功消息
       if (addCount > 0 && updateCount > 0) {
         successMsg = `成功添加 ${addCount} 条记录，更新 ${updateCount} 条记录`;
@@ -2994,7 +3032,7 @@ const IPManagement: React.FC = () => {
       } else {
         successMsg = `成功添加 ${successCount} 条记录`;
       }
-      
+
       if (failCount > 0) {
         successMsg += `，失败 ${failCount} 条`;
         if (failedSegments.length > 0 && failedSegments.length <= 5) {
@@ -3008,8 +3046,8 @@ const IPManagement: React.FC = () => {
       setBlockedInfoImportValue('');
       setPreviewSelectedRowKeys([]);
       loadData();
-      // 自动保存到文件
-      saveDataToFile();
+      // 等待保存到服务端完成
+      await saveDataToFile();
     } else {
       message.error(`添加失败，共 ${failCount} 条记录无法添加${failedSegments.length > 0 && failedSegments.length <= 5 ? `（${failedSegments.join('、')}）` : ''}`);
     }
@@ -3913,19 +3951,30 @@ const IPManagement: React.FC = () => {
               setAllSegmentsSelectedKeys([]);
             }}
             tabBarExtraContent={
-              canExport && (
-                <Button
-                  type="primary"
-                  icon={<DownloadOutlined />}
-                  onClick={handleExportCurrentTab}
-                >
-                  {activeTabKey === 'active' && `导出正常IP段 (${filteredIpSegments.length}条)`}
-                  {activeTabKey === 'cancelledButNotExpired' && `导出已取消但未到期IP段 (${cancelledButNotExpiredSegments.length}条)`}
-                  {activeTabKey === 'cancelled' && `导出已取消IP段 (${cancelledIpSegments.length}条)`}
-                  {activeTabKey === 'all' && `导出所有IP段 (${allIpSegments.length}条)`}
-                  {!['active', 'cancelledButNotExpired', 'cancelled', 'all'].includes(activeTabKey) && '导出'}
-                </Button>
-              )
+              <Space>
+                {(activeTabKey === 'cancelled' || activeTabKey === 'cancelledButNotExpired') && (
+                  <Button
+                    icon={<SyncOutlined spin={archiveSyncing} />}
+                    onClick={handleSyncArchivedDates}
+                    loading={archiveSyncing}
+                  >
+                    同步下架日期
+                  </Button>
+                )}
+                {canExport && (
+                  <Button
+                    type="primary"
+                    icon={<DownloadOutlined />}
+                    onClick={handleExportCurrentTab}
+                  >
+                    {activeTabKey === 'active' && `导出正常IP段 (${filteredIpSegments.length}条)`}
+                    {activeTabKey === 'cancelledButNotExpired' && `导出已取消但未到期IP段 (${cancelledButNotExpiredSegments.length}条)`}
+                    {activeTabKey === 'cancelled' && `导出已取消IP段 (${cancelledIpSegments.length}条)`}
+                    {activeTabKey === 'all' && `导出所有IP段 (${allIpSegments.length}条)`}
+                    {!['active', 'cancelledButNotExpired', 'cancelled', 'all'].includes(activeTabKey) && '导出'}
+                  </Button>
+                )}
+              </Space>
             }
             items={[
               {
