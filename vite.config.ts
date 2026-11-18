@@ -1576,7 +1576,7 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
         renewalDate: item.expiry_date || '',
         cancellationDate: '',
         monthlyPrice: 0,
-        renewalStatus: 'renewed',
+        renewalStatus: 'not_renewed',
         projectGroups: [],
         serverLocations: [],
         blockedCountries: [],
@@ -1632,14 +1632,14 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
       }
       seg.multiPurchaseMarked = true;
       if (seg.syncSource !== 'larus_api') { seg.syncSource = 'larus_api'; changed = true; }
-      if (seg.renewalStatus !== 'renewed') { seg.renewalStatus = 'renewed'; changed = true; }
+      if (seg.renewalStatus === 'cancelled' || seg.renewalStatus === 'refunded') { seg.renewalStatus = 'not_renewed'; changed = true; }
       if (seg.cancellationDate) { seg.cancellationDate = ''; changed = true; }
       changed = true;
     } else if (larusPurchaseLater) {
       // 同期偏差（差 ≤ 30 天）：对齐日期与状态，不归档历史购买
       console.log(`[LarusSync] ${item.ip_cidr} 对齐日期偏差（本地 ${existing.purchaseDate} → Larus ${item.purchase_date}）`);
       if (seg.syncSource !== 'larus_api') { seg.syncSource = 'larus_api'; changed = true; }
-      if (seg.renewalStatus !== 'renewed') { seg.renewalStatus = 'renewed'; changed = true; }
+      if (seg.renewalStatus === 'cancelled' || seg.renewalStatus === 'refunded') { seg.renewalStatus = 'not_renewed'; changed = true; }
       if (seg.cancellationDate) { seg.cancellationDate = ''; changed = true; }
     }
 
