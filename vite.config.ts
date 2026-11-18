@@ -1452,10 +1452,7 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
         renewalDate: meta.renewalDate,
         cancellationDate: '',
         monthlyPrice: bs.recurring_amount ?? 0,
-        // 能走到这里说明 bs.status === 'active'（上方守卫已过滤），即仍在租用。
-        // ecommerce_pending_order 只表示「当前有结账订单」，无单时它同样为 null，
-        // 不能用它反推取消，否则所有未在下单的活跃段都会被误判为取消续费。
-        renewalStatus: svc.ecommerce_pending_order ? 'not_renewed' : 'renewed',
+        renewalStatus: 'not_renewed',
         projectGroups: [],
         serverLocations: [],
         blockedCountries: [],
@@ -8988,9 +8985,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
             renewalDate,
             cancellationDate: '',
             monthlyPrice: item.monthlyPrice,
-            // 同 /api/ipxo/services/sync：能进 toAdd 说明该段在缓存里是 active，
-            // hasPendingOrder 为 false 只是「暂时没有结账订单」，不构成取消。
-            renewalStatus: item.hasPendingOrder ? 'not_renewed' : 'renewed',
+            renewalStatus: 'not_renewed',
             projectGroups: [],
             serverLocations: [],
             blockedCountries: [],
