@@ -180,7 +180,7 @@ const PrePurchaseCheck: React.FC = () => {
   const [smartFilterModalVisible, setSmartFilterModalVisible] = useState(false);
   const [sfDedupAb, setSfDedupAb] = useState(true);
   const [sfDedupKeepCount, setSfDedupKeepCount] = useState(1);
-  const [sfDedupSortBy, setSfDedupSortBy] = useState<'price_asc' | 'price_desc'>('price_asc');
+  const [sfDedupSortBy, setSfDedupSortBy] = useState<'price_asc' | 'price_desc' | 'random'>('random');
   const [sfExcludeExisting, setSfExcludeExisting] = useState(false);
   const [sfExcludeExistingSegment, setSfExcludeExistingSegment] = useState(true);
   const [sfNoAbuse, setSfNoAbuse] = useState(false);
@@ -803,7 +803,14 @@ const PrePurchaseCheck: React.FC = () => {
       }
       result = [];
       for (const arr of groups.values()) {
-        arr.sort((a, b) => sfDedupSortBy === 'price_asc' ? a.price - b.price : b.price - a.price);
+        if (sfDedupSortBy === 'random') {
+          for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+          }
+        } else {
+          arr.sort((a, b) => sfDedupSortBy === 'price_asc' ? a.price - b.price : b.price - a.price);
+        }
         result.push(...arr.slice(0, sfDedupKeepCount));
       }
     }
@@ -2347,6 +2354,7 @@ const PrePurchaseCheck: React.FC = () => {
                 <span>每组保留 <InputNumber value={sfDedupKeepCount} onChange={v => setSfDedupKeepCount(v || 1)} min={1} max={50} style={{ width: 65 }} /> 个</span>
                 <span>排序：
                   <Select value={sfDedupSortBy} onChange={v => setSfDedupSortBy(v)} style={{ width: 110 }}>
+                    <Select.Option value="random">随机排列</Select.Option>
                     <Select.Option value="price_asc">价格最低</Select.Option>
                     <Select.Option value="price_desc">价格最高</Select.Option>
                   </Select>

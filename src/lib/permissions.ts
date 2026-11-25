@@ -77,6 +77,10 @@ export const PAGE_PERMS: Record<string, PermNode> = {
     },
   },
   'remote-sync': { label: '远程数据同步' },
+  'gmail-filter-setup': {
+    label: 'Gmail 邮件转发',
+    features: { 'edit': '编辑配置 / 部署规则' },
+  },
   'user-management': { label: '用户与权限', adminOnly: true },
   'audit-logs': { label: '操作日志', adminOnly: true },
 };

@@ -71,6 +71,7 @@ const BACKEND_ROLE_DEFAULTS: Record<string, string[]> = {
     'notify-config', 'notify-config.edit',
     'announce-zen', 'announce-zen.announce', 'announce-zen.withdraw',
     'announce-capital-online', 'announce-capital-online.announce', 'announce-capital-online.withdraw',
+    'gmail-filter-setup', 'gmail-filter-setup.edit',
   ],
   viewer: [
     'ip-management', 'irr-detection',
@@ -1414,31 +1415,32 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
   const nowIso = new Date().toISOString();
 
   const localBySegment = new Map<string, any>();
-  const localByIpxoUuid = new Map<string, any>();
   for (const s of localSegments) {
     localBySegment.set(s.segment, s);
-    if (s.ipxoServiceUuid) localByIpxoUuid.set(s.ipxoServiceUuid, s);
   }
 
   const cacheActiveSet = new Set<string>();
+  const cacheActiveUuids = new Set<string>();
   for (const svc of cache.services.data) {
     const bs = svc.billing_service;
     if (bs?.address && bs.cidr != null && (bs.status || '').toLowerCase() === 'active') {
       cacheActiveSet.add(`${bs.address}/${bs.cidr}`);
     }
+    const mu = svc.market_service?.uuid;
+    if (mu && (bs?.status || '').toLowerCase() === 'active') cacheActiveUuids.add(mu);
   }
 
   let addedCount = 0;
   let cancelledCount = 0;
 
-  // 缓存有、本地无 → 新增
+  // 缓存有、本地无 → 新增（仅按段名匹配，同一 UUID 可对应多个段）
   for (const svc of cache.services.data) {
     const bs = svc.billing_service;
     if (!bs?.address || bs.cidr == null) continue;
     if ((bs.status || '').toLowerCase() !== 'active') continue;
     const segStr = `${bs.address}/${bs.cidr}`;
     const marketUuid = svc.market_service?.uuid || '';
-    const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+    const existing = localBySegment.get(segStr);
     if (!existing) {
       const meta = extractIpxoServiceMeta(svc);
       const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
@@ -1473,13 +1475,14 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
 
   // 缓存有、本地有 → 更新 ASN、购买时间、续费日、月费、续费状态
   let updatedCount = 0;
+  let reactivatedCount = 0;
   for (const svc of cache.services.data) {
     const bs = svc.billing_service;
     if (!bs?.address || bs.cidr == null) continue;
     if ((bs.status || '').toLowerCase() !== 'active') continue;
     const segStr = `${bs.address}/${bs.cidr}`;
     const marketUuid = svc.market_service?.uuid || '';
-    const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+    const existing = localBySegment.get(segStr);
     if (!existing) continue;
     const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
     if (idx === -1) continue;
@@ -1487,6 +1490,31 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     const meta = extractIpxoServiceMeta(svc);
     const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
     let changed = false;
+
+    // IPXO active 但本地 cancelled/refunded → 重新租用：归档历史并重置状态
+    if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && seg.cancellationDate.trim())) {
+      console.log(`[IpxoSync] ${segStr} 重新激活（IPXO active，本地 ${seg.renewalStatus}），重置为正常状态`);
+      if (seg.purchaseDate) {
+        const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
+        if (!records.some((r: any) => r.date === seg.purchaseDate)) {
+          records.push(seg.monthlyPrice ? { date: seg.purchaseDate, fee: seg.monthlyPrice } : { date: seg.purchaseDate });
+          records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+          seg.previousPurchaseRecords = records;
+        }
+        const dates: string[] = seg.previousPurchaseDates || [];
+        if (!dates.includes(seg.purchaseDate)) {
+          seg.previousPurchaseDates = [...new Set([...dates, seg.purchaseDate])].sort();
+        }
+      }
+      seg.multiPurchaseMarked = true;
+      seg.renewalStatus = 'not_renewed';
+      seg.cancellationDate = '';
+      if (!seg.ipxoServiceUuid && marketUuid) seg.ipxoServiceUuid = marketUuid;
+      if (seg.syncSource !== 'ipxo_api') seg.syncSource = 'ipxo_api';
+      changed = true;
+      reactivatedCount++;
+    }
+
     if (allLoaAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allLoaAsns)) {
       seg.additionalAsns = allLoaAsns; changed = true;
     }
@@ -1494,11 +1522,6 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
     const ipxoMonthlyPrice = bs.recurring_amount ?? null;
     if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
-    // 仍在 IPXO active 列表中即未取消。ecommerce_pending_order 仅表示「当前有结账订单」，
-    // 无单时为 null 属正常（多数段平时都没有待处理订单），不可据此判定取消。
-    // 真正的取消由下方「本地有、缓存已无 active」分支处理。
-    // 不覆盖用户手动设置的 cancelled / refunded 状态——段仍在 active 列表只说明 IPXO 侧尚未生效，
-    // 人工标记的取消意图应保留。
     if (changed) {
       seg.ipxoLastSyncAt = nowIso;
       seg.updatedAt = nowIso;
@@ -1507,11 +1530,13 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
   }
 
   // 本地有（ipxo_api来源，非终态），缓存已无 active → 取消
+  // 排除 UUID 仍在 active 中的记录（同一 UUID 可对应多个段）
   for (const seg of localSegments) {
     if (!seg.segment) continue;
     if (seg.syncSource !== 'ipxo_api') continue;
     if (['cancelled', 'refunded'].includes(seg.renewalStatus)) continue;
     if (cacheActiveSet.has(seg.segment)) continue;
+    if (seg.ipxoServiceUuid && cacheActiveUuids.has(seg.ipxoServiceUuid)) continue;
     const idx = localData.ipSegments.findIndex((s: any) => s.id === seg.id);
     if (idx === -1) continue;
     localData.ipSegments[idx].renewalStatus = 'cancelled';
@@ -1528,6 +1553,10 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
   if (addedCount > 0 || cancelledCount > 0 || updatedCount > 0) {
     localData.exportTime = nowIso;
     fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
+  }
+
+  if (reactivatedCount > 0) {
+    console.log(`[IpxoSync] 自动同步：重新激活 ${reactivatedCount} 条已取消/退款段`);
   }
 
   return { addedCount, cancelledCount, updatedCount };
@@ -1696,6 +1725,13 @@ async function autoSyncFromLarusCache(): Promise<{ addedCount: number; updatedCo
 
 // ===================== Dulvora 映射表 =====================
 const DULVORA_GROUP_MAP: Record<string, string> = { 'A': 'A组-JUMP', 'B': 'B组-ST' };
+const DULVORA_PROVIDER_MAP: Record<string, string> = {
+  'IPXO': 'IPXO', 'ipxo': 'IPXO',
+  'Larus': 'LARUS',
+  'Neto': 'NetO', 'NetO': 'NetO',
+  'GTT': 'GTT',
+  'Interlir': 'Interlir',
+};
 const DULVORA_SKIP_GROUPS = new Set(['资源', '广告', '俄罗斯测试']);
 const DULVORA_IDC_MAP: Record<string, string> = {
   'ZEN-法兰克福': 'ZEN法兰克福', 'ZEN-华盛顿': 'ZEN华盛顿', 'ZEN-达拉斯': 'ZEN达拉斯',
@@ -1714,9 +1750,9 @@ function normalizeAsnDigits(raw: string): string {
 }
 
 // ===================== Dulvora 同步 =====================
-async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPurchaseCount: number; fieldSyncCount: number }> {
+async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPurchaseCount: number; fieldSyncCount: number; addedCount: number }> {
   const cfg = loadDulvoraConfig();
-  if (!cfg || !cfg.enabled) return { updatedCount: 0, multiPurchaseCount: 0, fieldSyncCount: 0 };
+  if (!cfg || !cfg.enabled) return { updatedCount: 0, multiPurchaseCount: 0, fieldSyncCount: 0, addedCount: 0 };
 
   const headers = { 'X-API-Key': cfg.apiKey };
   const [archivedResp, activeResp] = await Promise.all([
@@ -1735,6 +1771,11 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
   const localSegments: any[] = localData.ipSegments || [];
   const nowIso = new Date().toISOString();
 
+  const localBySegment = new Map<string, any>();
+  for (const s of localSegments) {
+    if (s.segment) localBySegment.set(s.segment.trim().toLowerCase(), s);
+  }
+
   const archivedBySegment = new Map<string, any>();
   for (const item of archivedItems) {
     if (item.cidr) archivedBySegment.set(item.cidr.trim().toLowerCase(), item);
@@ -1747,10 +1788,35 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
   let updatedCount = 0;
   let multiPurchaseCount = 0;
   let fieldSyncCount = 0;
+  let addedCount = 0;
   const RE_LET_MIN_GAP_DAYS = 30;
   const usageAreas: any[] = localData.usageAreas || [];
   const usageAreaNames = new Set(usageAreas.map((u: any) => u.name));
   const usedColors = new Set(usageAreas.map((u: any) => u.color));
+
+  // 辅助：从 Dulvora item 构建字段同步值
+  function dulvoraFieldsFromItem(item: any) {
+    const group = item.group || '';
+    const idc = item.idc || '';
+    const provider = item.provider || '';
+    return {
+      supplier: DULVORA_PROVIDER_MAP[provider] || provider.toUpperCase() || '',
+      projectGroups: (!DULVORA_SKIP_GROUPS.has(group) && DULVORA_GROUP_MAP[group]) ? [DULVORA_GROUP_MAP[group]] : [],
+      usageArea: (!DULVORA_SKIP_IDC.has(idc) && idc) ? (DULVORA_IDC_MAP[idc] || idc) : '',
+      asn: normalizeAsnDigits(item.asn || ''),
+    };
+  }
+
+  // 辅助：确保 usageArea 配置存在
+  function ensureUsageArea(areaName: string) {
+    if (areaName && !usageAreaNames.has(areaName)) {
+      const color = DULVORA_AUTO_COLORS.find(c => !usedColors.has(c)) || DULVORA_AUTO_COLORS[0];
+      usageAreas.push({ id: `ua-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: areaName, color });
+      usageAreaNames.add(areaName);
+      usedColors.add(color);
+      console.log(`[DulvoraSync] 自动创建宣告地区: ${areaName}`);
+    }
+  }
 
   for (let i = 0; i < localSegments.length; i++) {
     const seg = localSegments[i];
@@ -1758,36 +1824,56 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
 
     // ── 下架日期同步（archived 段）──
     const archivedItem = archivedBySegment.get(cidr);
-    if (archivedItem?.archivedAt && archivedItem.archivedAt !== seg.cancellationDate) {
-      const oldCancel = (seg.cancellationDate || '').trim();
-      if (oldCancel) {
-        const oldMs = new Date(oldCancel).getTime();
-        const newMs = new Date(archivedItem.archivedAt).getTime();
-        const gapDays = (newMs - oldMs) / (24 * 60 * 60 * 1000);
-        if (gapDays > RE_LET_MIN_GAP_DAYS) {
-          console.log(`[DulvoraSync] ${seg.segment} 下架日期跳变 ${oldCancel} → ${archivedItem.archivedAt}（${Math.round(gapDays)}天），标记多次购买`);
-          if (seg.purchaseDate) {
-            const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
-            if (!records.some((r: any) => r.date === seg.purchaseDate)) {
-              records.push(seg.monthlyPrice ? { date: seg.purchaseDate, fee: seg.monthlyPrice } : { date: seg.purchaseDate });
-              records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-              seg.previousPurchaseRecords = records;
+    if (archivedItem) {
+      let archChanged = false;
+      // 下架日期
+      if (archivedItem.archivedAt && archivedItem.archivedAt !== seg.cancellationDate) {
+        const oldCancel = (seg.cancellationDate || '').trim();
+        if (oldCancel) {
+          const oldMs = new Date(oldCancel).getTime();
+          const newMs = new Date(archivedItem.archivedAt).getTime();
+          const gapDays = (newMs - oldMs) / (24 * 60 * 60 * 1000);
+          if (gapDays > RE_LET_MIN_GAP_DAYS) {
+            console.log(`[DulvoraSync] ${seg.segment} 下架日期跳变 ${oldCancel} → ${archivedItem.archivedAt}（${Math.round(gapDays)}天），标记多次购买`);
+            if (seg.purchaseDate) {
+              const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
+              if (!records.some((r: any) => r.date === seg.purchaseDate)) {
+                records.push(seg.monthlyPrice ? { date: seg.purchaseDate, fee: seg.monthlyPrice } : { date: seg.purchaseDate });
+                records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+                seg.previousPurchaseRecords = records;
+              }
+              const dates: string[] = seg.previousPurchaseDates || [];
+              if (!dates.includes(seg.purchaseDate)) {
+                seg.previousPurchaseDates = [...new Set([...dates, seg.purchaseDate])].sort();
+              }
             }
-            const dates: string[] = seg.previousPurchaseDates || [];
-            if (!dates.includes(seg.purchaseDate)) {
-              seg.previousPurchaseDates = [...new Set([...dates, seg.purchaseDate])].sort();
-            }
+            seg.multiPurchaseMarked = true;
+            multiPurchaseCount++;
           }
-          seg.multiPurchaseMarked = true;
-          multiPurchaseCount++;
         }
+        if (seg.renewalStatus !== 'cancelled' && seg.renewalStatus !== 'refunded') {
+          seg.renewalStatus = 'cancelled';
+        }
+        seg.cancellationDate = archivedItem.archivedAt;
+        archChanged = true;
+        updatedCount++;
       }
-      if (seg.renewalStatus !== 'cancelled' && seg.renewalStatus !== 'refunded') {
-        seg.renewalStatus = 'cancelled';
+      // 供应商（空时覆盖）
+      const curSupplier = (seg.supplier || '').trim();
+      if (!curSupplier && archivedItem.provider) {
+        seg.supplier = DULVORA_PROVIDER_MAP[archivedItem.provider] || archivedItem.provider.toUpperCase();
+        archChanged = true;
       }
-      seg.cancellationDate = archivedItem.archivedAt;
-      seg.updatedAt = nowIso;
-      updatedCount++;
+      // 项目组（空数组时覆盖）
+      const curGroups: string[] = seg.projectGroups || [];
+      const archGroup = archivedItem.group || '';
+      if (curGroups.length === 0 && !DULVORA_SKIP_GROUPS.has(archGroup) && DULVORA_GROUP_MAP[archGroup]) {
+        seg.projectGroups = [DULVORA_GROUP_MAP[archGroup]];
+        archChanged = true;
+      }
+      if (archChanged) {
+        seg.updatedAt = nowIso;
+      }
     }
 
     // ── 字段同步（active 段）──
@@ -1799,6 +1885,12 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
     if (DULVORA_SKIP_IDC.has(idc)) continue;
 
     let fieldChanged = false;
+    // 供应商（空时覆盖）
+    const curSupplier = (seg.supplier || '').trim();
+    if (!curSupplier && activeItem.provider) {
+      seg.supplier = DULVORA_PROVIDER_MAP[activeItem.provider] || activeItem.provider.toUpperCase();
+      fieldChanged = true;
+    }
     // 项目组
     const curGroups: string[] = seg.projectGroups || [];
     if (curGroups.length === 0 && DULVORA_GROUP_MAP[group]) {
@@ -1811,13 +1903,7 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
       const mapped = DULVORA_IDC_MAP[idc] || idc;
       seg.usageArea = mapped;
       fieldChanged = true;
-      if (!usageAreaNames.has(mapped)) {
-        const color = DULVORA_AUTO_COLORS.find(c => !usedColors.has(c)) || DULVORA_AUTO_COLORS[0];
-        usageAreas.push({ id: `ua-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: mapped, color });
-        usageAreaNames.add(mapped);
-        usedColors.add(color);
-        console.log(`[DulvoraSync] 自动创建宣告地区: ${mapped}`);
-      }
+      ensureUsageArea(mapped);
     }
     // ASN
     const curAsn = (seg.asn || '').trim();
@@ -1832,13 +1918,49 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
     }
   }
 
-  if (updatedCount > 0 || fieldSyncCount > 0) {
+  // ── 新增段：Dulvora 有但本地没有的 ──
+  const allDulvoraItems = [
+    ...archivedItems.map(it => ({ ...it, _source: 'archived' as const })),
+    ...activeItems.map(it => ({ ...it, _source: 'active' as const })),
+  ];
+  for (const item of allDulvoraItems) {
+    const cidr = (item.cidr || '').trim();
+    if (!cidr) continue;
+    if (localBySegment.has(cidr.toLowerCase())) continue;
+    const fields = dulvoraFieldsFromItem(item);
+    if (fields.usageArea) ensureUsageArea(fields.usageArea);
+    const newSeg: any = {
+      id: `ip-${Date.now()}-${Math.random()}-dulvora`,
+      segment: cidr,
+      supplier: fields.supplier,
+      asn: fields.asn,
+      usageArea: fields.usageArea,
+      purchaseDate: item.purchaseDate || '',
+      renewalDate: item._source === 'active' ? (item.expiresAt || '') : '',
+      cancellationDate: item._source === 'archived' ? (item.archivedAt || '') : '',
+      monthlyPrice: item.price || 0,
+      renewalStatus: item._source === 'archived' ? 'cancelled' : 'not_renewed',
+      projectGroups: fields.projectGroups,
+      serverLocations: [],
+      blockedCountries: [],
+      rateLimitedCountries: [],
+      detectedCountries: [],
+      history: [],
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    localData.ipSegments.push(newSeg);
+    localBySegment.set(cidr.toLowerCase(), newSeg);
+    addedCount++;
+  }
+
+  if (updatedCount > 0 || fieldSyncCount > 0 || addedCount > 0) {
     localData.usageAreas = usageAreas;
     localData.exportTime = nowIso;
     fs.writeFileSync(dataFilePath, JSON.stringify(localData, null, 2), 'utf-8');
   }
 
-  return { updatedCount, multiPurchaseCount, fieldSyncCount };
+  return { updatedCount, multiPurchaseCount, fieldSyncCount, addedCount };
 }
 
 /**
@@ -3414,10 +3536,15 @@ function startIpxoCacheRefreshScheduler(): void {
         lastDulvoraSyncDate = bjDate;
         try {
           const r = await autoSyncArchivedDates();
-          if (r.updatedCount > 0 || r.multiPurchaseCount > 0) {
-            console.log(`[DulvoraSync] 下架日期同步完成：更新 ${r.updatedCount} 条，多次购买标记 ${r.multiPurchaseCount} 条`);
+          if (r.updatedCount > 0 || r.multiPurchaseCount > 0 || r.addedCount > 0 || r.fieldSyncCount > 0) {
+            const parts: string[] = [];
+            if (r.updatedCount) parts.push(`下架日期更新 ${r.updatedCount} 条`);
+            if (r.multiPurchaseCount) parts.push(`多次购买标记 ${r.multiPurchaseCount} 条`);
+            if (r.addedCount) parts.push(`新增 ${r.addedCount} 条`);
+            if (r.fieldSyncCount) parts.push(`字段同步 ${r.fieldSyncCount} 条`);
+            console.log(`[DulvoraSync] 同步完成：${parts.join('，')}`);
           } else {
-            console.log('[DulvoraSync] 下架日期同步完成：无变化');
+            console.log('[DulvoraSync] 同步完成：无变化');
           }
         } catch (e: any) {
           console.error('[DulvoraSync] 同步失败:', e.message);
@@ -8820,12 +8947,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
         const localSegments: any[] = localData.ipSegments || [];
         const nowIso = new Date().toISOString();
 
-        // 建立本地索引
+        // 建立本地索引（仅按段名匹配）
         const localBySegment = new Map<string, any>();
-        const localByIpxoUuid = new Map<string, any>();
         for (const s of localSegments) {
           localBySegment.set(s.segment, s);
-          if (s.ipxoServiceUuid) localByIpxoUuid.set(s.ipxoServiceUuid, s);
         }
 
         // 缓存中 active 服务集合
@@ -8839,15 +8964,23 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
 
         const toAdd: any[] = [];    // 缓存有，本地无
         const toCancel: any[] = []; // 本地有（ipxo来源），缓存无 active 记录
+        const toReactivate: any[] = []; // 缓存 active，本地 cancelled/refunded → 重新租用
 
-        // 1. 扫描缓存，找出本地缺少的
+        // 缓存中 active 服务的 UUID 集合
+        const cacheActiveUuids = new Set<string>();
+        for (const svc of cache.services.data) {
+          const mu = svc.market_service?.uuid;
+          if (mu && (svc.billing_service?.status || '').toLowerCase() === 'active') cacheActiveUuids.add(mu);
+        }
+
+        // 1. 扫描缓存，找出本地缺少的 / 需要重新激活的（仅按段名匹配）
         for (const svc of cache.services.data) {
           const bs = svc.billing_service;
           if (!bs?.address || bs.cidr == null) continue;
           if ((bs.status || '').toLowerCase() !== 'active') continue;
           const segStr = `${bs.address}/${bs.cidr}`;
           const marketUuid = svc.market_service?.uuid || '';
-          const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+          const existing = localBySegment.get(segStr);
           if (!existing) {
             const nextDueDate = bs.next_due_date ? new Date(bs.next_due_date * 1000).toISOString().slice(0, 10) : '';
             toAdd.push({
@@ -8859,17 +8992,25 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
               marketUuid,
               loa: svc.loa ?? [],
             });
+          } else if (['cancelled', 'refunded'].includes(existing.renewalStatus) || (existing.cancellationDate && existing.cancellationDate.trim())) {
+            toReactivate.push({
+              _action: 'reactivate',
+              segment: segStr,
+              localId: existing.id,
+              oldRenewalStatus: existing.renewalStatus,
+              oldCancellationDate: existing.cancellationDate || '',
+              monthlyPrice: bs.recurring_amount ?? 0,
+            });
           }
         }
 
         // 2. 扫描本地，找出缓存中已不存在的 active ipxo 来源记录
         for (const seg of localSegments) {
           if (!seg.segment) continue;
-          // 只处理来自 IPXO 同步的记录，且当前非终态
           if (seg.syncSource !== 'ipxo_api') continue;
           if (['cancelled', 'refunded'].includes(seg.renewalStatus)) continue;
-          if (cacheActiveSet.has(seg.segment)) continue; // 缓存中仍然存在，不处理
-          // 取消日期 = 本地续费日前一天
+          if (cacheActiveSet.has(seg.segment)) continue;
+          if (seg.ipxoServiceUuid && cacheActiveUuids.has(seg.ipxoServiceUuid)) continue;
           const renewalDate = seg.renewalDate;
           let cancellationDate = '';
           if (renewalDate) {
@@ -8902,9 +9043,13 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
             mode: syncMode,
             toAdd: filteredAdd.length,
             toUpdate: filteredUpdate.length,
+            toReactivate: toReactivate.length,
+            toRename: 0,
             toUuidUpdate: 0,
             toAddItems: filteredAdd,
             toUpdateItems: filteredUpdate,
+            toReactivateItems: toReactivate,
+            toRenameItems: [],
             ipxoTotal: cache.services.data.length,
             localTotal: localSegments.length,
           }));
@@ -8962,13 +9107,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
         }
 
         // 已有记录 → 更新 ASN、购买时间、续费日、月费、续费状态
+        let reactivatedCount = 0;
         for (const svc of cache.services.data) {
           const bs = svc.billing_service;
           if (!bs?.address || bs.cidr == null) continue;
           if ((bs.status || '').toLowerCase() !== 'active') continue;
           const segStr = `${bs.address}/${bs.cidr}`;
           const marketUuid = svc.market_service?.uuid || '';
-          const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+          const existing = localBySegment.get(segStr);
           if (!existing) continue;
           const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
           if (idx === -1) continue;
@@ -8976,6 +9122,30 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           const meta = extractIpxoServiceMeta(svc);
           const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
           let changed = false;
+
+          // IPXO active 但本地 cancelled/refunded → 重新租用
+          if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && seg.cancellationDate.trim())) {
+            if (seg.purchaseDate) {
+              const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
+              if (!records.some((r: any) => r.date === seg.purchaseDate)) {
+                records.push(seg.monthlyPrice ? { date: seg.purchaseDate, fee: seg.monthlyPrice } : { date: seg.purchaseDate });
+                records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+                seg.previousPurchaseRecords = records;
+              }
+              const dates: string[] = seg.previousPurchaseDates || [];
+              if (!dates.includes(seg.purchaseDate)) {
+                seg.previousPurchaseDates = [...new Set([...dates, seg.purchaseDate])].sort();
+              }
+            }
+            seg.multiPurchaseMarked = true;
+            seg.renewalStatus = 'not_renewed';
+            seg.cancellationDate = '';
+            if (!seg.ipxoServiceUuid && marketUuid) seg.ipxoServiceUuid = marketUuid;
+            if (seg.syncSource !== 'ipxo_api') seg.syncSource = 'ipxo_api';
+            changed = true;
+            reactivatedCount++;
+          }
+
           if (allLoaAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allLoaAsns)) {
             seg.additionalAsns = allLoaAsns; changed = true;
           }
@@ -8983,7 +9153,6 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
           const ipxoMonthlyPrice = bs.recurring_amount ?? null;
           if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
-          // 不覆盖用户手动设置的 cancelled / refunded 状态（同 autoSyncFromIpxoCache）。
           if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
         }
 
@@ -8997,7 +9166,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           addedCount,
           cancelledCount,
           updatedCount,
-          message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条，更新 ${updatedCount} 条`,
+          reactivatedCount,
+          renamedCount: 0,
+          message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条，更新 ${updatedCount} 条${reactivatedCount > 0 ? `，重新激活 ${reactivatedCount} 条` : ''}`,
         }));
       } catch (e: any) {
         res.statusCode = 500;
@@ -9029,10 +9200,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
         const nowIso = new Date().toISOString();
 
         const localBySegment = new Map<string, any>();
-        const localByIpxoUuid = new Map<string, any>();
         for (const s of localSegments) {
           localBySegment.set(s.segment, s);
-          if (s.ipxoServiceUuid) localByIpxoUuid.set(s.ipxoServiceUuid, s);
         }
 
         // 缓存中 active 服务的 segment 集合
@@ -9046,17 +9215,26 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
 
         const toAdd: any[] = [];
         const toCancel: any[] = [];
+        const toReactivate: any[] = [];
 
-        // 1. 缓存有，本地无 → 新增
+        // 缓存中 active 服务的 UUID 集合（用于 toCancel 排除同 UUID 仍有 active 服务的记录）
+        const cacheActiveUuids = new Set<string>();
+        for (const svc of cache.services.data) {
+          const mu = svc.market_service?.uuid;
+          if (mu && (svc.billing_service?.status || '').toLowerCase() === 'active') cacheActiveUuids.add(mu);
+        }
+
+        // 1. 缓存有，本地无 → 新增；本地 cancelled/refunded → 重新激活
+        //    注意：同一 UUID 可能对应多个段，按段名匹配为主
         for (const svc of cache.services.data) {
           const bs = svc.billing_service;
           if (!bs?.address || bs.cidr == null) continue;
           if ((bs.status || '').toLowerCase() !== 'active') continue;
           const segStr = `${bs.address}/${bs.cidr}`;
-          const marketUuid = svc.market_service?.uuid || '';
-          const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+          const existing = localBySegment.get(segStr);
           if (!existing) {
             const nextDueDate = bs.next_due_date ? new Date(bs.next_due_date * 1000).toISOString().slice(0, 10) : '';
+            const marketUuid = svc.market_service?.uuid || '';
             toAdd.push({
               _action: 'add',
               segment: segStr,
@@ -9068,16 +9246,26 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
               loa: svc.loa ?? [],
               hasPendingOrder: !!svc.ecommerce_pending_order,
             });
+          } else if (['cancelled', 'refunded'].includes(existing.renewalStatus) || (existing.cancellationDate && existing.cancellationDate.trim())) {
+            toReactivate.push({
+              _action: 'reactivate',
+              segment: segStr,
+              localId: existing.id,
+              oldRenewalStatus: existing.renewalStatus,
+              oldCancellationDate: existing.cancellationDate || '',
+              monthlyPrice: bs.recurring_amount ?? 0,
+            });
           }
         }
 
         // 2. 本地有（ipxo_api来源，非终态），缓存中已无 active 记录 → 取消
+        //    排除 UUID 仍有 active 服务的记录（同 UUID 多段场景）
         for (const seg of localSegments) {
           if (!seg.segment) continue;
           if (seg.syncSource !== 'ipxo_api') continue;
           if (['cancelled', 'refunded'].includes(seg.renewalStatus)) continue;
           if (cacheActiveSet.has(seg.segment)) continue;
-          // 取消日期 = 续费日前一天
+          if (seg.ipxoServiceUuid && cacheActiveUuids.has(seg.ipxoServiceUuid)) continue;
           let cancellationDate = '';
           if (seg.renewalDate) {
             const d = new Date(seg.renewalDate);
@@ -9101,8 +9289,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
             preview: true,
             toAdd: toAdd.length,
             toCancel: toCancel.length,
+            toReactivate: toReactivate.length,
             toAddItems: toAdd,
             toCancelItems: toCancel,
+            toReactivateItems: toReactivate,
             cacheTotal: cache.services.data.length,
             localTotal: localSegments.length,
           }));
@@ -9161,13 +9351,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
         }
 
         // 已有记录 → 更新 ASN、购买时间、续费日、月费、续费状态
+        let reactivatedCount = 0;
         for (const svc of cache.services.data) {
           const bs = svc.billing_service;
           if (!bs?.address || bs.cidr == null) continue;
           if ((bs.status || '').toLowerCase() !== 'active') continue;
           const segStr = `${bs.address}/${bs.cidr}`;
           const marketUuid = svc.market_service?.uuid || '';
-          const existing = localBySegment.get(segStr) || localByIpxoUuid.get(marketUuid);
+          const existing = localBySegment.get(segStr);
           if (!existing) continue;
           const idx = localData.ipSegments.findIndex((s: any) => s.id === existing.id);
           if (idx === -1) continue;
@@ -9175,6 +9366,30 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           const meta = extractIpxoServiceMeta(svc);
           const allLoaAsns = [meta.primaryAsn, ...meta.additionalAsns].filter(Boolean);
           let changed = false;
+
+          // IPXO active 但本地 cancelled/refunded → 重新租用
+          if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && seg.cancellationDate.trim())) {
+            if (seg.purchaseDate) {
+              const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
+              if (!records.some((r: any) => r.date === seg.purchaseDate)) {
+                records.push(seg.monthlyPrice ? { date: seg.purchaseDate, fee: seg.monthlyPrice } : { date: seg.purchaseDate });
+                records.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+                seg.previousPurchaseRecords = records;
+              }
+              const dates: string[] = seg.previousPurchaseDates || [];
+              if (!dates.includes(seg.purchaseDate)) {
+                seg.previousPurchaseDates = [...new Set([...dates, seg.purchaseDate])].sort();
+              }
+            }
+            seg.multiPurchaseMarked = true;
+            seg.renewalStatus = 'not_renewed';
+            seg.cancellationDate = '';
+            if (!seg.ipxoServiceUuid && marketUuid) seg.ipxoServiceUuid = marketUuid;
+            if (seg.syncSource !== 'ipxo_api') seg.syncSource = 'ipxo_api';
+            changed = true;
+            reactivatedCount++;
+          }
+
           if (allLoaAsns.length > 0 && JSON.stringify(seg.additionalAsns || []) !== JSON.stringify(allLoaAsns)) {
             seg.additionalAsns = allLoaAsns; changed = true;
           }
@@ -9182,7 +9397,6 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           if (meta.renewalDate && seg.renewalDate !== meta.renewalDate) { seg.renewalDate = meta.renewalDate; changed = true; }
           const ipxoMonthlyPrice = bs.recurring_amount ?? null;
           if (ipxoMonthlyPrice !== null && seg.monthlyPrice !== ipxoMonthlyPrice) { seg.monthlyPrice = ipxoMonthlyPrice; changed = true; }
-          // 不覆盖用户手动设置的 cancelled / refunded 状态（同 autoSyncFromIpxoCache）。
           if (changed) { seg.ipxoLastSyncAt = nowIso; seg.updatedAt = nowIso; updatedCount++; }
         }
 
@@ -9196,7 +9410,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           addedCount,
           cancelledCount,
           updatedCount,
-          message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条，更新 ${updatedCount} 条`,
+          reactivatedCount,
+          renamedCount: 0,
+          message: `同步完成：新增 ${addedCount} 条，取消 ${cancelledCount} 条，更新 ${updatedCount} 条${reactivatedCount > 0 ? `，重新激活 ${reactivatedCount} 条` : ''}`,
         }));
 
         // 后台同步 IPXO LOA 到 CDS（不阻塞响应）
@@ -11435,6 +11651,10 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
         }
         const localSegments: any[] = localData.ipSegments || [];
 
+        const localBySegment = new Map<string, any>();
+        for (const s of localSegments) {
+          if (s.segment) localBySegment.set(s.segment.trim().toLowerCase(), s);
+        }
         const archivedBySegment = new Map<string, any>();
         for (const item of archivedItems) {
           if (item.cidr) archivedBySegment.set(item.cidr.trim().toLowerCase(), item);
@@ -11464,7 +11684,23 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
               details.push(`${seg.segment}: ${seg.cancellationDate || '(空)'} → ${archivedItem.archivedAt}`);
             }
           }
-          // 字段同步预览
+          // archived 段供应商/项目组预览
+          if (archivedItem) {
+            const changes: string[] = [];
+            if (!(seg.supplier || '').trim() && archivedItem.provider) {
+              changes.push(`供应商→${DULVORA_PROVIDER_MAP[archivedItem.provider] || archivedItem.provider}`);
+            }
+            const archGroups: string[] = seg.projectGroups || [];
+            const archGroup = archivedItem.group || '';
+            if (archGroups.length === 0 && !DULVORA_SKIP_GROUPS.has(archGroup) && DULVORA_GROUP_MAP[archGroup]) {
+              changes.push(`项目组→${DULVORA_GROUP_MAP[archGroup]}`);
+            }
+            if (changes.length > 0) {
+              toFieldSync++;
+              if (fieldDetails.length < 20) fieldDetails.push(`${seg.segment}: ${changes.join(', ')}`);
+            }
+          }
+          // active 段字段同步预览
           const activeItem = activeBySegment.get(cidr);
           if (!activeItem) continue;
           const group = activeItem.group || '';
@@ -11472,6 +11708,9 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           const idc = activeItem.idc || '';
           if (DULVORA_SKIP_IDC.has(idc)) continue;
           const changes: string[] = [];
+          if (!(seg.supplier || '').trim() && activeItem.provider) {
+            changes.push(`供应商→${DULVORA_PROVIDER_MAP[activeItem.provider] || activeItem.provider}`);
+          }
           const curGroups: string[] = seg.projectGroups || [];
           if (curGroups.length === 0 && DULVORA_GROUP_MAP[group]) {
             changes.push(`项目组→${DULVORA_GROUP_MAP[group]}`);
@@ -11492,7 +11731,34 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
             }
           }
         }
-        res.end(JSON.stringify({ success: true, preview: true, toUpdate, toMultiPurchase, toFieldSync, apiTotal: archivedItems.length, activeTotal: activeItems.length, details, fieldDetails }));
+
+        // 新增段预览：Dulvora 有但本地没有的
+        const addDetails: string[] = [];
+        const allDulvoraItems = [
+          ...archivedItems.map(it => ({ ...it, _source: 'archived' })),
+          ...activeItems.map(it => ({ ...it, _source: 'active' })),
+        ];
+        const seenCidrs = new Set<string>();
+        for (const item of allDulvoraItems) {
+          const cidr = (item.cidr || '').trim();
+          if (!cidr) continue;
+          const key = cidr.toLowerCase();
+          if (localBySegment.has(key) || seenCidrs.has(key)) continue;
+          seenCidrs.add(key);
+          const provider = DULVORA_PROVIDER_MAP[item.provider] || item.provider || '';
+          const groupLabel = DULVORA_GROUP_MAP[item.group] || item.group || '';
+          if (addDetails.length < 30) {
+            addDetails.push(`${cidr} [${provider}] ${groupLabel} (${item._source === 'archived' ? '已取消' : '活跃'})`);
+          }
+        }
+
+        res.end(JSON.stringify({
+          success: true, preview: true,
+          toUpdate, toMultiPurchase, toFieldSync,
+          toAdd: seenCidrs.size,
+          apiTotal: archivedItems.length, activeTotal: activeItems.length,
+          details, fieldDetails, addDetails,
+        }));
       } else if (req.method === 'POST') {
         const result = await autoSyncArchivedDates();
         res.end(JSON.stringify({ success: true, ...result }));
@@ -11541,6 +11807,397 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
       } else {
         res.statusCode = 405;
         res.end(JSON.stringify({ success: false, message: 'Method not allowed' }));
+      }
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // ─── Gmail Filter Setup API ───────────────────────────────────────
+  const gmailFilterConfigPath = path.resolve(__dirname, 'gmail-filter-config.json');
+  const gmailFilterCredentialsPath = path.resolve(__dirname, 'gmail-filter-credentials.json');
+  const gmailFilterTokensDir = path.resolve(__dirname, 'gmail-filter-tokens');
+
+  function loadGmailFilterConfig(): any {
+    try { return JSON.parse(fs.readFileSync(gmailFilterConfigPath, 'utf-8')); } catch { return null; }
+  }
+  function saveGmailFilterConfig(cfg: any) {
+    fs.writeFileSync(gmailFilterConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');
+  }
+
+  // Helper: read POST body
+  function readReqBody(req: any): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let body = '';
+      req.on('data', (c: any) => { body += c; });
+      req.on('end', () => resolve(body));
+      req.on('error', reject);
+    });
+  }
+
+  // GET/POST config
+  server.middlewares.use('/api/gmail-filter/config', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    const session = getTokenSession(req);
+    if (!session) { res.statusCode = 401; res.end(JSON.stringify({ success: false, message: '未登录' })); return; }
+    try {
+      if (req.method === 'GET') {
+        const cfg = loadGmailFilterConfig() || { forward_to: '', accounts: [], filter_rules: [] };
+        cfg.credentials_set = fs.existsSync(gmailFilterCredentialsPath);
+        res.end(JSON.stringify({ success: true, config: cfg }));
+      } else if (req.method === 'POST') {
+        const body = JSON.parse(await readReqBody(req));
+        const cfg = {
+          forward_to: body.forward_to || '',
+          accounts: body.accounts || [],
+          filter_rules: body.filter_rules || [],
+        };
+        saveGmailFilterConfig(cfg);
+        res.end(JSON.stringify({ success: true }));
+      } else {
+        res.statusCode = 405;
+        res.end(JSON.stringify({ success: false, message: 'Method not allowed' }));
+      }
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // POST credentials
+  server.middlewares.use('/api/gmail-filter/credentials', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method not allowed' })); return; }
+    const session = getTokenSession(req);
+    if (!session) { res.statusCode = 401; res.end(JSON.stringify({ success: false, message: '未登录' })); return; }
+    try {
+      const body = JSON.parse(await readReqBody(req));
+      const creds = JSON.parse(body.credentials); // validate JSON
+      fs.writeFileSync(gmailFilterCredentialsPath, JSON.stringify(creds, null, 2), 'utf-8');
+      res.end(JSON.stringify({ success: true }));
+    } catch (e: any) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ success: false, message: '无效的凭证文件: ' + e.message }));
+    }
+  });
+
+  // GET account statuses
+  server.middlewares.use('/api/gmail-filter/status', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    const session = getTokenSession(req);
+    if (!session) { res.statusCode = 401; res.end(JSON.stringify({ success: false, message: '未登录' })); return; }
+    try {
+      const cfg = loadGmailFilterConfig();
+      if (!cfg) { res.end(JSON.stringify({ success: true, statuses: [] })); return; }
+      if (!fs.existsSync(gmailFilterTokensDir)) { fs.mkdirSync(gmailFilterTokensDir, { recursive: true }); }
+      const statuses = (cfg.accounts || []).map((account: string) => {
+        const tokenFile = path.join(gmailFilterTokensDir, `${account}.json`);
+        const authed = fs.existsSync(tokenFile);
+        return { account, authed, forwarding_verified: false, filters_count: 0 };
+      });
+      res.end(JSON.stringify({ success: true, statuses }));
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // POST auth-url — generate Google OAuth URL for an account
+  server.middlewares.use('/api/gmail-filter/auth-url', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method not allowed' })); return; }
+    const session = getTokenSession(req);
+    if (!session) { res.statusCode = 401; res.end(JSON.stringify({ success: false, message: '未登录' })); return; }
+    try {
+      if (!fs.existsSync(gmailFilterCredentialsPath)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ success: false, message: '请先上传 OAuth 凭证' }));
+        return;
+      }
+      const body = JSON.parse(await readReqBody(req));
+      const account = body.account;
+      if (!account) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '缺少 account' })); return; }
+
+      const credFile = JSON.parse(fs.readFileSync(gmailFilterCredentialsPath, 'utf-8'));
+      const credData = credFile.web || credFile.installed;
+      if (!credData) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '凭证格式不正确' })); return; }
+
+      const redirectUri = credData.redirect_uris?.[0] || `${req.headers['origin'] || ('http://' + req.headers['host'])}/api/gmail-filter/oauth-callback`;
+      const scopes = [
+        'https://www.googleapis.com/auth/gmail.settings.basic',
+        'https://www.googleapis.com/auth/gmail.settings.sharing',
+      ];
+      const params = new URLSearchParams({
+        client_id: credData.client_id,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: scopes.join(' '),
+        access_type: 'offline',
+        prompt: 'consent',
+        login_hint: account,
+        state: account,
+      });
+      const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+      res.end(JSON.stringify({ success: true, url }));
+    } catch (e: any) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ success: false, message: e.message }));
+    }
+  });
+
+  // GET oauth-callback — handle Google OAuth redirect
+  server.middlewares.use('/api/gmail-filter/oauth-callback', async (req: any, res: any, _next: any) => {
+    if (req.method !== 'GET') { res.statusCode = 405; res.end('Method not allowed'); return; }
+    try {
+      const url = new URL(req.url || '/', `http://${req.headers.host}`);
+      const code = url.searchParams.get('code');
+      const account = url.searchParams.get('state') || 'unknown';
+      const error = url.searchParams.get('error');
+
+      if (error) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end(`<html><body><h2>授权失败</h2><p>${error}</p><script>setTimeout(()=>window.close(),3000)</script></body></html>`);
+        return;
+      }
+      if (!code) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end('<html><body><h2>缺少授权码</h2><script>setTimeout(()=>window.close(),3000)</script></body></html>');
+        return;
+      }
+
+      const credFile = JSON.parse(fs.readFileSync(gmailFilterCredentialsPath, 'utf-8'));
+      const credData = credFile.web || credFile.installed;
+      const redirectUri = credData.redirect_uris?.[0] || `${url.protocol}//${url.host}/api/gmail-filter/oauth-callback`;
+
+      // Exchange code for tokens
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: credData.client_id,
+          client_secret: credData.client_secret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        }).toString(),
+      });
+      const tokenData = await tokenRes.json();
+      if (tokenData.error) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end(`<html><body><h2>Token 交换失败</h2><p>${tokenData.error_description || tokenData.error}</p><script>setTimeout(()=>window.close(),5000)</script></body></html>`);
+        return;
+      }
+
+      // Save token
+      if (!fs.existsSync(gmailFilterTokensDir)) fs.mkdirSync(gmailFilterTokensDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(gmailFilterTokensDir, `${account}.json`),
+        JSON.stringify({
+          access_token: tokenData.access_token,
+          refresh_token: tokenData.refresh_token,
+          token_type: tokenData.token_type,
+          expiry_date: Date.now() + (tokenData.expires_in || 3600) * 1000,
+          client_id: credData.client_id,
+          client_secret: credData.client_secret,
+        }, null, 2),
+        'utf-8'
+      );
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(`<html><body style="font-family:sans-serif;text-align:center;padding-top:60px"><h2 style="color:#52c41a">✓ ${account} 授权成功</h2><p>此窗口将自动关闭…</p><script>setTimeout(()=>window.close(),2000)</script></body></html>`);
+    } catch (e: any) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.end(`<html><body><h2>授权出错</h2><p>${e.message}</p></body></html>`);
+    }
+  });
+
+  // Helper: refresh access token
+  async function refreshGmailToken(tokenData: any): Promise<string> {
+    if (tokenData.expiry_date && Date.now() < tokenData.expiry_date - 60000) {
+      return tokenData.access_token;
+    }
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: tokenData.client_id,
+        client_secret: tokenData.client_secret,
+        refresh_token: tokenData.refresh_token,
+        grant_type: 'refresh_token',
+      }).toString(),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(`Token 刷新失败: ${data.error_description || data.error}`);
+    tokenData.access_token = data.access_token;
+    tokenData.expiry_date = Date.now() + (data.expires_in || 3600) * 1000;
+    return data.access_token;
+  }
+
+  // Helper: Gmail API request
+  async function gmailApi(accessToken: string, endpoint: string, method = 'GET', body?: any) {
+    const opts: any = {
+      method,
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${endpoint}`, opts);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Gmail API ${res.status}: ${errText.slice(0, 300)}`);
+    }
+    return res.json();
+  }
+
+  // Deploy filters to one account
+  async function deployFiltersToAccount(account: string, cfg: any): Promise<any> {
+    const tokenFile = path.join(gmailFilterTokensDir, `${account}.json`);
+    if (!fs.existsSync(tokenFile)) {
+      return { account, status: 'auth_failed', filters: [], errors: ['未授权，请先完成 OAuth 授权'] };
+    }
+    const tokenData = JSON.parse(fs.readFileSync(tokenFile, 'utf-8'));
+    let accessToken: string;
+    try {
+      accessToken = await refreshGmailToken(tokenData);
+      // persist refreshed token
+      fs.writeFileSync(tokenFile, JSON.stringify(tokenData, null, 2), 'utf-8');
+    } catch (e: any) {
+      return { account, status: 'auth_failed', filters: [], errors: [e.message] };
+    }
+
+    const result: any = { account, status: 'success', filters: [], errors: [] };
+    const forwardTo = cfg.forward_to;
+
+    // 1. Ensure forwarding address
+    if (forwardTo) {
+      try {
+        const fwdList = await gmailApi(accessToken, '/settings/forwardingAddresses');
+        const existing = (fwdList.forwardingAddresses || []).find((a: any) => a.forwardingEmail === forwardTo);
+        if (!existing) {
+          await gmailApi(accessToken, '/settings/forwardingAddresses', 'POST', { forwardingEmail: forwardTo });
+          result.status = 'forwarding_pending';
+          result.errors.push(`已添加转发地址 ${forwardTo}，请到该邮箱确认验证邮件`);
+        } else if (existing.verificationStatus !== 'accepted') {
+          result.status = 'forwarding_pending';
+          result.errors.push(`转发地址 ${forwardTo} 状态: ${existing.verificationStatus}`);
+        }
+      } catch (e: any) {
+        if (!e.message.includes('already exists') && !e.message.includes('duplicate')) {
+          result.errors.push(`添加转发地址失败: ${e.message}`);
+        }
+      }
+    }
+
+    // 2. Get existing filters and labels
+    let existingFilters: any[] = [];
+    try {
+      const fl = await gmailApi(accessToken, '/settings/filters');
+      existingFilters = fl.filter || [];
+    } catch { /* empty */ }
+
+    let existingLabels: any[] = [];
+    try {
+      const ll = await gmailApi(accessToken, '/labels');
+      existingLabels = ll.labels || [];
+    } catch { /* empty */ }
+
+    // 3. Create each filter rule
+    for (const rule of (cfg.filter_rules || [])) {
+      try {
+        const criteria: any = {};
+        if (rule.criteria?.from) criteria.from = rule.criteria.from;
+        if (rule.criteria?.subject) criteria.query = `subject:(${rule.criteria.subject})`;
+        if (rule.criteria?.has_words) criteria.query = (criteria.query ? criteria.query + ' ' : '') + rule.criteria.has_words;
+
+        const action: any = {};
+        if (rule.actions?.forward && forwardTo && result.status !== 'forwarding_pending') {
+          action.forward = forwardTo;
+        }
+        if (rule.actions?.label) {
+          let label = existingLabels.find((l: any) => l.name === rule.actions.label);
+          if (!label) {
+            try {
+              label = await gmailApi(accessToken, '/labels', 'POST', {
+                name: rule.actions.label,
+                labelListVisibility: 'labelShow',
+                messageListVisibility: 'show',
+              });
+              existingLabels.push(label);
+            } catch { /* ignore duplicate */ }
+          }
+          if (label) action.addLabelIds = [label.id];
+        }
+        if (rule.actions?.mark_read) action.removeLabelIds = [...(action.removeLabelIds || []), 'UNREAD'];
+        if (rule.actions?.archive) action.removeLabelIds = [...(action.removeLabelIds || []), 'INBOX'];
+        if (rule.actions?.star) action.addLabelIds = [...(action.addLabelIds || []), 'STARRED'];
+
+        // Check for duplicate
+        const dup = existingFilters.find((ef: any) => {
+          const ec = ef.criteria || {};
+          return (ec.from || '') === (criteria.from || '') && (ec.query || '') === (criteria.query || '');
+        });
+        if (dup) {
+          result.filters.push({ name: rule.name, success: true });
+          continue;
+        }
+
+        await gmailApi(accessToken, '/settings/filters', 'POST', { criteria, action });
+        result.filters.push({ name: rule.name, success: true });
+      } catch (e: any) {
+        result.filters.push({ name: rule.name, success: false });
+        result.errors.push(`${rule.name}: ${e.message}`);
+      }
+    }
+
+    return result;
+  }
+
+  // POST deploy
+  server.middlewares.use('/api/gmail-filter/deploy', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: 'Method not allowed' })); return; }
+    const session = getTokenSession(req);
+    if (!session) { res.statusCode = 401; res.end(JSON.stringify({ success: false, message: '未登录' })); return; }
+    try {
+      const cfg = loadGmailFilterConfig();
+      if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '未找到配置' })); return; }
+      if (!fs.existsSync(gmailFilterCredentialsPath)) { res.statusCode = 400; res.end(JSON.stringify({ success: false, message: '未上传 OAuth 凭证' })); return; }
+
+      let body: any = {};
+      try { body = JSON.parse(await readReqBody(req)); } catch { /* empty body OK */ }
+
+      if (body.account) {
+        // Single account
+        const result = await deployFiltersToAccount(body.account, cfg);
+        res.end(JSON.stringify({ success: true, result }));
+      } else {
+        // All accounts
+        const results: any[] = [];
+        for (const account of (cfg.accounts || [])) {
+          const result = await deployFiltersToAccount(account, cfg);
+          results.push(result);
+        }
+        res.end(JSON.stringify({ success: true, results }));
       }
     } catch (e: any) {
       res.statusCode = 500;

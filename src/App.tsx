@@ -45,6 +45,7 @@ import ZenAnnounce from './components/ZenAnnounce';
 import CapitalOnlineAnnounce from './components/CapitalOnlineAnnounce';
 import RemoteDataSync from './components/RemoteDataSync';
 import AuditLogs from './components/AuditLogs';
+import GmailFilterSetup from './components/GmailFilterSetup';
 
 const { Sider, Content } = Layout;
 
@@ -69,6 +70,7 @@ const CONFIG_SUB_KEYS = [
   'config-usage-areas',
   'notify-config',
   'remote-sync',
+  'gmail-filter-setup',
 ] as const;
 const ASN_SUB_KEYS = [
   'asn-management',
@@ -225,6 +227,7 @@ const AppContent: React.FC = () => {
     ...(hasPermission('config-usage-areas') ? [{ key: 'config-usage-areas', icon: <GlobalOutlined />, label: '宣告地区' }] : []),
     ...(hasPermission('notify-config') ? [{ key: 'notify-config', icon: <MailOutlined />, label: '通知配置' }] : []),
     ...(hasPermission('remote-sync') ? [{ key: 'remote-sync', icon: <CloudDownloadOutlined />, label: '远程数据同步' }] : []),
+    ...(hasPermission('gmail-filter-setup') ? [{ key: 'gmail-filter-setup', icon: <MailOutlined />, label: 'Gmail 邮件转发' }] : []),
   ];
   const asnItems = [
     ...(hasPermission('asn-management') ? [{ key: 'asn-management', icon: <NumberOutlined />, label: 'ASN 管理' }] : []),
@@ -420,6 +423,7 @@ const AppContent: React.FC = () => {
           {selectedMenu === 'announce-capital-online' && <CapitalOnlineAnnounce />}
           {selectedMenu === 'remote-sync' && <RemoteDataSync />}
           {selectedMenu === 'audit-logs' && <AuditLogs />}
+          {selectedMenu === 'gmail-filter-setup' && <GmailFilterSetup />}
         </Content>
       </Layout>
     </Layout>

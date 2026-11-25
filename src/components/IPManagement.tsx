@@ -150,6 +150,11 @@ function purchaseDateTooltipTitle(segment: IPSegment, displayDate: string): Reac
   return null;
 }
 
+/** 判断 IP 段是否处于「已取消」状态（取消续费 / 已退款 / 有取消日期） */
+function isSegmentCancelled(seg: IPSegment): boolean {
+  return seg.renewalStatus === 'cancelled' || seg.renewalStatus === 'refunded' || !!(seg.cancellationDate && seg.cancellationDate.trim());
+}
+
 /**
  * 修复：取消续费后又再次购买时，仍保留 cancellationDate / 取消状态会导致一直归在「已取消」，
  * 且 loadData 会把「最后一条历程」的结束日强行写成旧周期到期日，出现结束日早于开始日（负使用时长）。
@@ -188,8 +193,7 @@ function normalizeSegmentHistoryAndRepurchaseSegment(
 
   const expiryDate = calcCancelledExpiry(segment);
   const lastStart = dayjs(last.startDate);
-  const isCancelled =
-    segment.renewalStatus === 'cancelled' || !!(segment.cancellationDate && segment.cancellationDate.trim());
+  const isCancelled = isSegmentCancelled(segment);
 
   let repurchase = false;
   if (isCancelled) {
@@ -215,9 +219,9 @@ function normalizeSegmentHistoryAndRepurchaseSegment(
       : { segment, changed: false };
   }
 
-  // 清除旧取消信息，重置续费状态
+  // 清除旧取消/退款信息，重置续费状态
   const renewalStatus: RenewalStatus =
-    segment.renewalStatus === 'cancelled' ? 'not_renewed' : segment.renewalStatus;
+    (segment.renewalStatus === 'cancelled' || segment.renewalStatus === 'refunded') ? 'not_renewed' : segment.renewalStatus;
 
   // 从历程 startDate 中收集曾经的购买日（早于当前 purchaseDate 的），补入 previousPurchaseDates / previousPurchaseRecords
   const newPurchaseDate = segment.purchaseDate || '';
@@ -303,6 +307,7 @@ const IPManagement: React.FC = () => {
   const [sortBySearchOrder, setSortBySearchOrder] = useState(false);
   /** 仅显示至少两条历程在时间上重叠的 IP 段（与费用统计「历程天数重复累加」风险一致） */
   const [filterOverlappingHistoryOnly, setFilterOverlappingHistoryOnly] = useState(false);
+  const [filterSamePrefix, setFilterSamePrefix] = useState(false);
   const [segmentHistory, setSegmentHistory] = useState<IPSegmentHistory[]>([]);
   const [isHistoryModalVisible, setIsHistoryModalVisible] = useState(false);
   const [isHistoryViewModalVisible, setIsHistoryViewModalVisible] = useState(false);
@@ -611,10 +616,11 @@ const IPManagement: React.FC = () => {
       const previewRes = await fetch('/api/dulvora/sync-archived');
       const preview = await previewRes.json();
       if (!preview.success) { message.error(preview.message || '预览失败'); return; }
-      if (preview.toUpdate === 0 && preview.toFieldSync === 0) { message.info('无需同步，所有数据已是最新'); return; }
+      if (preview.toUpdate === 0 && preview.toFieldSync === 0 && (preview.toAdd || 0) === 0) { message.info('无需同步，所有数据已是最新'); return; }
 
       const detailList = (preview.details as string[]).map((d: string) => `• ${d}`).join('\n');
       const fieldDetailList = (preview.fieldDetails as string[] || []).map((d: string) => `• ${d}`).join('\n');
+      const addDetailList = (preview.addDetails as string[] || []).map((d: string) => `• ${d}`).join('\n');
 
       Modal.confirm({
         title: '同步预览',
@@ -630,9 +636,16 @@ const IPManagement: React.FC = () => {
             )}
             {preview.toFieldSync > 0 && (
               <>
-                <p style={{ marginTop: preview.toUpdate > 0 ? 12 : 0 }}>将同步 <b>{preview.toFieldSync}</b> 条 IP 段的项目组/宣告地区/ASN：</p>
+                <p style={{ marginTop: preview.toUpdate > 0 ? 12 : 0 }}>将同步 <b>{preview.toFieldSync}</b> 条 IP 段的供应商/项目组/宣告地区/ASN：</p>
                 <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 12, background: '#f5f5f5', padding: 8, borderRadius: 4 }}>{fieldDetailList}</pre>
                 {preview.toFieldSync > 20 && <p style={{ color: '#999', margin: '4px 0' }}>仅显示前 20 条</p>}
+              </>
+            )}
+            {(preview.toAdd || 0) > 0 && (
+              <>
+                <p style={{ marginTop: (preview.toUpdate > 0 || preview.toFieldSync > 0) ? 12 : 0 }}>将新增 <b>{preview.toAdd}</b> 条 IP 段（Dulvora 有但本地没有）：</p>
+                <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 12, background: '#f6ffed', padding: 8, borderRadius: 4 }}>{addDetailList}</pre>
+                {preview.toAdd > 30 && <p style={{ color: '#999', margin: '4px 0' }}>仅显示前 30 条</p>}
               </>
             )}
           </div>
@@ -647,8 +660,9 @@ const IPManagement: React.FC = () => {
             if (data.updatedCount > 0) parts.push(`${data.updatedCount} 条下架日期更新`);
             if (data.multiPurchaseCount > 0) parts.push(`${data.multiPurchaseCount} 条标记为多次购买`);
             if (data.fieldSyncCount > 0) parts.push(`${data.fieldSyncCount} 条字段同步`);
+            if (data.addedCount > 0) parts.push(`${data.addedCount} 条新增`);
             message.success(parts.length ? `同步完成：${parts.join('，')}` : '同步完成：无变化');
-            if (data.updatedCount > 0 || data.fieldSyncCount > 0) {
+            if (data.updatedCount > 0 || data.fieldSyncCount > 0 || data.addedCount > 0) {
               cacheVersionRef.current++;
               try {
                 const freshResp = await fetch('/api/get-data');
@@ -675,7 +689,7 @@ const IPManagement: React.FC = () => {
 
   // 获取 IP 段到期时间（用于展示和导出，含取消续费无取消时间时的续费时间回退）
   const getExpiryDateForDisplay = (seg: IPSegment): dayjs.Dayjs | null => {
-    if (seg.renewalStatus === 'cancelled' || seg.cancellationDate) {
+    if (isSegmentCancelled(seg)) {
       const d = calculateCancelledExpiryDate(seg);
       if (d) return d;
       // 仅设置取消续费但无取消时间时，到期时间 = 续费时间（当前周期结束）
@@ -958,8 +972,8 @@ const IPManagement: React.FC = () => {
 
       const rows = segmentsToExport.map(seg => {
         const projectGroups = getEffectiveProjectGroups(seg).join(';');
-        const serverLocations = (seg.serverLocations || []).map(loc => loc.region).join(';');
-        const blockedCountries = (seg.blockedCountries || []).map(c => {
+        const serverLocations = (seg.serverLocations || []).map((loc: any) => loc.region).join(';');
+        const blockedCountries = (seg.blockedCountries || []).map((c: string) => {
           const countryMap: Record<string, string> = {
             'iran': '伊朗', 'myanmar': '缅甸', 'turkmenistan': '土库曼', 'russia': '俄罗斯'
           };
@@ -1074,6 +1088,24 @@ const IPManagement: React.FC = () => {
   const now = dayjs();
 
 
+  // 提取 IP 段的 A.B.C 前缀（前三段）
+  const getIpPrefix = (segment: string): string => {
+    const ip = (segment || '').split('/')[0];
+    const parts = ip.split('.');
+    return parts.length >= 3 ? parts.slice(0, 3).join('.') : ip;
+  };
+
+  // 过滤出前缀出现 ≥2 次的段
+  const applySamePrefixFilter = (segments: any[]): any[] => {
+    if (!filterSamePrefix) return segments;
+    const prefixCount = new Map<string, number>();
+    for (const s of segments) {
+      const prefix = getIpPrefix(s.segment);
+      prefixCount.set(prefix, (prefixCount.get(prefix) || 0) + 1);
+    }
+    return segments.filter(s => (prefixCount.get(getIpPrefix(s.segment)) || 0) >= 2);
+  };
+
   // 解析多个IP段搜索关键词（支持空格、逗号、换行分隔）
   const parseSegmentSearchKeywords = (searchText: string): string[] => {
     if (!searchText.trim()) return [];
@@ -1126,9 +1158,9 @@ const IPManagement: React.FC = () => {
 
   // 过滤后的IP段数据（正常状态）；useMemo 避免无关 state 变动时整块重筛
   const filteredIpSegments = useMemo(() => {
-    return ipSegments.filter((segment) => {
-      // 过滤已取消的
-      if (segment.renewalStatus === 'cancelled' || segment.cancellationDate) {
+    const base = ipSegments.filter((segment) => {
+      // 过滤已取消/已退款的
+      if (isSegmentCancelled(segment)) {
         return false;
       }
       // 供应商筛选
@@ -1151,17 +1183,19 @@ const IPManagement: React.FC = () => {
       }
       return true;
     });
+    return applySamePrefixFilter(base);
   }, [
     ipSegments,
     filteredSupplier,
     filteredSegment,
     filterOverlappingHistoryOnly,
+    filterSamePrefix,
   ]);
 
 
   // 所有IP段（应用筛选条件）；useMemo 同上
   const allIpSegments = useMemo(() => {
-    return ipSegments.filter((segment) => {
+    const base = ipSegments.filter((segment) => {
       if (filteredSupplier && segment.supplier !== filteredSupplier) {
         return false;
       }
@@ -1180,11 +1214,13 @@ const IPManagement: React.FC = () => {
       }
       return true;
     });
+    return applySamePrefixFilter(base);
   }, [
     ipSegments,
     filteredSupplier,
     filteredSegment,
     filterOverlappingHistoryOnly,
+    filterSamePrefix,
   ]);
 
   // 计算已取消IP段的实际到期时间（取消时间所在续费周期的结束时间）
@@ -1228,21 +1264,21 @@ const IPManagement: React.FC = () => {
 
   // 获取用于显示的续费状态：已取消并到期的IP段强制显示「取消续费」
   const getEffectiveRenewalStatusForDisplay = (segment: IPSegment): RenewalStatus => {
-    const isCancelled = segment.renewalStatus === 'cancelled' || !!segment.cancellationDate;
-    if (!isCancelled) return segment.renewalStatus || 'not_renewed';
+    if (!isSegmentCancelled(segment)) return segment.renewalStatus || 'not_renewed';
     const expiryDate = calculateCancelledExpiryDate(segment);
     if (!expiryDate) return segment.renewalStatus || 'not_renewed';
     const nowRef = dayjs();
     if (nowRef.isAfter(expiryDate) || nowRef.isSame(expiryDate, 'day')) {
-      return 'cancelled'; // 已取消并到期，显示取消续费
+      // 已取消/退款并到期：退款段保持 'refunded' 显示，取消段显示 'cancelled'
+      return segment.renewalStatus === 'refunded' ? 'refunded' : 'cancelled';
     }
     return segment.renewalStatus || 'not_renewed';
   };
 
   // 已取消但还未到期的IP段数据（到期日与列表「到期时间」列一致：含仅取消续费、无取消时间时用续费时间）
-  const cancelledButNotExpiredSegments = ipSegments.filter(segment => {
-    // 必须是已取消的
-    if (segment.renewalStatus !== 'cancelled' && !segment.cancellationDate) {
+  const cancelledButNotExpiredSegments = applySamePrefixFilter(ipSegments.filter(segment => {
+    // 必须是已取消/已退款的
+    if (!isSegmentCancelled(segment)) {
       return false;
     }
 
@@ -1275,12 +1311,12 @@ const IPManagement: React.FC = () => {
       return false;
     }
     return true;
-  });
+  }));
 
   // 已取消且已到期的IP段数据（到期判断与 getExpiryDateForDisplay 一致）
-  const cancelledIpSegments = ipSegments.filter(segment => {
-    // 必须是已取消的
-    if (segment.renewalStatus !== 'cancelled' && !segment.cancellationDate) {
+  const cancelledIpSegments = applySamePrefixFilter(ipSegments.filter(segment => {
+    // 必须是已取消/已退款的
+    if (!isSegmentCancelled(segment)) {
       return false;
     }
 
@@ -1311,7 +1347,7 @@ const IPManagement: React.FC = () => {
       return false;
     }
     return true;
-  });
+  }));
 
   // 按搜索顺序展示时，对当前 tab 的数据进行排序（仅当开启功能且有 IP 段筛选时生效）
   const searchKeywords = useMemo(() => parseSegmentSearchKeywords(filteredSegment), [filteredSegment]);
@@ -3165,8 +3201,8 @@ const IPManagement: React.FC = () => {
         // 判断IP段状态，参考到期时间字段的颜色逻辑
         let tagColor: 'red' | 'orange' | 'green' = 'green';
         
-        if (record.renewalStatus === 'cancelled' || record.cancellationDate) {
-          // 已取消的IP段
+        if (isSegmentCancelled(record)) {
+          // 已取消/已退款的IP段
           const expiryDate = calculateCancelledExpiryDate(record);
           if (expiryDate) {
             if (expiryDate.isBefore(now, 'day')) {
@@ -3490,9 +3526,7 @@ const IPManagement: React.FC = () => {
         return dayjs(a.renewalDate).valueOf() - dayjs(b.renewalDate).valueOf();
       },
       render: (date: string, seg: IPSegment) => {
-        const hasCancellation = !!(seg.cancellationDate && seg.cancellationDate.trim());
-        const isCancelledOrRefunded = seg.renewalStatus === 'cancelled' || seg.renewalStatus === 'refunded';
-        if (hasCancellation || isCancelledOrRefunded) {
+        if (isSegmentCancelled(seg)) {
           return <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>-</Text>;
         }
         return date ? (
@@ -3950,6 +3984,14 @@ const IPManagement: React.FC = () => {
                   onChange={(e) => setFilterOverlappingHistoryOnly(e.target.checked)}
                 >
                   仅历程时间重叠
+                </Checkbox>
+              </Tooltip>
+              <Tooltip title="筛选 IP 前三段（A.B.C）相同的 IP 段，例如 1.2.3.0/24 和 1.2.3.0/23">
+                <Checkbox
+                  checked={filterSamePrefix}
+                  onChange={(e) => setFilterSamePrefix(e.target.checked)}
+                >
+                  仅相同前缀
                 </Checkbox>
               </Tooltip>
             </Space>
@@ -4492,7 +4534,7 @@ const IPManagement: React.FC = () => {
                           width: 120,
                           render: (date: string | undefined, record, index) => {
                             // 判断是否为已取消的IP段的最后一条记录
-                            const isCancelled = editingSegment && (editingSegment.renewalStatus === 'cancelled' || editingSegment.cancellationDate);
+                            const isCancelled = editingSegment && isSegmentCancelled(editingSegment);
                             const expiryDate = editingSegment ? calculateCancelledExpiryDate(editingSegment) : null;
                             const now = dayjs();
                             const sortedHistory = [...segmentHistory].sort((a, b) => 
@@ -4529,7 +4571,7 @@ const IPManagement: React.FC = () => {
                           width: 100,
                           render: (_, record, index) => {
                             // 判断是否为已取消的IP段的最后一条记录
-                            const isCancelled = editingSegment && (editingSegment.renewalStatus === 'cancelled' || editingSegment.cancellationDate);
+                            const isCancelled = editingSegment && isSegmentCancelled(editingSegment);
                             const sortedHistory = [...segmentHistory].sort((a, b) => 
                               dayjs(a.startDate).valueOf() - dayjs(b.startDate).valueOf()
                             );
@@ -4745,7 +4787,7 @@ const IPManagement: React.FC = () => {
                       width: 120,
                       render: (date: string | undefined, record, index) => {
                         // 判断是否为已取消的IP段的最后一条记录
-                        const isCancelled = viewingSegment && (viewingSegment.renewalStatus === 'cancelled' || viewingSegment.cancellationDate);
+                        const isCancelled = viewingSegment && isSegmentCancelled(viewingSegment);
                         const sortedHistory = [...displayHistory].sort((a, b) => 
                           dayjs(a.startDate).valueOf() - dayjs(b.startDate).valueOf()
                         );
@@ -4821,7 +4863,7 @@ const IPManagement: React.FC = () => {
         onOk={() => {
           historyForm.validateFields().then(values => {
             // 检查是否为已取消IP段的最后一条记录
-            const isCancelled = editingSegment && (editingSegment.renewalStatus === 'cancelled' || editingSegment.cancellationDate);
+            const isCancelled = editingSegment && isSegmentCancelled(editingSegment);
             const sortedHistory = [...segmentHistory].sort((a, b) => 
               dayjs(a.startDate).valueOf() - dayjs(b.startDate).valueOf()
             );
@@ -4875,7 +4917,7 @@ const IPManagement: React.FC = () => {
       >
         {(() => {
           // 检查是否为已取消IP段的最后一条记录
-          const isCancelled = editingSegment && (editingSegment.renewalStatus === 'cancelled' || editingSegment.cancellationDate);
+          const isCancelled = editingSegment && isSegmentCancelled(editingSegment);
           const sortedHistory = [...segmentHistory].sort((a, b) => 
             dayjs(a.startDate).valueOf() - dayjs(b.startDate).valueOf()
           );

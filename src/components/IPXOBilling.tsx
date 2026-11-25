@@ -90,9 +90,9 @@ function readCache(key: string): { data: any[]; meta: any; cachedAt: string } | 
   } catch { return null; }
 }
 
-function writeCache(key: string, data: any[], meta: any) {
+function writeCache(key: string, data: any[], meta: any, cachedAt?: string) {
   try {
-    localStorage.setItem(key, JSON.stringify({ data, meta, cachedAt: new Date().toISOString() }));
+    localStorage.setItem(key, JSON.stringify({ data, meta, cachedAt: cachedAt || new Date().toISOString() }));
   } catch { /* 存储满时静默忽略 */ }
 }
 
@@ -217,8 +217,9 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         setInvoices(list);
         setInvoicesMeta(meta);
         if (saveToCache) {
-          writeCache(INVOICES_CACHE_KEY, list, meta);
-          setInvoicesCachedAt(new Date().toISOString());
+          const serverCachedAt = json.cachedAt || new Date().toISOString();
+          writeCache(INVOICES_CACHE_KEY, list, meta, serverCachedAt);
+          setInvoicesCachedAt(serverCachedAt);
         }
       } else {
         message.error('获取发票失败: ' + (json.message || '未知错误'));
@@ -244,8 +245,9 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         setServices(list);
         setServicesMeta(meta);
         if (saveToCache) {
-          writeCache(SERVICES_CACHE_KEY, list, meta);
-          setServicesCachedAt(new Date().toISOString());
+          const serverCachedAt = json.cachedAt || new Date().toISOString();
+          writeCache(SERVICES_CACHE_KEY, list, meta, serverCachedAt);
+          setServicesCachedAt(serverCachedAt);
         }
       } else {
         message.error('获取服务列表失败: ' + (json.message || '未知错误'));
@@ -536,7 +538,6 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
   useEffect(() => {
     loadCacheStatus();
     if (!forcedTab || forcedTab === 'upcoming') {
-      // 近期续费页：只加载 upcoming/renewed
       loadUpcoming(upcomingDays);
       loadRenewed(renewedDays);
     }
@@ -546,6 +547,16 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         setServices(cached.data);
         setServicesMeta(cached.meta);
         setServicesCachedAt(cached.cachedAt);
+        // 异步比对：如果服务端缓存比 localStorage 缓存更新，则重新拉取
+        fetch('/api/ipxo/cache/status').then(r => r.json()).then(json => {
+          if (json.success && json.cachedAt && cached.cachedAt) {
+            const serverTime = new Date(json.cachedAt).getTime();
+            const localTime = new Date(cached.cachedAt).getTime();
+            if (serverTime > localTime) {
+              loadServices(true);
+            }
+          }
+        }).catch(() => {});
       } else {
         loadServices(true);
       }
@@ -556,6 +567,15 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
         setInvoices(cached.data);
         setInvoicesMeta(cached.meta);
         setInvoicesCachedAt(cached.cachedAt);
+        fetch('/api/ipxo/cache/status').then(r => r.json()).then(json => {
+          if (json.success && json.cachedAt && cached.cachedAt) {
+            const serverTime = new Date(json.cachedAt).getTime();
+            const localTime = new Date(cached.cachedAt).getTime();
+            if (serverTime > localTime) {
+              loadInvoices(true);
+            }
+          }
+        }).catch(() => {});
       } else {
         loadInvoices(true);
       }
@@ -1789,7 +1809,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
             type="primary"
             icon={<SyncOutlined />}
             loading={syncExecuting}
-            disabled={!syncPreview || (syncPreview.toAdd === 0 && syncPreview.toUpdate === 0)}
+            disabled={!syncPreview || (syncPreview.toAdd === 0 && syncPreview.toUpdate === 0 && (syncPreview.toReactivate || 0) === 0)}
             onClick={handleSyncExecute}
           >
             确认同步
@@ -1809,8 +1829,14 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
               <Col span={6}><Statistic title="待新增" value={syncPreview.toAdd} valueStyle={{ color: '#52c41a' }} /></Col>
               <Col span={6}><Statistic title="待更新状态" value={syncPreview.toUpdate} valueStyle={{ color: '#fa8c16' }} /></Col>
             </Row>
+            {(syncPreview.toReactivate || 0) > 0 && (
+              <Row gutter={16} style={{ marginBottom: 16 }}>
+                <Col span={6}><Statistic title="待重新激活" value={syncPreview.toReactivate} valueStyle={{ color: '#1677ff' }} /></Col>
+                <Col span={18}><div style={{ color: '#999', fontSize: 12, paddingTop: 24 }}>IPXO 仍为 Active，但本地已标记为取消/退款的 IP 段（退租后重新租用）</div></Col>
+              </Row>
+            )}
 
-            {syncPreview.toAdd === 0 && syncPreview.toUpdate === 0 && (
+            {syncPreview.toAdd === 0 && syncPreview.toUpdate === 0 && (syncPreview.toReactivate || 0) === 0 && (
               <Alert type="success" showIcon message="本地数据与 IPXO 已完全同步，无需操作" />
             )}
 
@@ -1852,6 +1878,24 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
               </>
             )}
 
+            {syncPreview.toReactivateItems?.length > 0 && (
+              <>
+                <Divider orientation="left"><Tag color="blue">重新激活 {syncPreview.toReactivate} 条</Tag>IPXO 仍为 Active，本地已取消/退款（退租后重新租用）</Divider>
+                <Table
+                  size="small"
+                  dataSource={syncPreview.toReactivateItems}
+                  rowKey={(r: any, i: any) => r.localId || `react-${i}`}
+                  pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 条` }}
+                  columns={[
+                    { title: 'IP 段', key: 'seg', render: (_: any, r: any) => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{r.segment}</span> },
+                    { title: '本地状态', dataIndex: 'oldRenewalStatus', key: 'old', render: (v: string) => <Tag color="red">{v}</Tag> },
+                    { title: '取消日期', dataIndex: 'oldCancellationDate', key: 'cancel' },
+                    { title: '月费', dataIndex: 'monthlyPrice', key: 'price', align: 'right' as const, render: (v: number) => `$${Number(v).toFixed(2)}` },
+                  ]}
+                />
+              </>
+            )}
+
             <Alert
               type="info"
               showIcon
@@ -1875,7 +1919,7 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
             key="exec"
             type="primary"
             loading={leasedSyncExecuting}
-            disabled={!leasedSyncPreview || (leasedSyncPreview.toAdd === 0 && leasedSyncPreview.toCancel === 0)}
+            disabled={!leasedSyncPreview || (leasedSyncPreview.toAdd === 0 && leasedSyncPreview.toCancel === 0 && (leasedSyncPreview.toReactivate || 0) === 0)}
             onClick={handleLeasedSyncExecute}
           >
             确认执行
@@ -1892,8 +1936,13 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
               <Col span={6}><Card size="small"><Statistic title="待新增" value={leasedSyncPreview.toAdd} valueStyle={{ color: '#52c41a' }} /></Card></Col>
               <Col span={6}><Card size="small"><Statistic title="待取消" value={leasedSyncPreview.toCancel} valueStyle={{ color: '#fa8c16' }} /></Card></Col>
             </Row>
-
-            {leasedSyncPreview.toAdd === 0 && leasedSyncPreview.toCancel === 0 && (
+            {(leasedSyncPreview.toReactivate || 0) > 0 && (
+              <Row gutter={16} style={{ marginBottom: 16 }}>
+                <Col span={6}><Card size="small"><Statistic title="待重新激活" value={leasedSyncPreview.toReactivate} valueStyle={{ color: '#1677ff' }} /></Card></Col>
+                <Col span={18}><div style={{ color: '#999', fontSize: 12, paddingTop: 24 }}>退租后重新租用的 IP 段，将恢复为正常状态</div></Col>
+              </Row>
+            )}
+            {leasedSyncPreview.toAdd === 0 && leasedSyncPreview.toCancel === 0 && (leasedSyncPreview.toReactivate || 0) === 0 && (
               <Alert type="success" showIcon message="数据已是最新，无需同步" />
             )}
 
@@ -1938,6 +1987,25 @@ const IPXOBilling: React.FC<IPXOBillingProps> = ({ tab: forcedTab }) => {
                 />
               </>
             )}
+
+            {leasedSyncPreview.toReactivateItems?.length > 0 && (
+              <>
+                <Divider orientation="left" plain><span style={{ color: '#1677ff' }}>待重新激活 {leasedSyncPreview.toReactivate} 条（退租后重新租用）</span></Divider>
+                <Table
+                  size="small"
+                  dataSource={leasedSyncPreview.toReactivateItems}
+                  rowKey="segment"
+                  pagination={{ pageSize: 5, simple: true }}
+                  columns={[
+                    { title: 'IP 段', dataIndex: 'segment', key: 'seg', render: (v: string) => <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{v}</span> },
+                    { title: '本地状态', dataIndex: 'oldRenewalStatus', key: 'status', render: (v: string) => <Tag color="red">{v}</Tag> },
+                    { title: '取消日期', dataIndex: 'oldCancellationDate', key: 'cancel' },
+                    { title: '月费', dataIndex: 'monthlyPrice', key: 'price', align: 'right' as const, render: (v: number) => `$${Number(v).toFixed(2)}` },
+                  ]}
+                />
+              </>
+            )}
+
           </>
         ) : null}
       </Modal>

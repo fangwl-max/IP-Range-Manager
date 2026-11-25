@@ -388,8 +388,8 @@ const CostAnalysis: React.FC = () => {
       let isActive = false;
       let isCancelledButNotExpired = false;
 
-      if (segment.renewalStatus === 'cancelled' || segment.cancellationDate) {
-        // 已取消的IP段，需要计算实际到期时间来判断是否已到期
+      if (segment.renewalStatus === 'cancelled' || segment.renewalStatus === 'refunded' || segment.cancellationDate) {
+        // 已取消/已退款的IP段，需要计算实际到期时间来判断是否已到期
         const expiryDate = calculateCancelledExpiryDate(segment);
         if (expiryDate && expiryDate.isAfter(now)) {
           // 已取消但未到期
@@ -1502,7 +1502,7 @@ const CostAnalysis: React.FC = () => {
       const cost = applyMonthlyUsdWithOptionalIpxoFee(getDisplayMonthlyPrice(segment), segment.supplier);
       let status = 'active';
       
-      if (segment.renewalStatus === 'cancelled' || segment.cancellationDate) {
+      if (segment.renewalStatus === 'cancelled' || segment.renewalStatus === 'refunded' || segment.cancellationDate) {
         const expiryDate = calculateCancelledExpiryDate(segment);
         if (expiryDate && expiryDate.isAfter(now)) {
           status = 'cancelledButNotExpired';

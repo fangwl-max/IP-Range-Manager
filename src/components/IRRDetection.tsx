@@ -96,7 +96,7 @@ function extractAbSegment(input: string): string | null {
 
 /** 计算 IP 段到期时间：已取消用取消逻辑，否则用续费日 */
 function getSegmentExpiry(segment: IPSegment): dayjs.Dayjs | null {
-  if (segment.renewalStatus === 'cancelled' && segment.cancellationDate && segment.purchaseDate) {
+  if ((segment.renewalStatus === 'cancelled' || segment.renewalStatus === 'refunded') && segment.cancellationDate && segment.purchaseDate) {
     const cancellationDate = dayjs(segment.cancellationDate);
     const purchaseDate = dayjs(segment.purchaseDate);
     if (!cancellationDate.isValid() || !purchaseDate.isValid()) return null;

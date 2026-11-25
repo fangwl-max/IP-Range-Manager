@@ -654,7 +654,7 @@ const IPSegmentStats: React.FC = () => {
 
   const nonIpxoCancelledPending = useMemo(() =>
     nonIpxoFiltered.filter(s =>
-      (s.renewalStatus === 'cancelled' || s.cancellationDate) && s.renewalDate && s.renewalDate > todayStr
+      (s.renewalStatus === 'cancelled' || s.renewalStatus === 'refunded' || s.cancellationDate) && s.renewalDate && s.renewalDate > todayStr
     ),
     [nonIpxoFiltered, todayStr]
   );
@@ -674,12 +674,12 @@ const IPSegmentStats: React.FC = () => {
   const ipxoTotal = ipxoRented.length;
 
   const activeSegs = useMemo(() =>
-    ipxoRented.filter(s => s.renewalStatus !== 'cancelled'),
+    ipxoRented.filter(s => s.renewalStatus !== 'cancelled' && s.renewalStatus !== 'refunded'),
     [ipxoRented]
   );
 
   const localCancelledSegs = useMemo(() =>
-    ipxoRented.filter(s => s.renewalStatus === 'cancelled'),
+    ipxoRented.filter(s => s.renewalStatus === 'cancelled' || s.renewalStatus === 'refunded'),
     [ipxoRented]
   );
 
