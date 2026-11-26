@@ -1859,7 +1859,8 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
         updatedCount++;
       }
       // 供应商（空时覆盖）
-      const curSupplier = (seg.supplier || '').trim();
+      const rawSupplier = Array.isArray(seg.supplier) ? seg.supplier[0] : seg.supplier;
+      const curSupplier = (rawSupplier || '').trim();
       if (!curSupplier && archivedItem.provider) {
         seg.supplier = DULVORA_PROVIDER_MAP[archivedItem.provider] || archivedItem.provider.toUpperCase();
         archChanged = true;
@@ -1886,7 +1887,8 @@ async function autoSyncArchivedDates(): Promise<{ updatedCount: number; multiPur
 
     let fieldChanged = false;
     // 供应商（空时覆盖）
-    const curSupplier = (seg.supplier || '').trim();
+    const rawSupplier2 = Array.isArray(seg.supplier) ? seg.supplier[0] : seg.supplier;
+    const curSupplier = (rawSupplier2 || '').trim();
     if (!curSupplier && activeItem.provider) {
       seg.supplier = DULVORA_PROVIDER_MAP[activeItem.provider] || activeItem.provider.toUpperCase();
       fieldChanged = true;
@@ -11687,7 +11689,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           // archived 段供应商/项目组预览
           if (archivedItem) {
             const changes: string[] = [];
-            if (!(seg.supplier || '').trim() && archivedItem.provider) {
+            const rawArchSup = Array.isArray(seg.supplier) ? seg.supplier[0] : seg.supplier;
+            if (!(rawArchSup || '').trim() && archivedItem.provider) {
               changes.push(`供应商→${DULVORA_PROVIDER_MAP[archivedItem.provider] || archivedItem.provider}`);
             }
             const archGroups: string[] = seg.projectGroups || [];
@@ -11708,7 +11711,8 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           const idc = activeItem.idc || '';
           if (DULVORA_SKIP_IDC.has(idc)) continue;
           const changes: string[] = [];
-          if (!(seg.supplier || '').trim() && activeItem.provider) {
+          const rawSup = Array.isArray(seg.supplier) ? seg.supplier[0] : seg.supplier;
+          if (!(rawSup || '').trim() && activeItem.provider) {
             changes.push(`供应商→${DULVORA_PROVIDER_MAP[activeItem.provider] || activeItem.provider}`);
           }
           const curGroups: string[] = seg.projectGroups || [];
