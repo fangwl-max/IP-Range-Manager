@@ -3477,6 +3477,11 @@ function startIpxoCacheRefreshScheduler(): void {
       // 只在每天 00:00~00:04 之间的 tick 触发；两端各自记自己的日期，避免互相顶掉
       if (bjHour !== 0 || bjMinute > 4) return;
 
+      // 收集各阶段结果用于 Webhook 汇总通知
+      const reportLines: string[] = [];
+      let hasChanges = false;
+      let hasFailures = false;
+
       // ── IPXO ──────────────────────────────────────────────────────
       if (loadIpxoConfig() && lastRefreshDate !== bjDate) {
         try {
@@ -3488,28 +3493,39 @@ function startIpxoCacheRefreshScheduler(): void {
           const syncResult = await autoSyncLeasedFromCache();
           if (syncResult.addedCount > 0 || syncResult.cancelledCount > 0 || syncResult.updatedCount > 0) {
             console.log(`[IpxoCache] 自动同步完成：新增 ${syncResult.addedCount} 条，取消 ${syncResult.cancelledCount} 条，更新 ${syncResult.updatedCount} 条`);
+            reportLines.push(`🔵 IPXO 同步：新增 ${syncResult.addedCount}，取消 ${syncResult.cancelledCount}，更新 ${syncResult.updatedCount}`);
+            hasChanges = true;
           } else {
             console.log('[IpxoCache] 自动同步完成：无变化');
+            reportLines.push('🔵 IPXO 同步：无变化');
           }
 
-          // IPXO LOA 同步到首都在线（后台执行，不阻塞）
-          syncAllIpxoLoaToCds().then(r => {
-            if (r.synced > 0 || r.failed > 0) {
-              console.log(`[IpxoLoa] LOA 同步到 CDS：共 ${r.total} 条，同步 ${r.synced}，跳过 ${r.skipped}，失败 ${r.failed}`);
+          // IPXO LOA 同步到首都在线
+          try {
+            const loaR = await syncAllIpxoLoaToCds();
+            if (loaR.synced > 0 || loaR.failed > 0) {
+              console.log(`[IpxoLoa] LOA 同步到 CDS：共 ${loaR.total} 条，同步 ${loaR.synced}，跳过 ${loaR.skipped}，失败 ${loaR.failed}`);
+              reportLines.push(`   LOA→CDS：同步 ${loaR.synced}，跳过 ${loaR.skipped}，失败 ${loaR.failed}`);
+              if (loaR.synced > 0) hasChanges = true;
+              if (loaR.failed > 0) hasFailures = true;
+            } else {
+              reportLines.push(`   LOA→CDS：无需同步（共 ${loaR.total} 条已存在）`);
             }
-          }).catch(e => console.error('[IpxoLoa] LOA 同步失败:', e.message));
+          } catch (loaErr: any) {
+            console.error('[IpxoLoa] LOA 同步失败:', loaErr.message);
+            reportLines.push(`   LOA→CDS：❌ 失败 - ${loaErr.message}`);
+            hasFailures = true;
+          }
         } catch (e: any) {
           console.error('[IpxoCache] 每日缓存刷新失败:', e.message);
+          reportLines.push(`🔵 IPXO：❌ 刷新失败 - ${e.message}`);
+          hasFailures = true;
         }
       }
 
       // ── Larus ─────────────────────────────────────────────────────
       if (lastLarusSyncDate !== bjDate) {
-        // 先置位再执行：全量刷新要打 300+ 次请求，失败重试不该在 5 分钟窗口里
-        // 反复重放。失败由日志暴露，当天不再重试。
         lastLarusSyncDate = bjDate;
-        // 同步前先从官网拉最新数据，否则拿到的是最长 30 分钟前的缓存，
-        // 当天新增的段要等下一次保活才可能出现。
         try {
           const larusCfg = loadLarusConfig();
           if (larusCfg) {
@@ -3518,43 +3534,68 @@ function startIpxoCacheRefreshScheduler(): void {
             console.warn('[LarusSync] Cookie 未配置，无法从官网刷新，改用已有缓存同步');
           }
         } catch (refreshErr: any) {
-          // 刷新失败（如 Cookie 过期）时降级用旧缓存，不让刷新故障连带丢掉同步
           console.error('[LarusSync] 刷新失败，改用缓存同步:', refreshErr.message);
         }
         try {
           const r = await autoSyncFromLarusCache();
           if (r.addedCount > 0 || r.updatedCount > 0 || r.cancelledCount > 0) {
             console.log(`[LarusSync] 同步完成：新增 ${r.addedCount} 条，更新 ${r.updatedCount} 条，取消 ${r.cancelledCount} 条`);
+            reportLines.push(`🟣 Larus 同步：新增 ${r.addedCount}，更新 ${r.updatedCount}，取消 ${r.cancelledCount}`);
+            hasChanges = true;
           } else {
             console.log('[LarusSync] 同步完成：无变化');
+            reportLines.push('🟣 Larus 同步：无变化');
+          }
+
+          // Larus LOA 同步到首都在线
+          try {
+            const loaR = await syncAllLarusLoaToCds();
+            if (loaR.synced > 0 || loaR.failed > 0) {
+              console.log(`[LarusLoa] LOA 同步到 CDS：共 ${loaR.total} 条，同步 ${loaR.synced}，跳过 ${loaR.skipped}，失败 ${loaR.failed}`);
+              reportLines.push(`   LOA→CDS：同步 ${loaR.synced}，跳过 ${loaR.skipped}，失败 ${loaR.failed}`);
+              if (loaR.synced > 0) hasChanges = true;
+              if (loaR.failed > 0) hasFailures = true;
+            } else {
+              reportLines.push(`   LOA→CDS：无需同步（共 ${loaR.total} 条已存在）`);
+            }
+          } catch (loaErr: any) {
+            console.error('[LarusLoa] LOA 同步失败:', loaErr.message);
+            reportLines.push(`   LOA→CDS：❌ 失败 - ${loaErr.message}`);
+            hasFailures = true;
           }
         } catch (e: any) {
           console.error('[LarusSync] 同步失败:', e.message);
+          reportLines.push(`🟣 Larus：❌ 同步失败 - ${e.message}`);
+          hasFailures = true;
         }
       }
 
-      // ── Dulvora 下架日期同步 ──────────────────────────────────────
+      // ── Dulvora 下架日期同步（资源运维平台）─────────────────────────
       if (lastDulvoraSyncDate !== bjDate) {
         lastDulvoraSyncDate = bjDate;
         try {
           const r = await autoSyncArchivedDates();
           if (r.updatedCount > 0 || r.multiPurchaseCount > 0 || r.addedCount > 0 || r.fieldSyncCount > 0) {
             const parts: string[] = [];
-            if (r.updatedCount) parts.push(`下架日期更新 ${r.updatedCount} 条`);
-            if (r.multiPurchaseCount) parts.push(`多次购买标记 ${r.multiPurchaseCount} 条`);
-            if (r.addedCount) parts.push(`新增 ${r.addedCount} 条`);
-            if (r.fieldSyncCount) parts.push(`字段同步 ${r.fieldSyncCount} 条`);
+            if (r.updatedCount) parts.push(`下架 ${r.updatedCount}`);
+            if (r.multiPurchaseCount) parts.push(`多购 ${r.multiPurchaseCount}`);
+            if (r.addedCount) parts.push(`新增 ${r.addedCount}`);
+            if (r.fieldSyncCount) parts.push(`字段 ${r.fieldSyncCount}`);
             console.log(`[DulvoraSync] 同步完成：${parts.join('，')}`);
+            reportLines.push(`🟠 资源运维同步：${parts.join('，')}`);
+            hasChanges = true;
           } else {
             console.log('[DulvoraSync] 同步完成：无变化');
+            reportLines.push('🟠 资源运维同步：无变化');
           }
         } catch (e: any) {
           console.error('[DulvoraSync] 同步失败:', e.message);
+          reportLines.push(`🟠 资源运维：❌ 同步失败 - ${e.message}`);
+          hasFailures = true;
         }
       }
 
       // ── 已退租 IP 段 LOA 清理 ─────────────────────────────────────
-      // 在 IPXO/Larus 两侧同步之后执行，此时 ip-data.json 的退租状态已是最新
       if (lastLoaCleanupDate !== bjDate) {
         lastLoaCleanupDate = bjDate;
         try {
@@ -3562,11 +3603,31 @@ function startIpxoCacheRefreshScheduler(): void {
           const skipMsg = cr.skippedAnnounced > 0 ? `，跳过宣告中 ${cr.skippedAnnounced} 个` : '';
           if (cr.deleted > 0 || cr.failed > 0) {
             console.log(`[LoaCleanup] 退租 LOA 清理完成：检查 ${cr.checked} 个，删除 ${cr.deleted} 个，失败 ${cr.failed} 个${skipMsg}`);
+            reportLines.push(`🗑️ LOA 清理：删除 ${cr.deleted}，失败 ${cr.failed}（共检查 ${cr.checked}${skipMsg}）`);
+            hasChanges = true;
+            if (cr.failed > 0) hasFailures = true;
           } else {
             console.log(`[LoaCleanup] 退租 LOA 清理完成：检查 ${cr.checked} 个，无需清理${skipMsg}`);
           }
         } catch (e: any) {
           console.error('[LoaCleanup] 退租 LOA 清理失败:', e.message);
+          reportLines.push(`🗑️ LOA 清理：❌ 失败 - ${e.message}`);
+          hasFailures = true;
+        }
+      }
+
+      // ── Google Chat Webhook 汇总通知 ──────────────────────────────
+      if (reportLines.length > 0 && (hasChanges || hasFailures)) {
+        try {
+          const notifyCfg = loadNotifyConfig();
+          if (notifyCfg?.googleChatWebhook) {
+            const icon = hasFailures ? '⚠️' : '✅';
+            const chatText = `${icon} 每日 IP 段同步报告（${bjDate}）\n\n${reportLines.join('\n')}`;
+            await sendChatMessage(notifyCfg.googleChatWebhook, chatText);
+            console.log('[DailySync] 同步报告已发送到 Google Chat');
+          }
+        } catch (chatErr: any) {
+          console.error('[DailySync] Google Chat 通知发送失败:', chatErr.message);
         }
       }
     } catch (e: any) {
