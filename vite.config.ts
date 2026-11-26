@@ -1492,7 +1492,7 @@ async function autoSyncLeasedFromCache(): Promise<{ addedCount: number; cancelle
     let changed = false;
 
     // IPXO active 但本地 cancelled/refunded → 重新租用：归档历史并重置状态
-    if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && seg.cancellationDate.trim())) {
+    if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && String(seg.cancellationDate).trim())) {
       console.log(`[IpxoSync] ${segStr} 重新激活（IPXO active，本地 ${seg.renewalStatus}），重置为正常状态`);
       if (seg.purchaseDate) {
         const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
@@ -9126,7 +9126,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           let changed = false;
 
           // IPXO active 但本地 cancelled/refunded → 重新租用
-          if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && seg.cancellationDate.trim())) {
+          if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && String(seg.cancellationDate).trim())) {
             if (seg.purchaseDate) {
               const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
               if (!records.some((r: any) => r.date === seg.purchaseDate)) {
@@ -9370,7 +9370,7 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
           let changed = false;
 
           // IPXO active 但本地 cancelled/refunded → 重新租用
-          if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && seg.cancellationDate.trim())) {
+          if (['cancelled', 'refunded'].includes(seg.renewalStatus) || (seg.cancellationDate && String(seg.cancellationDate).trim())) {
             if (seg.purchaseDate) {
               const records: Array<{ date: string; fee?: number }> = seg.previousPurchaseRecords || [];
               if (!records.some((r: any) => r.date === seg.purchaseDate)) {
