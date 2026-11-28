@@ -434,12 +434,26 @@
 
   async function fetchLoaForRow(row) {
     const cidr = getCidrFromRow(row);
-    if (!cidr) { alert('请先填写 CIDR'); return; }
+    if (!cidr) { alert('请先填写 CIDR'); return { ok: false }; }
     const asn = normalizeAsnInput(row.querySelector('.asn').value || '');
     const btn = row.querySelector('.btn-fetch-ipxo-loa');
     btn.disabled = true;
 
-    // 先尝试 IPXO
+    // 1) 先检查本地是否已有 LOA
+    setLoaSummary(row, null, '检查本地 LOA...');
+    try {
+      let url = '/api/loa/status?cidr=' + encodeURIComponent(cidr);
+      if (asn) url += '&asn=' + encodeURIComponent(asn);
+      const chk = await fetch(url);
+      const chkData = await chk.json();
+      if (chk.ok && chkData.ok && chkData.ready) {
+        setLoaSummary(row, true, '本地已存在：' + loaStatusText(chkData));
+        btn.disabled = false;
+        return { ok: true, source: 'local' };
+      }
+    } catch {}
+
+    // 2) 尝试 IPXO
     setLoaSummary(row, null, '正在从 IPXO 拉取...');
     try {
       const resp = await fetch('/api/loa/fetch-ipxo', {
@@ -455,7 +469,7 @@
       }
     } catch {}
 
-    // IPXO 失败，尝试 Larus
+    // 3) 尝试 Larus
     setLoaSummary(row, null, '正在从 Larus 拉取...');
     try {
       const resp2 = await fetch(`${location.origin}/api/loa/fetch-larus`, {
@@ -469,7 +483,7 @@
         btn.disabled = false;
         return { ok: true, source: 'larus' };
       }
-      setLoaSummary(row, false, data2.error || '拉取失败（IPXO/Larus 均未找到）');
+      setLoaSummary(row, false, data2.error || '未找到 LOA（本地/IPXO/Larus）');
     } catch (err) {
       setLoaSummary(row, false, '拉取失败: ' + err);
     }
