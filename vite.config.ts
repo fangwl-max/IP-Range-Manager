@@ -11362,12 +11362,14 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
     res.setHeader('Content-Type', 'application/json');
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
     if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ success: false, message: '仅支持 POST' })); return; }
-    if (!loadLarusConfig()) {
+    const larusCfg = loadLarusConfig();
+    if (!larusCfg) {
       res.statusCode = 400;
       res.end(JSON.stringify({ success: false, message: 'Larus Cookie 未配置' }));
       return;
     }
     try {
+      await refreshLarusCacheFromRemote(larusCfg);
       const result = await syncAllLarusLoaToCds();
       res.statusCode = 200;
       res.end(JSON.stringify({ success: true, ...result }));
