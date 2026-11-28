@@ -11356,6 +11356,57 @@ function installDataPersistenceMiddlewares(server: { middlewares: any }, isPrevi
     }
   });
 
+  // ─── 按 CIDR 自动查找 Larus LOA 并保存到 CDS（供批量宣告页面调用）────────
+  server.middlewares.use('/api/loa/fetch-larus', async (req: any, res: any, _next: any) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return; }
+    if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ ok: false, error: '仅支持 POST' })); return; }
+    let body = '';
+    req.on('data', (c: any) => { body += c; });
+    await new Promise<void>(r => req.on('end', r));
+    let params: any = {};
+    try { params = JSON.parse(body); } catch { /* ignore */ }
+    const cidr = (params.cidr || '').trim();
+    const asn = (params.asn || '').trim();
+    if (!cidr) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, error: '请提供 cidr' })); return; }
+    const cfg = loadLarusConfig();
+    if (!cfg) { res.statusCode = 400; res.end(JSON.stringify({ ok: false, error: 'Larus Cookie 未配置' })); return; }
+    const cache = loadLarusData();
+    if (!cache?.items?.length) { res.statusCode = 404; res.end(JSON.stringify({ ok: false, error: 'Larus 缓存为空，请先刷新 Larus 数据' })); return; }
+
+    const cidrLower = cidr.toLowerCase();
+    let loaPath = '';
+    let matchedAsn = asn;
+    for (const item of cache.items) {
+      if ((item.ip_cidr || '').trim().toLowerCase() !== cidrLower) continue;
+      const allocs: any[] = Array.isArray(item.allocations) ? item.allocations : [];
+      if (allocs.length) {
+        const match = asn ? allocs.find((a: any) => String(a.asn) === asn && a.loa_path) : allocs.find((a: any) => a.loa_path);
+        if (match) { loaPath = match.loa_path; matchedAsn = String(match.asn ?? ''); }
+      } else if (item.loa_path) {
+        loaPath = item.loa_path;
+        if (!matchedAsn && item.asn) matchedAsn = String(item.asn);
+      }
+      break;
+    }
+    if (!loaPath) { res.statusCode = 404; res.end(JSON.stringify({ ok: false, error: `Larus 缓存中未找到 ${cidr} 的 LOA` })); return; }
+
+    try {
+      const dl = await downloadLarusLoa(loaPath, cfg.cookie);
+      if (!dl) { res.statusCode = 502; res.end(JSON.stringify({ ok: false, error: '从 Larus 下载 LOA 失败' })); return; }
+      const up = await uploadLoaToCds(dl.buffer, dl.fileName, cidr, matchedAsn);
+      if (!up.ok) { res.statusCode = 502; res.end(JSON.stringify({ ok: false, error: `CDS 上传失败: ${up.message}` })); return; }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, source: 'larus', saved: true }));
+    } catch (e: any) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+  });
+
   // ─── 批量同步 Larus 全部 LOA 到首都在线 ──────────────────────────────────
   server.middlewares.use('/api/larus/sync-loa', async (req: any, res: any, _next: any) => {
     res.setHeader('Access-Control-Allow-Origin', '*');

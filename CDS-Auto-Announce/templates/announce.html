@@ -185,7 +185,7 @@
     <div class="toolbar-actions">
       <button type="button" class="btn btn-ghost" id="refreshMeta">刷新区域与 ASN</button>
       <button type="button" class="btn btn-ghost" id="openBatchImport">批量导入</button>
-      <button type="button" class="btn btn-ghost" id="batchFetchLoa" title="按顺序为所有已填 CIDR 拉取 IPXO LOA">一键拉取 LoA</button>
+      <button type="button" class="btn btn-ghost" id="batchFetchLoa" title="按顺序为所有已填 CIDR 拉取 LOA（先 IPXO 后 Larus）">一键拉取 LoA</button>
       <button type="button" class="btn btn-secondary" id="addRow">+ 添加一行</button>
     </div>
   </div>
@@ -432,12 +432,14 @@
     }
   }
 
-  async function fetchLoaFromIpxo(row) {
+  async function fetchLoaForRow(row) {
     const cidr = getCidrFromRow(row);
     if (!cidr) { alert('请先填写 CIDR'); return; }
     const asn = normalizeAsnInput(row.querySelector('.asn').value || '');
     const btn = row.querySelector('.btn-fetch-ipxo-loa');
     btn.disabled = true;
+
+    // 先尝试 IPXO
     setLoaSummary(row, null, '正在从 IPXO 拉取...');
     try {
       const resp = await fetch('/api/loa/fetch-ipxo', {
@@ -446,22 +448,39 @@
         body: JSON.stringify({ cidr, asn, permanent: true }),
       });
       const data = await resp.json();
-      if (!resp.ok || !data.ok) {
-        setLoaSummary(row, false, data.error || 'IPXO 拉取失败');
-        return;
+      if (resp.ok && data.ok) {
+        setLoaSummary(row, true, 'IPXO 拉取成功：' + loaStatusText(data));
+        btn.disabled = false;
+        return { ok: true, source: 'ipxo' };
       }
-      setLoaSummary(row, true, 'IPXO 拉取成功：' + loaStatusText(data));
+    } catch {}
+
+    // IPXO 失败，尝试 Larus
+    setLoaSummary(row, null, '正在从 Larus 拉取...');
+    try {
+      const resp2 = await fetch(`${location.origin}/api/loa/fetch-larus`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cidr, asn }),
+      });
+      const data2 = await resp2.json();
+      if (resp2.ok && data2.ok) {
+        setLoaSummary(row, true, 'Larus 拉取成功');
+        btn.disabled = false;
+        return { ok: true, source: 'larus' };
+      }
+      setLoaSummary(row, false, data2.error || '拉取失败（IPXO/Larus 均未找到）');
     } catch (err) {
-      setLoaSummary(row, false, 'IPXO 拉取失败: ' + err);
-    } finally {
-      btn.disabled = false;
+      setLoaSummary(row, false, '拉取失败: ' + err);
     }
+    btn.disabled = false;
+    return { ok: false };
   }
 
   function bindLoaEvents(row) {
     const fileInput = row.querySelector('.loa-file-input');
     row.querySelector('.btn-check-loa').onclick = () => fetchLoaStatus(row);
-    row.querySelector('.btn-fetch-ipxo-loa').onclick = () => fetchLoaFromIpxo(row);
+    row.querySelector('.btn-fetch-ipxo-loa').onclick = () => fetchLoaForRow(row);
     row.querySelector('.btn-download-loa').onclick = () => {
       const cidr = getCidrFromRow(row);
       if (!cidr) { alert('请先填写 CIDR 再下载 LOA'); return; }
@@ -494,7 +513,7 @@
       + '<div class="cell"><input type="text" class="asn" list="asn-list" placeholder="ASN" value="' + escapeAttr(data.asn || '') + '"></div>'
       + '<div class="cell loa-cell"><div class="loa-actions">'
       + '<button type="button" class="btn btn-ghost btn-check-loa" title="检查本地 LOA">检查</button>'
-      + '<button type="button" class="btn btn-blue btn-fetch-ipxo-loa" title="从 IPXO 拉取 LOA">LoA拉取</button>'
+      + '<button type="button" class="btn btn-blue btn-fetch-ipxo-loa" title="拉取 LOA（先 IPXO 后 Larus）">LoA拉取</button>'
       + '<button type="button" class="btn btn-ghost btn-download-loa" title="下载本地 LOA">下载</button>'
       + '<button type="button" class="btn btn-primary btn-upload-loa" title="上传 LOA PDF">上传</button>'
       + '<input type="file" class="hidden-file loa-file-input" accept=".pdf,application/pdf">'
@@ -841,32 +860,7 @@
 
     let done = 0;
     for (const row of targets) {
-      const cidr = (row.querySelector('.cidr').value || '').trim();
-      const asn = normalizeAsnInput(row.querySelector('.asn').value || '');
-      const btn = row.querySelector('.btn-fetch-ipxo-loa');
-
-      // 高亮当前行正在处理
-      btn.disabled = true;
-      setLoaSummary(row, null, '正在从 IPXO 拉取...');
-
-      try {
-        const resp = await fetch('/api/loa/fetch-ipxo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cidr, asn, permanent: true }),
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) {
-          setLoaSummary(row, false, data.error || 'IPXO 拉取失败');
-        } else {
-          setLoaSummary(row, true, 'IPXO 拉取成功：' + loaStatusText(data));
-        }
-      } catch (err) {
-        setLoaSummary(row, false, '拉取失败: ' + err);
-      } finally {
-        btn.disabled = false;
-      }
-
+      await fetchLoaForRow(row);
       done++;
       batchFetchBtn.textContent = done < targets.length
         ? `拉取中 (${done}/${targets.length})`
